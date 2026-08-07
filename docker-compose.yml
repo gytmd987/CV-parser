@@ -1,0 +1,23 @@
+# cv-tool 전용 저장소. 기존 인사 RAG 의 Postgres(5432)/Qdrant(6333)와 절대 공유 금지.
+# 이미지는 서버에 이미 있으므로 설치 없이 다른 포트로 띄운다.
+#   docker compose up -d
+# 비밀번호는 .env 로 주입한다 (.env.example 참고). 코드/compose 에 하드코딩하지 않는다.
+name: cv-tool
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${CVTOOL_PG_USER:-cvtool}
+      POSTGRES_PASSWORD: ${CVTOOL_PG_PASSWORD:?set CVTOOL_PG_PASSWORD in .env}
+      POSTGRES_DB: ${CVTOOL_PG_DB:-cvtool_db}
+    ports: ["127.0.0.1:5433:5432"]   # 5432 아님
+    volumes: [pgdata:/var/lib/postgresql/data]
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    ports: ["127.0.0.1:6335:6333"]   # 6333 아님
+    volumes: [qdrantdata:/qdrant/storage]
+volumes:
+  pgdata:
+  qdrantdata:

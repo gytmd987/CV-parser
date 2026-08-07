@@ -1,0 +1,36 @@
+[project]
+name = "cvtool"
+version = "0.1.0"
+description = "지원자 CV 분석 툴 (온프레미스, 로컬 LLM 사용). 인사 RAG 시스템과 분리 운영."
+requires-python = ">=3.11"
+
+# 폐쇄망 주의: 아래 패키지가 서버에 이미 있는지 먼저 확인하세요.
+# 핵심 슬라이스(CV 구조화 추출)는 httpx + pydantic 만 있으면 동작합니다.
+dependencies = [
+    "httpx>=0.27",
+    "pydantic>=2.6",
+]
+
+[project.optional-dependencies]
+# 파일 파서: 형식별로 필요할 때만 lazy import 됩니다.
+#   .txt  -> 의존성 없음
+#   .pdf  -> pypdf
+#   .docx -> python-docx
+pdf = ["pypdf>=4.0"]
+docx = ["python-docx>=1.1"]
+# 다음 슬라이스(매칭/저장)에서 사용 예정
+db = ["psycopg[binary]>=3.1", "qdrant-client>=1.9"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+cvtool = "cvtool.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["cvtool*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
