@@ -43,7 +43,7 @@ store = CandidateStore(DATA_DIR / "candidates.db")
 registry = VenueRegistry(DATA_DIR / "venues.db")
 
 _sessions: set[str] = set()
-_jobs: "queue.Queue[tuple[str, str]]" = queue.Queue()
+_jobs: "queue.Queue[tuple[str, str, str | None]]" = queue.Queue()
 _status_lock = threading.Lock()
 _status: dict[str, dict] = {}  # filename -> {state, message}
 
@@ -58,12 +58,12 @@ def _set_status(name: str, state: str, message: str = "") -> None:
 
 def _worker() -> None:
     while True:
-        filename, text = _jobs.get()
+        filename, text, 지원자_ID = _jobs.get()
         try:
             _set_status(filename, "처리중")
-            rec = extract_cv_from_text(text, 원본_파일명=filename)
+            rec = extract_cv_from_text(text, 원본_파일명=filename, 지원자_ID=지원자_ID)
             apply_registry(rec, registry)
-            store.save(rec)
+            store.save(rec, 원문_텍스트=text)
             state = "검토필요" if rec.검토_필요 == "Y" else "완료"
             _set_status(filename, state, rec.검토_사유)
         except Exception as exc:  # noqa: BLE001 - 워커가 죽으면 안 된다
@@ -94,6 +94,7 @@ button,.btn{background:var(--accent);color:#fff;border:0;border-radius:6px;paddi
  font-size:14px;cursor:pointer;text-decoration:none;display:inline-block}
 button:hover,.btn:hover{opacity:.9}
 .btn.sec{background:#4b5563}
+button.danger,.btn.danger{background:#b91c1c}
 table{border-collapse:collapse;width:100%;font-size:12.5px}
 th,td{border:1px solid var(--line);padding:5px 7px;text-align:left;white-space:nowrap;
  max-width:260px;overflow:hidden;text-overflow:ellipsis}
@@ -167,55 +168,145 @@ def _status_table() -> str:
         f"<table><tr><th>파일</th><th>상태</th><th>메모</th><th>시각</th></tr>"
         f"{rows}</table>"
         + ("<p class='muted'>처리 중입니다. 5초마다 자동 새로고침됩니다.</p>" if 처리중 else "")
+        + "<p><form method='post' action='/status/clear' style='display:inline'>"
+        "<button type='submit' class='sec'>현황 지우기</button></form>"
+        "<span class='muted'> 이 목록만 비웁니다. 지원자는 지워지지 않습니다.</span></p>"
         + "</div>"
     )
 
 
-def _dashboard() -> bytes:
-    records = store.list_all()
+def _dashboard(q: str = "", review_only: bool = False) -> bytes:
+    records = store.list_filtered(q, review_only)
+    전체 = store.count()
+    만료 = store.expired_count()
+    expiry = store.expiry_map()
     미분류 = registry.unclassified_count()
-    warn = (
-        f"<div class='warn'>분류되지 않은 학회·저널이 <b>{미분류}건</b> 있습니다. "
-        f"판별 전까지 해외 논문 열이 부정확할 수 있습니다. "
-        f"<a href='/venues'>지금 분류하기 →</a></div>"
-        if 미분류
-        else ""
-    )
+
+    warns = []
+    if 미분류:
+        warns.append(
+            f"<div class='warn'>분류되지 않은 학회·저널이 <b>{미분류}건</b> 있습니다. "
+            f"판별 전까지 해외 논문 열이 부정확할 수 있습니다. "
+            f"<a href='/venues'>지금 분류하기 →</a></div>"
+        )
+    if 만료:
+        warns.append(
+            f"<div class='warn'>보관 기간이 지난 지원자가 <b>{만료}명</b> 있습니다. "
+            f"<form method='post' action='/candidates/purge' style='display:inline'>"
+            f"<button class='danger' onclick=\"return confirm('만료된 {만료}명을 삭제합니다. "
+            f"되돌릴 수 없습니다. 진행할까요?')\">만료분 {만료}명 삭제</button></form></div>"
+        )
 
     head = "".join(f"<th>{html.escape(c)}</th>" for c in COLUMNS)
     body_rows = []
     for rec in records:
         row = rec.to_row()
-        cells = []
+        cells = [
+            f"<td><input type='checkbox' name='ids' value='{html.escape(rec.지원자_ID)}'></td>",
+            f"<td><a href='/candidate?id={urllib.parse.quote(rec.지원자_ID)}'>상세</a></td>",
+            f"<td class='muted'>{html.escape(expiry.get(rec.지원자_ID, ''))}</td>",
+        ]
         for c in COLUMNS:
             v = html.escape(str(row.get(c, "") or ""))
             cls = " class='flag'" if c == "검토_필요" and v == "Y" else ""
             cells.append(f"<td{cls} title='{v}'>{v}</td>")
         body_rows.append("<tr>" + "".join(cells) + "</tr>")
 
-    table = (
-        f"<div class='scroll'><table><tr>{head}</tr>{''.join(body_rows)}</table></div>"
-        if records
-        else "<p class='muted'>아직 등록된 지원자가 없습니다. CV를 업로드하세요.</p>"
-    )
+    if records:
+        table = f"""
+        <form method='post' action='/candidates/delete'
+              onsubmit="return confirm('선택한 지원자를 삭제합니다. 되돌릴 수 없습니다.')">
+          <p><button type='submit' class='danger'>선택 삭제</button>
+             <span class='muted'>체크한 지원자를 지웁니다.</span></p>
+          <div class='scroll'><table>
+            <tr><th><input type='checkbox' onclick="for(const c of
+                this.closest('table').querySelectorAll('input[name=ids]'))c.checked=this.checked">
+            </th><th></th><th>보관만료</th>{head}</tr>
+            {''.join(body_rows)}
+          </table></div>
+        </form>"""
+    elif 전체:
+        table = "<p class='muted'>검색 조건에 맞는 지원자가 없습니다.</p>"
+    else:
+        table = "<p class='muted'>아직 등록된 지원자가 없습니다. CV를 업로드하세요.</p>"
+
+    checked = " checked" if review_only else ""
+    보관 = "켜짐 (재분석 가능)" if settings.store_cv_text else "꺼짐 (재분석하려면 재업로드 필요)"
 
     return _page(
         "지원자",
-        f"""{warn}
+        f"""{''.join(warns)}
         <div class='card'><h2>CV 업로드</h2>
           <form method='post' action='/upload' enctype='multipart/form-data'>
             <p><input type='file' name='files' multiple accept='.pdf,.docx,.txt,.md'></p>
             <button type='submit'>업로드 후 분석</button>
             <span class='muted'>여러 개를 한 번에 선택할 수 있습니다 (PDF/docx/txt).</span>
           </form>
+          <p class='muted'>원문 텍스트 보관: <b>{보관}</b> · 보관 기간 {settings.retention_months}개월</p>
         </div>
         {_status_table()}
         <div class='card'>
-          <h2>지원자 {len(records)}명</h2>
+          <h2>지원자 {len(records)}명{f' / 전체 {전체}명' if len(records) != 전체 else ''}</h2>
+          <form method='get' action='/' style='margin-bottom:12px'>
+            <input type='text' name='q' value='{html.escape(q)}' placeholder='이름·소속·학교·파일명 검색'>
+            <label class='muted'><input type='checkbox' name='review' value='1'{checked}>
+              검토 필요만</label>
+            <button type='submit'>검색</button>
+            <a class='btn sec' href='/'>초기화</a>
+          </form>
           <p><a class='btn' href='/export.xlsx'>엑셀(.xlsx) 다운로드</a>
              <a class='btn sec' href='/export.tsv'>TSV 보기(복사용)</a></p>
           {table}
         </div>""",
+    )
+
+
+def _candidate_page(지원자_ID: str) -> bytes:
+    rec = store.get(지원자_ID)
+    if rec is None:
+        return _page("없음", "<div class='card'>해당 지원자를 찾을 수 없습니다.</div>")
+    meta = store.meta(지원자_ID) or {}
+    row = rec.to_row()
+
+    항목 = "".join(
+        f"<tr><th style='width:180px'>{html.escape(c)}</th>"
+        f"<td style='white-space:normal;max-width:none'>{html.escape(str(row.get(c,'') or '')) or '<span class=muted>-</span>'}</td></tr>"
+        for c in COLUMNS
+    )
+    관리 = "".join(
+        f"<tr><th style='width:180px'>{k}</th><td>{html.escape(str(v))}</td></tr>"
+        for k, v in (
+            ("원본 파일명", meta.get("원본_파일명") or "-"),
+            ("등록 일시", meta.get("등록일시") or "-"),
+            ("보관 만료일", meta.get("보관_만료일") or "-"),
+            ("원문 텍스트 보관", "예" if meta.get("원문보유") else "아니오"),
+        )
+    )
+
+    재분석 = (
+        "<form method='post' action='/candidate/reanalyze' style='display:inline'>"
+        f"<input type='hidden' name='id' value='{html.escape(지원자_ID)}'>"
+        "<button type='submit'>다시 분석</button></form> "
+        if meta.get("원문보유")
+        else "<span class='muted'>원문을 보관하지 않아 다시 분석하려면 재업로드해야 합니다. "
+        "(CVTOOL_STORE_CV_TEXT=1 로 켤 수 있습니다)</span><br><br>"
+    )
+
+    return _page(
+        f"지원자 {rec.한글_이름 or rec.지원자_ID}",
+        f"""<div class='card'>
+          <h2>{html.escape(rec.한글_이름 or '(이름 미상)')}
+              <span class='muted'>{html.escape(rec.지원자_ID)}</span></h2>
+          <p>{재분석}
+             <form method='post' action='/candidate/delete' style='display:inline'
+                   onsubmit="return confirm('이 지원자를 삭제합니다. 되돌릴 수 없습니다.')">
+               <input type='hidden' name='id' value='{html.escape(지원자_ID)}'>
+               <button type='submit' class='danger'>삭제</button>
+             </form>
+             <a class='btn sec' href='/'>목록으로</a></p>
+        </div>
+        <div class='card'><h2>관리 정보</h2><table>{관리}</table></div>
+        <div class='card'><h2>추출 결과</h2><table>{항목}</table></div>""",
     )
 
 
@@ -326,7 +417,17 @@ class Handler(BaseHTTPRequestHandler):
             return self._redirect("/login")
 
         if path == "/":
-            return self._send(_dashboard())
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            return self._send(
+                _dashboard(
+                    q=(params.get("q") or [""])[0],
+                    review_only=bool(params.get("review")),
+                )
+            )
+        if path == "/candidate":
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            cid = (params.get("id") or [""])[0]
+            return self._send(_candidate_page(cid))
         if path == "/venues":
             return self._send(_venues_page())
         if path == "/export.xlsx":
@@ -390,13 +491,48 @@ class Handler(BaseHTTPRequestHandler):
                         _set_status(f.filename, "실패", "텍스트를 추출하지 못했습니다(스캔 PDF?)")
                         continue
                     _set_status(f.filename, "대기중")
-                    _jobs.put((f.filename, text))
+                    _jobs.put((f.filename, text, None))
                 except UnsupportedFormat as exc:
                     _set_status(f.filename, "실패", str(exc))
                 except Exception as exc:  # noqa: BLE001
                     _set_status(f.filename, "실패", f"{type(exc).__name__}: {exc}")
                 finally:
                     dest.unlink(missing_ok=True)  # 원본 CV 는 디스크에 남기지 않는다
+            return self._redirect("/")
+
+        if path == "/candidate/delete":
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            cid = (data.get("id") or [""])[0]
+            if cid:
+                store.delete(cid)
+            return self._redirect("/")
+
+        if path == "/candidates/delete":
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            ids = data.get("ids") or []
+            if ids:
+                store.delete_many(ids)
+            return self._redirect("/")
+
+        if path == "/candidates/purge":
+            store.purge_expired()
+            return self._redirect("/")
+
+        if path == "/candidate/reanalyze":
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            cid = (data.get("id") or [""])[0]
+            text = store.get_text(cid) if cid else ""
+            if not text:
+                return self._redirect(f"/candidate?id={urllib.parse.quote(cid)}")
+            meta = store.meta(cid) or {}
+            # 같은 지원자_ID 로 다시 넣어 덮어쓴다 (행이 늘어나지 않게)
+            _set_status(meta.get("원본_파일명") or cid, "대기중", "재분석")
+            _jobs.put((meta.get("원본_파일명") or cid, text, cid))
+            return self._redirect("/")
+
+        if path == "/status/clear":
+            with _status_lock:
+                _status.clear()
             return self._redirect("/")
 
         if path == "/venues":

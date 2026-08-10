@@ -54,6 +54,10 @@ class Settings:
     # --- 개인정보 보관 기간 (채용 종료 후 N개월) ---
     retention_months: int = int(_env("CVTOOL_RETENTION_MONTHS", "6"))
 
+    # CV 원문 텍스트를 DB 에 보관할지. 기본은 끔(개인정보 최소 수집).
+    # 켜면 재업로드 없이 재분석할 수 있지만 CV 전문이 DB 에 남는다.
+    store_cv_text: bool = _env("CVTOOL_STORE_CV_TEXT", "0").lower() in ("1", "true", "yes")
+
     # --- 시간대 (서버 시계는 UTC, 표시는 항상 KST) ---
     timezone: str = _env("CVTOOL_TZ", "Asia/Seoul")
 
