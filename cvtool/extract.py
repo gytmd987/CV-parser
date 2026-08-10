@@ -14,6 +14,7 @@ CV 는 정해진 양식이 없다. 그래서 본문을 규칙으로 파싱하지
 
 from __future__ import annotations
 
+import json
 import uuid
 from pathlib import Path
 
@@ -117,6 +118,25 @@ def guard_length(cv_text: str, limit: int | None = None) -> tuple[str, str]:
     return cv_text[:cap], 경고
 
 
+def json_directive(schema: dict) -> str:
+    """출력 형식을 프롬프트로도 지시한다.
+
+    guided_json 에만 의존하면 안 된다. 서버가 그 필드를 400 없이 조용히
+    무시하면 모델은 JSON 을 만들 이유가 없어 산문으로 답한다. 실제로
+    모든 섹션이 "응답에 JSON 객체가 없습니다"로 실패했다.
+    """
+    return (
+        "\n\n[출력 형식 — 반드시 지켜라]\n"
+        "아래 JSON 스키마에 맞는 **JSON 객체 하나만** 출력해라.\n"
+        "- 설명·인사말·요약을 앞뒤에 붙이지 마라.\n"
+        "- 코드펜스(```)로 감싸지 마라.\n"
+        '- 모르는 값은 빈 문자열 "" 로 둬라. 항목을 생략하지 마라.\n'
+        "- 첫 글자는 { 이고 마지막 글자는 } 여야 한다.\n\n"
+        "[스키마]\n"
+        f"{json.dumps(schema, ensure_ascii=False, indent=2)}"
+    )
+
+
 def _ask(
     llm: LLMClient, hint: str, schema: dict, cv_text: str, digest: str, name: str
 ) -> dict:
@@ -125,7 +145,7 @@ def _ask(
         본문 = f"--- 이력서에서 정리한 내용 ---\n{digest}\n\n{본문}"
     messages = [
         {"role": "system", "content": _SYSTEM},
-        {"role": "user", "content": f"{hint}\n\n{본문}"},
+        {"role": "user", "content": f"{hint}\n\n{본문}{json_directive(schema)}"},
     ]
     return llm.chat_json(
         messages, schema, temperature=settings.llm_temperature, schema_name=name

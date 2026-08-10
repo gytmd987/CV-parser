@@ -59,7 +59,9 @@ def build_json_payload(
         # 명시하지 않으면 서버 설정에 따라 조용히 잘릴 수 있다.
         "max_tokens": max_tokens or settings.llm_max_tokens,
     }
-    if mode == "guided_json":
+    if mode == "plain":
+        pass  # 구조화 필드 없이 프롬프트 지시에만 의존한다
+    elif mode == "guided_json":
         payload["guided_json"] = schema
     elif mode == "response_format":
         payload["response_format"] = {
@@ -217,7 +219,10 @@ class LLMClient:
         url = f"{self._base}/chat/completions"
         last_err: Exception | None = None
 
-        for mode in ("guided_json", "response_format"):
+        # 서버가 구조화 필드를 400 없이 조용히 무시하는 경우가 있다. 그때는
+        # 모델이 산문으로 답해 JSON 이 아예 안 나온다. 마지막에 구조화 필드를
+        # 빼고 프롬프트 지시만으로 한 번 더 시도한다.
+        for mode in ("guided_json", "response_format", "plain"):
             payload = build_json_payload(
                 messages,
                 schema,
@@ -248,7 +253,7 @@ class LLMClient:
 
         assert last_err is not None
         raise LLMError(
-            f"구조화 출력 실패(두 방식 모두): {last_err}",
+            f"구조화 출력 실패(guided_json/response_format/plain 모두): {last_err}",
             raw=getattr(last_err, "raw", None),
         )
 

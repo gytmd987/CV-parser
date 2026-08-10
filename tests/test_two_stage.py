@@ -211,3 +211,86 @@ def test_guard_length_disabled_with_zero():
 def test_empty_text_raises():
     with pytest.raises(ValueError):
         extract_cv_from_text("   ")
+
+
+# --- 서버가 구조화 필드를 무시하는 경우 --------------------------------------
+def test_prompt_itself_demands_json():
+    """guided_json 에만 의존하면 안 된다.
+
+    서버가 그 필드를 400 없이 조용히 무시하면 모델은 JSON 을 만들 이유가 없어
+    산문으로 답한다. 실제로 모든 섹션이 이것 때문에 실패했다.
+    """
+    from cvtool.extract import json_directive
+    from cvtool.schemas import SECTION_BASIC, SECTION_CAREER, SECTION_EDUCATION, SECTION_RESEARCH
+
+    for schema in (SECTION_BASIC, SECTION_EDUCATION, SECTION_RESEARCH, SECTION_CAREER):
+        d = json_directive(schema)
+        assert "JSON 객체 하나만" in d
+        assert "코드펜스" in d
+        # 스키마 자체가 프롬프트에 들어가야 모델이 항목을 안다
+        for key in schema.get("properties", {}):
+            assert key in d
+
+
+def test_every_section_call_carries_the_directive():
+    calls, client = _recording_client()
+    extract_cv_from_text("이력서", client=client, two_stage=False)
+    for payload in calls:
+        assert "JSON 객체 하나만" in payload["messages"][-1]["content"]
+
+
+def test_extraction_works_when_server_ignores_structured_fields():
+    """구조화 필드를 무시하는 서버에서도 프롬프트 지시만으로 뽑혀야 한다."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        user = payload["messages"][-1]["content"]
+        if "JSON 객체 하나만" not in user:
+            content = "\n네, 지원자의 인적사항은 다음과 같습니다. 이름은 홍길동이며..."
+        else:
+            content = (
+                '\n{"한글_이름": "홍길동", "현재_신분": "포닥"}\n\n위와 같이 정리했습니다.'
+            )
+        return httpx.Response(
+            200, json={"choices": [{"finish_reason": "stop", "message": {"content": content}}]}
+        )
+
+    client = LLMClient(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    rec = extract_cv_from_text("이력서", client=client, two_stage=False)
+    assert rec.한글_이름 == "홍길동"
+    assert rec.현재_신분 == "포닥"
+
+
+def test_plain_mode_sends_no_structured_field():
+    """마지막 시도는 구조화 필드 없이 프롬프트만으로 요청한다."""
+    from cvtool.clients.llm import build_json_payload
+
+    p = build_json_payload([{"role": "user", "content": "x"}], {"properties": {}}, mode="plain")
+    assert "guided_json" not in p
+    assert "response_format" not in p
+
+
+def test_falls_through_to_plain_when_both_structured_modes_fail():
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        if "guided_json" in payload:
+            seen.append("guided_json")
+            return httpx.Response(400, text="unknown field")
+        if "response_format" in payload:
+            seen.append("response_format")
+            return httpx.Response(400, text="not supported")
+        seen.append("plain")
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"finish_reason": "stop", "message": {"content": '{"현재_신분": "박사"}'}}
+                ]
+            },
+        )
+
+    client = LLMClient(client=httpx.Client(transport=httpx.MockTransport(handler)))
+    rec = extract_cv_from_text("이력서", client=client, two_stage=False)
+    assert seen[:3] == ["guided_json", "response_format", "plain"]
+    assert rec.현재_신분 == "박사"
