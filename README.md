@@ -3,103 +3,179 @@
 사내 온프레미스(폐쇄망) 워크스테이션용 CV 분석 도구입니다.
 **기존 인사 문서 RAG 시스템과 완전히 분리**해서 운영합니다.
 
-## 설계 원칙 (요청서 기준)
+CV(PDF/docx/txt) 여러 개를 웹에서 업로드하면 → 로컬 LLM으로 구조화 추출 →
+표로 확인하고 → **엑셀(.xlsx)로 내려받습니다.**
 
-- **모델을 새로 올리지 않는다.** GPU 여유가 ~20GB뿐이라 모델을 또 올리면 인사 RAG 가 OOM 으로
-  죽습니다. 이미 떠 있는 로컬 서비스를 OpenAI 호환 API 로 **호출만** 합니다.
+---
+
+## 빠른 시작
+
+```bash
+git pull                                   # 코드 받기
+
+cp .env.example .env && vi .env            # 비밀번호 2개 설정
+set -a && . ./.env && set +a               # 환경변수 반영
+
+python3 -m pytest -q                       # LLM 없이 되는 검증 (38개)
+python3 -m cvtool.cli health               # vLLM / TEI 연결 확인
+python3 -m cvtool.web.app                  # 웹 실행 -> http://서버IP:8600
+```
+
+`pip install` 없이 동작합니다. 웹·저장소·엑셀은 **표준 라이브러리만** 사용합니다
+(폐쇄망에서 설치 실패 위험을 없애려고 openpyxl·FastAPI를 쓰지 않았습니다).
+추출에만 `httpx`, `pydantic`이 필요하고, PDF/docx는 `pypdf`, `python-docx`가 있을 때만 됩니다.
+
+---
+
+## 설계 원칙
+
+- **모델을 새로 올리지 않습니다.** GPU 여유가 ~20GB뿐이라 모델을 또 올리면 인사 RAG가
+  OOM으로 죽습니다. 이미 떠 있는 서비스를 OpenAI 호환 API로 **호출만** 합니다.
+
   | 서비스 | 주소 | 모델 | 용도 |
   |---|---|---|---|
-  | vLLM | `http://localhost:8000/v1` | `thinkingcap` | 텍스트 생성 / 구조화 추출 |
+  | vLLM | `http://localhost:8000/v1` | `thinkingcap` | 구조화 추출 |
   | TEI 임베딩 | `http://localhost:8081` | KURE-v1 (1024차원) | JD↔CV 유사도 |
-  | TEI 리랭커 | `http://localhost:8082` | bge-reranker-v2-m3 | 후보 순위 정렬 |
-- **저장소 분리.** 기존 Qdrant(6333)·Postgres(5432)는 인사 문서가 들어 있고 컬렉션 단위 권한이
-  없어 붙기만 하면 전문이 노출됩니다. **별도 포트(5433 / 6335)** 로 새로 띄웁니다.
+  | TEI 리랭커 | `http://localhost:8082` | bge-reranker-v2-m3 | 후보 정렬 |
+
+- **저장소 분리.** 기존 Qdrant(6333)·Postgres(5432)는 인사 문서가 들어 있고 컬렉션 단위
+  권한이 없어 붙기만 하면 전문이 노출됩니다. 지원자 데이터는 별도 sqlite 파일
+  (`~/.cvtool/`)에 격리 저장하며, 기존 저장소에 **전혀 접속하지 않습니다.**
+
 - **개인정보 보호.**
-  - 벡터 DB payload 에는 **식별자만**, 이름·연락처 등 개인정보는 **Postgres 에만** 둡니다
-    (`CVRecord.pii_fields()` 참고).
-  - **보관 기간**을 정하고 지난 건 삭제합니다 (채용 종료 후 N개월, 기본 6). 판정 로직은
-    `cvtool/retention.py` 에 순수 함수로 구현되어 있고 테스트됩니다.
-  - 채용 담당자만 접근 (접근 통제는 서비스 슬라이스에서 추가).
-  - 외부 API 호출 없음(폐쇄망, 전부 로컬).
-- **시간대.** 서버 시계는 UTC 입니다. `datetime.now()` 를 그냥 쓰면 9시간 어긋납니다.
-  항상 `cvtool.timeutil.now_kst()` 등으로 **Asia/Seoul 을 명시**합니다.
+  - 업로드된 CV 원본은 추출 후 **디스크에서 즉시 삭제**됩니다.
+  - 보관 기간(기본 6개월)이 지나면 삭제 대상이 됩니다 (`store.purge_expired()`).
+  - 벡터 DB에 넣을 때는 payload에 **지원자_ID만**, 개인정보는 넣지 않습니다.
+  - CV 파일은 `.gitignore`로 커밋이 차단됩니다.
+  - 외부 API 호출이 없습니다(폐쇄망, 전부 로컬).
 
-## ⚠️ 이 저장소가 만들어진 환경에 대한 정직한 고지
+- **시간대.** 서버 시계는 UTC입니다. 항상 `cvtool.timeutil.now_kst()`로
+  **Asia/Seoul을 명시**합니다.
 
-이 코드는 클라우드 개발 컨테이너에서 작성/테스트되었습니다. 그 환경에는 로컬 LLM/TEI,
-`/opt/data-gov`, docker, GPU 가 **없습니다.** 따라서:
+---
 
-- **실제 로컬 LLM 대상 end-to-end 검증은 아직 못 했습니다.** 서비스가 떠 있는 온프레미스
-  서버에서 `cvtool health` → `cvtool extract` 로 최종 확인해야 합니다.
-- 대신 **LLM 을 목킹한 오프라인 테스트**(`tests/`)로 파이프라인 로직(스키마 강제, guided_json
-  요청, response_format 폴백, 출력 검증, 파서, 타임존/리텐션)은 검증했습니다. (`pytest` 12개 통과)
+## 엑셀 컬럼 (31개)
 
-## 폐쇄망 설치 주의
+| 그룹 | 열 |
+|---|---|
+| 식별·기본 | `지원자_ID` `한글_이름` `영문_이름` `이름_추정여부` `생년월일` `전화번호` `이메일` |
+| 현재 | `현재_신분` `현재_소속` `현재_소속_상세` `현재_지도교수` |
+| 박사 | `박사_학교` `박사_전공` `박사_지도교수` `박사_시작` `박사_졸업` `박사_학위상태` |
+| 석사 | `석사_학교` `석사_전공` `석사_지도교수` `석사_시작` `석사_졸업` |
+| 학사 | `학사_학교` `학사_전공` `학사_시작` `학사_졸업` |
+| 연구 | `1저자_해외논문_제출처` `연구분야_키워드` |
+| 경력 | `경력_요약` |
+| 검토 | `검토_필요` `검토_사유` |
 
-`pip install` 이 실패할 수 있으니, 아래 패키지가 서버에 **이미 있는지 먼저 확인**하세요.
-없으면 알려 주시면 반입 방법을 함께 정하겠습니다.
+- 날짜는 `YYYYMM`(생년월일만 `YYYYMMDD`), 없으면 빈칸.
+- `현재_신분`: 포닥 / 박사 / 석박통합 / 석사 / 학사 / 타사재직 / 기타
+- 전화번호·날짜는 **문자열 셀로 기록**되어 앞자리 0이 사라지거나 날짜로 바뀌지 않습니다.
+- `원본_파일명`·`추출_일시`·`보관_만료일`은 엑셀에서 뺐지만 **DB에는 유지**됩니다
+  (자동 삭제와 역추적에 필요합니다). 웹 화면에서는 파일별 처리 현황으로 확인됩니다.
 
-- 핵심(추출): `httpx`, `pydantic` — 이것만 있으면 CV 구조화 추출이 동작합니다.
-- 선택: `pypdf`(.pdf), `python-docx`(.docx) — 해당 형식을 쓸 때만 필요 (lazy import).
-- 다음 슬라이스: `psycopg`, `qdrant-client`.
+### 석박통합 처리
 
-`.txt` CV 는 아무 의존성 없이 바로 됩니다.
+석박사 통합과정은 **석사 학위를 따로 받지 않으므로** 이렇게 들어갑니다.
 
-## 사용법
+| 열 | 값 |
+|---|---|
+| `현재_신분` | `석박통합` |
+| `박사_*` | 통합과정 정보 (`박사_시작` = **통합과정 입학년월**) |
+| `석사_*` | 전부 빈칸 |
+| `박사_학위상태` | `재학` 또는 `예정` |
+
+`박사_시작`이 통합과정 입학 시점이라 일반 박사보다 기간이 길어 보이는데,
+`현재_신분=석박통합`이 그 표시입니다. 통합과정 중 **석사만 취득하고 나온 경우**에는
+석사 열을 채우고, 그때는 `검토_필요`로 표시해 사람이 확인하게 합니다.
+
+---
+
+## 학회·저널 등급 관리
+
+`1저자_해외논문_제출처` 열은 **해외 학회/저널만** 담습니다. 판별은 웹에서 관리합니다.
+
+1. CV에서 발견된 제출처 중 목록에 없는 것은 **자동으로 `미분류`로 등록**됩니다.
+2. `학회·저널 관리` 화면에서 등급(최우수/우수/일반/제외), 유형(학회/저널), 국내/해외를 지정합니다.
+3. **담당자가 정한 값이 LLM 추측을 덮어씁니다.** 사람 판별이 항상 우선입니다.
+4. 미분류가 남아 있으면 해당 지원자는 `검토_필요=Y`로 표시됩니다.
+
+표기 흔들림은 정규화로 묶습니다 — `NeurIPS`, `neurips`, `Proc. of NeurIPS 2023`은
+같은 항목입니다. 약어가 달라 안 묶이는 경우(`NIPS` ↔ `Neural Information...`)는
+`merge()`로 합칠 수 있습니다.
+
+---
+
+## 문제가 생기면
+
+### 추출이 실패할 때
+
+**LLM 응답 원본을 그대로 보여주는 진단 스크립트**를 쓰세요. 아무것도 자르지 않습니다.
 
 ```bash
-# 저장소(별도 포트) 기동 — 비밀번호는 .env 로
-cp .env.example .env && $EDITOR .env      # CVTOOL_PG_PASSWORD 설정
-docker compose up -d
-
-# 로컬 서비스 연결 확인
-cvtool health
-
-# CV 한 장 구조화 추출 (첫 슬라이스의 핵심)
-cvtool extract 이력서.pdf
-cvtool extract 이력서.docx
-cvtool extract --text "홍길동 ... 이력서 전문 ..."
+python3 tools/diagnose_llm.py tests/sample_cv.txt
 ```
 
-`extract` 는 `guided_json` 으로 JSON 스키마(`cvtool/schemas.py:CV_JSON_SCHEMA`)를 강제하고,
-서버가 거부하면 OpenAI 표준 `response_format` 으로 자동 폴백합니다.
+`finish_reason`, `reasoning_content` 유무, `content` 원본을 전부 출력하고
+guided_json / response_format / 스키마 없음 세 방식을 비교합니다.
 
-## 개발/테스트
+| 증상 | 원인 |
+|---|---|
+| `출력이 토큰 한도에 걸려 잘렸습니다` | `CVTOOL_LLM_MAX_TOKENS` 를 늘리세요 |
+| `JSON 파싱 실패` | 진단 스크립트로 원본 확인 — 펜스/추론 태그는 자동 제거되지만 예외가 있을 수 있습니다 |
+| 처리 현황에 `텍스트를 추출하지 못했습니다` | 스캔 PDF입니다. OCR이 필요합니다 |
+| `ImportError: pypdf` | PDF 라이브러리 미설치 |
 
-```bash
-pip install -e ".[dev]"   # 폐쇄망이면 httpx/pydantic/pytest 사전 확인
-pytest -q
-```
+### 알려진 주의점
+
+- **이름 추정은 신뢰하지 마세요.** 로마자에서 한글 복원은 원리적으로 불가능합니다
+  (`Minjun Kim` → 김민준? 김민중?). 추정한 경우 `이름_추정여부`에 표시되고
+  `검토_필요=Y`가 됩니다. **면접 안내 전에 반드시 원문과 대조하세요.**
+- 성별·나이·사진·가족사항은 일부러 넣지 않았습니다. 채용절차법상 직무와 무관한
+  개인정보 수집이 제한됩니다. 필요하면 인사/법무 확인 후 추가하세요.
+
+---
 
 ## 구조
 
 ```
 cvtool/
-  config.py            설정 (환경변수 override, 기본값=요청서 서버 기준)
+  config.py            설정 (환경변수 override)
   timeutil.py          KST 명시 시간 유틸
-  schemas.py           CV_JSON_SCHEMA (guided_json) + CVRecord(pydantic)
-  extract.py           텍스트/파일 -> 구조화 추출 (핵심)
-  retention.py         보관기간 만료 판정 (순수 로직, 테스트됨)
+  schemas.py           엑셀 컬럼 정의 + 섹션별 JSON 스키마 + CVRecord
+  extract.py           섹션 4분할 추출 (기본/학력/연구/경력)
+  venues.py            학회·저널 레지스트리 (정규화·자동등록·등급)
+  store.py             지원자 저장 (sqlite) + 보관기간 삭제
+  export.py            xlsx / TSV 출력 (표준 라이브러리)
+  retention.py         보관기간 만료 판정
   cli.py               `cvtool extract` / `cvtool health`
   ingestion/parsers.py .txt/.pdf/.docx 텍스트 추출
-  clients/
-    llm.py             vLLM: guided_json + response_format 폴백
-    embedding.py       TEI 임베딩 (32개씩 배치)   ← 매칭 슬라이스에서 사용
-    reranker.py        TEI 리랭커                  ← 매칭 슬라이스에서 사용
-tests/                 오프라인(LLM 목킹) 테스트
-docker-compose.yml     별도 Postgres(5433)/Qdrant(6335)
+  clients/llm.py       vLLM 호출 + 응답 정제 (펜스·추론태그·잘림 처리)
+  clients/embedding.py TEI 임베딩 (32개씩 배치)   ← 매칭 슬라이스에서 사용
+  clients/reranker.py  TEI 리랭커                  ← 매칭 슬라이스에서 사용
+  web/app.py           웹 앱 (로그인·다중 업로드·표·엑셀·학회관리)
+  web/multipart.py     multipart 파서
+tools/diagnose_llm.py  LLM 응답 원본 진단
+tests/                 오프라인(LLM 목킹) 테스트 38개
 ```
 
-## 로드맵 (작게 쌓기)
+## 로드맵
 
-- [x] **슬라이스 1 — CV 한 장 구조화 추출** (PDF/docx/txt → guided_json → 검증)
-- [ ] 슬라이스 2 — Postgres 저장(개인정보) + Qdrant 인덱싱(식별자 payload)
+- [x] 슬라이스 1 — CV 구조화 추출
+- [x] 슬라이스 2 — 엑셀 컬럼 확정, 섹션 분할 추출, 학회·저널 관리, 웹 UI, 엑셀 출력
 - [ ] 슬라이스 3 — JD 입력 → 임베딩 유사도 + 리랭커로 적합도 정렬
-- [ ] 슬라이스 4 — 강점/약점 요약, 면접 질문 생성, 중복 지원자 탐지
-- [ ] 슬라이스 5 — 접근 통제 + 리텐션 자동 삭제 스케줄
+- [ ] 슬라이스 4 — 중복 지원자 탐지, 강점/약점 요약, 면접 질문 생성
+- [ ] 슬라이스 5 — 보관기간 자동 삭제 스케줄, 사용자별 계정
+
+## 검증 상태
+
+이 코드는 로컬 LLM이 **없는** 개발 환경에서 작성됐습니다.
+
+- ✅ 오프라인 테스트 38개 통과 (응답 정제, 섹션 분할, 학회 레지스트리, xlsx, 보관기간)
+- ✅ 웹 앱 실제 구동 검증 — 로그인, 파일 2개 동시 업로드, 2줄 결과, xlsx 다운로드
+- ❌ **실제 LLM 대상 추출 정확도는 미검증** — 서버에서 확인이 필요합니다
 
 ## 참고 (수정 금지)
 
-같은 서버 `/opt/data-gov` 인사 RAG 코드를 참고만 하세요. 특히
+같은 서버 `/opt/data-gov` 인사 RAG 코드를 참고만 하세요.
 `app/clients/llm.py`(구조화 출력), `app/clients/embedding.py`(배치 32),
 `app/ingestion/parsers/`(PDF/docx/이미지 OCR).

@@ -21,6 +21,8 @@ class Settings:
     llm_model: str = _env("CVTOOL_LLM_MODEL", "thinkingcap")
     llm_api_key: str = _env("CVTOOL_LLM_API_KEY", "EMPTY")  # 인증 없음
     llm_timeout: float = float(_env("CVTOOL_LLM_TIMEOUT", "180"))
+    # 명시하지 않으면 서버 설정에 따라 출력이 조용히 잘린다.
+    llm_max_tokens: int = int(_env("CVTOOL_LLM_MAX_TOKENS", "4096"))
 
     # --- TEI 임베딩 / 리랭커 (다음 슬라이스에서 사용) ---
     embed_url: str = _env("CVTOOL_EMBED_URL", "http://localhost:8081")
