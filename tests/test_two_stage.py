@@ -182,12 +182,23 @@ def test_guard_length_truncates_and_warns():
     assert "4,000자" in warn
 
 
-def test_long_cv_is_flagged_for_review():
-    """조용히 자르면 뒤쪽 논문 목록이 통째로 사라져도 아무도 모른다."""
+def test_long_cv_is_not_truncated_by_default():
+    """기본은 제한 없음. 컨텍스트가 큰 모델이라 자를 이유가 없다."""
+    from cvtool.config import settings
+
+    assert settings.max_input_chars == 0, "기본값이 무제한이어야 한다"
     calls, client = _recording_client()
-    rec = extract_cv_from_text("가" * 100000, client=client, two_stage=False)
-    assert rec.검토_필요 == "Y"
-    assert "잘랐습니다" in rec.검토_사유
+    long_cv = "가" * 100000
+    extract_cv_from_text(long_cv, client=client, two_stage=False)
+    sent = calls[0]["messages"][-1]["content"]
+    assert long_cv in sent, "CV 본문이 잘린 채로 전달됐다"
+
+
+def test_truncation_still_flags_when_limit_configured():
+    """컨텍스트가 작은 모델로 바꿔 제한을 걸면, 잘린 사실이 드러나야 한다."""
+    text, warn = guard_length("가" * 5000, limit=1000)
+    assert len(text) == 1000
+    assert "잘랐습니다" in warn
 
 
 def test_guard_length_disabled_with_zero():

@@ -26,16 +26,20 @@ class Settings:
     llm_api_key: str = _env("CVTOOL_LLM_API_KEY", "EMPTY")  # 인증 없음
     llm_timeout: float = float(_env("CVTOOL_LLM_TIMEOUT", "180"))
     # 명시하지 않으면 서버 설정에 따라 출력이 조용히 잘린다.
-    llm_max_tokens: int = int(_env("CVTOOL_LLM_MAX_TOKENS", "4096"))
+    llm_max_tokens: int = int(_env("CVTOOL_LLM_MAX_TOKENS", "8192"))
 
     # 2단계 추출: 먼저 자유롭게 읽고 정리(추론 허용) -> 그 결과를 JSON 으로 강제.
     # guided_json 은 첫 토큰부터 문법을 강제해서 추론 모델이 생각할 자리를 없앤다.
     # 끄면 기존처럼 곧바로 구조화 추출한다(비교용).
     two_stage: bool = _env("CVTOOL_TWO_STAGE", "1").lower() not in ("0", "false", "no", "")
 
-    # LLM 에 한 번에 보낼 CV 본문 최대 길이(문자). 넘으면 잘리므로 경고를 남긴다.
-    # 서버의 --max-model-len 에 맞춰 조정하세요. `cvtool health` 가 값을 알려준다.
-    max_input_chars: int = int(_env("CVTOOL_MAX_INPUT_CHARS", "24000"))
+    # LLM 에 보낼 CV 본문 최대 길이(문자). 0 이면 제한 없음(기본).
+    # 이 서버는 컨텍스트가 커서 자를 필요가 없다. 컨텍스트가 작은 모델로
+    # 바꿀 때만 값을 넣으세요.
+    max_input_chars: int = int(_env("CVTOOL_MAX_INPUT_CHARS", "0"))
+
+    # 추론 모델은 temperature 0 에서 반복에 빠지기도 한다. 답변이 이상하면 조정.
+    llm_temperature: float = float(_env("CVTOOL_LLM_TEMPERATURE", "0.0"))
 
     # --- TEI 임베딩 / 리랭커 (다음 슬라이스에서 사용) ---
     embed_url: str = _env("CVTOOL_EMBED_URL", "http://localhost:8081")

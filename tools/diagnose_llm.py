@@ -100,10 +100,59 @@ def main() -> int:
     )
     probe("3. 스키마 없이 (모델 기본 습성 확인)", {**base, "max_tokens": 2048})
 
+    probe_multimodal()
+
     print("=" * 70)
     print("이 출력 전체를 그대로 복사해서 알려주시면 원인을 특정하겠습니다.")
     print("=" * 70)
     return 0
+
+
+def probe_multimodal() -> None:
+    """이 엔드포인트가 파일/이미지를 직접 받는지 확인한다.
+
+    "PDF 를 그냥 넣어도 읽는다"가 이 API 에서도 되는지 확인하는 용도.
+    채팅 UI(Open WebUI 등)는 뒤에서 텍스트를 뽑아 넣어주는 경우가 많아서,
+    UI 에서 됐다고 API 에서도 되는 것은 아니다.
+    """
+    url = f"{settings.llm_base_url.rstrip('/')}/chat/completions"
+    # 1x1 PNG
+    png = (
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+        "AAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+    )
+    cases = {
+        "image_url (비전 모델 표준)": [
+            {"type": "text", "text": "이 이미지에 무엇이 있나?"},
+            {"type": "image_url", "image_url": {"url": png}},
+        ],
+        "file (OpenAI 문서 입력)": [
+            {"type": "text", "text": "이 파일을 읽어라"},
+            {"type": "file", "file": {"filename": "a.pdf", "file_data": "data:application/pdf;base64,JVBERi0="}},
+        ],
+    }
+    print("=" * 70)
+    print("[4. 파일/이미지 직접 입력 지원 여부]")
+    print("=" * 70)
+    for label, content in cases.items():
+        payload = {
+            "model": settings.llm_model,
+            "max_tokens": 32,
+            "messages": [{"role": "user", "content": content}],
+        }
+        try:
+            r = httpx.post(url, json=payload, timeout=60)
+        except httpx.HTTPError as exc:
+            print(f"  {label:28s} -> 요청 실패: {exc}")
+            continue
+        if r.status_code < 400:
+            print(f"  {label:28s} -> ✅ 지원함 (HTTP {r.status_code})")
+        else:
+            print(f"  {label:28s} -> ❌ 거부 (HTTP {r.status_code}) {r.text[:160]}")
+    print()
+    print("  둘 다 ❌ 이면 이 API 는 텍스트만 받습니다. 그때는 지금처럼")
+    print("  파일에서 텍스트를 뽑아 보내는 방식이 유일한 선택지입니다.")
+    print()
 
 
 if __name__ == "__main__":

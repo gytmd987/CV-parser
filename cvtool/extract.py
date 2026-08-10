@@ -18,9 +18,12 @@ import uuid
 from pathlib import Path
 
 from .clients.llm import LLMClient, LLMError
+from . import normalize as N
 from .config import settings
 from .ingestion.parsers import extract_text
 from .schemas import (
+    학위상태_ENUM,
+    현재_신분_ENUM,
     SECTION_BASIC,
     SECTION_CAREER,
     SECTION_EDUCATION,
@@ -124,7 +127,9 @@ def _ask(
         {"role": "system", "content": _SYSTEM},
         {"role": "user", "content": f"{hint}\n\n{본문}"},
     ]
-    return llm.chat_json(messages, schema, temperature=0.0, schema_name=name)
+    return llm.chat_json(
+        messages, schema, temperature=settings.llm_temperature, schema_name=name
+    )
 
 
 def _read_pass(llm: LLMClient, cv_text: str) -> str:
@@ -133,7 +138,7 @@ def _read_pass(llm: LLMClient, cv_text: str) -> str:
         {"role": "system", "content": _SYSTEM},
         {"role": "user", "content": _READ_PROMPT.format(cv_text=cv_text)},
     ]
-    return llm.chat_text(messages, temperature=0.0)
+    return llm.chat_text(messages, temperature=settings.llm_temperature)
 
 
 def extract_cv_from_text(
@@ -232,36 +237,68 @@ def _assemble(
     if edu.get("석박통합_여부") and edu.get("석사_학교"):
         사유.append("석박통합인데 석사 학력이 있음 (중도 석사 취득 여부 확인)")
 
+    # LLM 이 형식을 어긴 값을 약속한 형태로 맞춘다. 고쳐야 했던 항목은 기록해
+    # 사람이 확인할 수 있게 한다 (모델이 형식을 자주 어기면 프롬프트 문제다).
+    def date6(key: str, raw: str) -> str:
+        fixed = N.yyyymm(raw)
+        if raw and not fixed:
+            형식오류.append(f"{key}={raw!r}")
+        elif raw and fixed != str(raw).strip():
+            형식오류.append(f"{key}: {raw!r}->{fixed}")
+        return fixed
+
+    형식오류: list[str] = []
+    생년월일 = N.yyyymmdd(basic.get("생년월일", ""))
+    if basic.get("생년월일") and not 생년월일:
+        형식오류.append(f"생년월일={basic.get('생년월일')!r}")
+
+    신분 = N.enum(basic.get("현재_신분", ""), 현재_신분_ENUM, "불명")
+    학위상태 = N.enum(edu.get("박사_학위상태", ""), 학위상태_ENUM, "")
+
+    # 날짜는 CVRecord 를 만들기 전에 전부 계산한다.
+    # 생성자 인자 안에서 계산하면 아래 형식오류 검사가 먼저 돌아 놓친다.
+    날짜 = {
+        key: date6(key, edu.get(key, ""))
+        for key in (
+            "박사_시작", "박사_졸업", "석사_시작", "석사_졸업", "학사_시작", "학사_졸업",
+        )
+    }
+
+    if 형식오류:
+        사유.append("형식 보정: " + ", ".join(형식오류))
+    if 신분 == "불명" and basic.get("현재_신분") not in ("불명", None, ""):
+        사유.append(f"현재_신분 값이 목록 밖: {basic.get('현재_신분')!r}")
+
     return CVRecord(
         지원자_ID=지원자_ID,
-        한글_이름=basic.get("한글_이름", ""),
-        영문_이름=basic.get("영문_이름", ""),
+        한글_이름=N.text(basic.get("한글_이름", "")),
+        영문_이름=N.text(basic.get("영문_이름", "")),
         이름_추정여부="/".join(추정),
-        생년월일=basic.get("생년월일", ""),
-        전화번호=basic.get("전화번호", ""),
-        이메일=basic.get("이메일", ""),
-        현재_신분=basic.get("현재_신분", ""),
-        현재_소속=basic.get("현재_소속", ""),
-        현재_소속_상세=basic.get("현재_소속_상세", ""),
-        현재_지도교수=basic.get("현재_지도교수", ""),
-        박사_학교=edu.get("박사_학교", ""),
-        박사_전공=edu.get("박사_전공", ""),
-        박사_지도교수=edu.get("박사_지도교수", ""),
-        박사_시작=edu.get("박사_시작", ""),
-        박사_졸업=edu.get("박사_졸업", ""),
-        박사_학위상태=edu.get("박사_학위상태", ""),
-        석사_학교=edu.get("석사_학교", ""),
-        석사_전공=edu.get("석사_전공", ""),
-        석사_지도교수=edu.get("석사_지도교수", ""),
-        석사_시작=edu.get("석사_시작", ""),
-        석사_졸업=edu.get("석사_졸업", ""),
-        학사_학교=edu.get("학사_학교", ""),
-        학사_전공=edu.get("학사_전공", ""),
-        학사_시작=edu.get("학사_시작", ""),
-        학사_졸업=edu.get("학사_졸업", ""),
+        생년월일=생년월일,
+        전화번호=N.phone(basic.get("전화번호", "")),
+        이메일=N.email(basic.get("이메일", "")),
+        현재_신분=신분,
+        현재_소속=N.text(basic.get("현재_소속", "")),
+        현재_소속_상세=N.text(basic.get("현재_소속_상세", "")),
+        현재_지도교수=N.text(basic.get("현재_지도교수", "")),
+        박사_학교=N.text(edu.get("박사_학교", "")),
+        박사_전공=N.text(edu.get("박사_전공", "")),
+        박사_지도교수=N.text(edu.get("박사_지도교수", "")),
+        박사_시작=날짜["박사_시작"],
+        박사_졸업=날짜["박사_졸업"],
+        박사_학위상태=학위상태,
+        석사_학교=N.text(edu.get("석사_학교", "")),
+        석사_전공=N.text(edu.get("석사_전공", "")),
+        석사_지도교수=N.text(edu.get("석사_지도교수", "")),
+        석사_시작=날짜["석사_시작"],
+        석사_졸업=날짜["석사_졸업"],
+        학사_학교=N.text(edu.get("학사_학교", "")),
+        학사_전공=N.text(edu.get("학사_전공", "")),
+        학사_시작=날짜["학사_시작"],
+        학사_졸업=날짜["학사_졸업"],
         논문=논문,
         연구분야_키워드=", ".join(키워드) if isinstance(키워드, list) else str(키워드),
-        경력_요약=경력_요약,
+        경력_요약=N.text(경력_요약),
         검토_필요="Y" if 사유 else "",
         검토_사유=" / ".join(사유),
         원본_파일명=원본_파일명,
