@@ -168,3 +168,84 @@ def test_migration_adds_column_to_old_db(tmp_path):
 
 def test_meta_returns_none_for_missing(store):
     assert store.meta("없음") is None
+
+
+# --- 원본 파일 보관 ----------------------------------------------------------
+def test_store_file_names_by_id_not_by_applicant_name(store):
+    """파일명에 지원자 이름을 쓰면 파일명 자체가 개인정보가 된다."""
+    saved = store.store_file("CV-1", "이력서_홍길동.pdf", b"%PDF-1.4 fake")
+    assert saved == "CV-1.pdf"
+    assert "홍길동" not in saved
+
+
+def test_stored_file_is_owner_only(store):
+    from cvtool.fsutil import is_world_readable
+
+    store.store_file("CV-1", "a.pdf", b"data")
+    assert not is_world_readable(store.files_dir / "CV-1.pdf")
+
+
+def test_store_file_rejects_unknown_suffix(store):
+    """알 수 없는 확장자는 붙이지 않는다 (실행파일 등 방지)."""
+    assert store.store_file("CV-1", "evil.exe", b"MZ") == "CV-1"
+
+
+def test_file_path_roundtrip(store):
+    saved = store.store_file("CV-1", "a.pdf", b"content")
+    store.save(_rec("CV-1"), 저장_파일명=saved)
+    assert store.file_path("CV-1").read_bytes() == b"content"
+
+
+def test_file_path_none_when_not_stored(store):
+    store.save(_rec("CV-1"))
+    assert store.file_path("CV-1") is None
+
+
+def test_delete_removes_original_file(store):
+    """DB 행만 지우고 파일이 남으면 개인정보가 그대로 남는다."""
+    saved = store.store_file("CV-1", "a.pdf", b"x")
+    store.save(_rec("CV-1"), 저장_파일명=saved)
+    path = store.files_dir / saved
+    assert path.exists()
+
+    store.delete("CV-1")
+    assert not path.exists()
+
+
+def test_delete_many_removes_files(store):
+    for cid in ("CV-1", "CV-2"):
+        store.save(_rec(cid), 저장_파일명=store.store_file(cid, "a.pdf", b"x"))
+    store.delete_many(["CV-1", "CV-2"])
+    assert list(store.files_dir.iterdir()) == []
+
+
+def test_delete_all_removes_files(store):
+    store.save(_rec("CV-1"), 저장_파일명=store.store_file("CV-1", "a.pdf", b"x"))
+    store.delete_all()
+    assert list(store.files_dir.iterdir()) == []
+
+
+def test_purge_expired_removes_files(store):
+    """보관기간이 지나면 원본까지 사라져야 한다."""
+    store.save(_rec("CV-1"), 저장_파일명=store.store_file("CV-1", "a.pdf", b"x"))
+    store._conn.execute("UPDATE candidates SET 보관_만료일='2000-01-01'")
+    store._conn.commit()
+    store.purge_expired()
+    assert list(store.files_dir.iterdir()) == []
+
+
+def test_orphan_files_detected(store):
+    """DB 에 행이 없는 원본은 고아로 잡혀야 한다."""
+    store.store_file("CV-GHOST", "a.pdf", b"x")  # save 하지 않음
+    store.save(_rec("CV-OK"), 저장_파일명=store.store_file("CV-OK", "a.pdf", b"y"))
+    orphans = [f.name for f in store.orphan_files()]
+    assert orphans == ["CV-GHOST.pdf"]
+
+
+def test_save_keeps_existing_file_on_reanalyze(store):
+    """재분석 때 저장_파일명을 넘기지 않아도 원본 연결이 끊기면 안 된다."""
+    saved = store.store_file("CV-1", "a.pdf", b"x")
+    store.save(_rec("CV-1", 한글_이름="1차"), 저장_파일명=saved)
+    store.save(_rec("CV-1", 한글_이름="재분석"))  # 저장_파일명 생략
+    assert store.file_path("CV-1") is not None
+    assert store.get("CV-1").한글_이름 == "재분석"

@@ -17,6 +17,7 @@ import html
 import os
 import queue
 import secrets
+import uuid
 import threading
 import traceback
 import urllib.parse
@@ -30,7 +31,7 @@ from ..fsutil import is_world_readable, mode_of, safe_filename, secure_dir, secu
 from ..extract import extract_cv_from_text
 from ..ingestion.parsers import UnsupportedFormat, extract_text
 from ..schemas import COLUMNS
-from ..store import CandidateStore
+from ..store import SUPPORTED_SUFFIXES, CandidateStore
 from ..timeutil import now_kst
 from ..venues import DEFAULT_TIERS, VenueRegistry, apply_registry
 from .multipart import parse_multipart
@@ -40,7 +41,14 @@ WEB_PASSWORD = os.environ.get("CVTOOL_WEB_PASSWORD", "")
 HOST = os.environ.get("CVTOOL_WEB_HOST", "0.0.0.0")
 PORT = int(os.environ.get("CVTOOL_WEB_PORT", "8600"))
 
-store = CandidateStore(DATA_DIR / "candidates.db")
+CONTENT_TYPES = {
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".txt": "text/plain; charset=utf-8",
+    ".md": "text/plain; charset=utf-8",
+}
+
+store = CandidateStore(DATA_DIR / "candidates.db", DATA_DIR / "files")
 registry = VenueRegistry(DATA_DIR / "venues.db")
 
 _sessions: set[str] = set()
@@ -59,12 +67,19 @@ def _set_status(name: str, state: str, message: str = "") -> None:
 
 def _worker() -> None:
     while True:
-        filename, text, 지원자_ID = _jobs.get()
+        filename, 지원자_ID, 저장_파일명 = _jobs.get()
         try:
             _set_status(filename, "처리중")
+            path = store.files_dir / 저장_파일명
+            # 보관된 원본에서 매번 새로 뽑는다. 그래야 PDF 파서를 개선하면
+            # 재분석만으로 반영된다 (텍스트를 캐시하면 옛 추출에 갇힌다).
+            text = extract_text(path)
+            if not text.strip():
+                _set_status(filename, "실패", "텍스트를 추출하지 못했습니다(스캔 PDF?)")
+                continue
             rec = extract_cv_from_text(text, 원본_파일명=filename, 지원자_ID=지원자_ID)
             apply_registry(rec, registry)
-            store.save(rec, 원문_텍스트=text)
+            store.save(rec, 원문_텍스트=text, 저장_파일명=저장_파일명)
             state = "검토필요" if rec.검토_필요 == "Y" else "완료"
             _set_status(filename, state, rec.검토_사유)
         except Exception as exc:  # noqa: BLE001 - 워커가 죽으면 안 된다
@@ -280,17 +295,24 @@ def _candidate_page(지원자_ID: str) -> bytes:
             ("원본 파일명", meta.get("원본_파일명") or "-"),
             ("등록 일시", meta.get("등록일시") or "-"),
             ("보관 만료일", meta.get("보관_만료일") or "-"),
+            ("원본 파일 보관", "예" if meta.get("원본보유") else "아니오 (삭제됨)"),
             ("원문 텍스트 보관", "예" if meta.get("원문보유") else "아니오"),
         )
     )
 
+    원본있음 = meta.get("원본보유")
+    원본버튼 = (
+        f"<a class='btn' href='/candidate/file?id={urllib.parse.quote(지원자_ID)}'>"
+        f"원본 다운로드 ({html.escape(meta.get('원본_파일명') or '파일')})</a> "
+        if 원본있음
+        else ""
+    )
     재분석 = (
         "<form method='post' action='/candidate/reanalyze' style='display:inline'>"
         f"<input type='hidden' name='id' value='{html.escape(지원자_ID)}'>"
         "<button type='submit'>다시 분석</button></form> "
-        if meta.get("원문보유")
-        else "<span class='muted'>원문을 보관하지 않아 다시 분석하려면 재업로드해야 합니다. "
-        "(CVTOOL_STORE_CV_TEXT=1 로 켤 수 있습니다)</span><br><br>"
+        if 원본있음
+        else "<span class='muted'>보관된 원본이 없어 다시 분석하려면 재업로드해야 합니다.</span><br><br>"
     )
 
     return _page(
@@ -298,7 +320,7 @@ def _candidate_page(지원자_ID: str) -> bytes:
         f"""<div class='card'>
           <h2>{html.escape(rec.한글_이름 or '(이름 미상)')}
               <span class='muted'>{html.escape(rec.지원자_ID)}</span></h2>
-          <p>{재분석}
+          <p>{원본버튼}{재분석}
              <form method='post' action='/candidate/delete' style='display:inline'
                    onsubmit="return confirm('이 지원자를 삭제합니다. 되돌릴 수 없습니다.')">
                <input type='hidden' name='id' value='{html.escape(지원자_ID)}'>
@@ -429,6 +451,22 @@ class Handler(BaseHTTPRequestHandler):
             params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             cid = (params.get("id") or [""])[0]
             return self._send(_candidate_page(cid))
+        if path == "/candidate/file":
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            cid = (params.get("id") or [""])[0]
+            fpath = store.file_path(cid) if cid else None
+            if fpath is None:
+                return self._send(
+                    _page("없음", "<div class='card'>보관된 원본이 없습니다.</div>"), code=404
+                )
+            meta = store.meta(cid) or {}
+            download_name = meta.get("원본_파일명") or fpath.name
+            ctype = CONTENT_TYPES.get(fpath.suffix.lower(), "application/octet-stream")
+            quoted = urllib.parse.quote(download_name)
+            return self._send(
+                fpath.read_bytes(), ctype,
+                extra={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"},
+            )
         if path == "/venues":
             return self._send(_venues_page())
         if path == "/export.xlsx":
@@ -481,26 +519,20 @@ class Handler(BaseHTTPRequestHandler):
             form = parse_multipart(self._read_body(), self.headers.get("Content-Type", ""))
             if not form.files:
                 return self._redirect("/")
-            tmp = secure_dir(DATA_DIR / "incoming")
             for f in form.files:
-                # 경로 조작 방지: 디렉터리 성분을 버리고 파일명만 쓴다
                 safe_name = safe_filename(f.filename)
-                dest = tmp / safe_name
+                suffix = Path(safe_name).suffix.lower()
+                if suffix not in SUPPORTED_SUFFIXES:
+                    _set_status(safe_name, "실패",
+                                f"지원하지 않는 형식: {suffix or '(확장자 없음)'}")
+                    continue
                 try:
-                    dest.write_bytes(f.content)
-                    secure_file(dest)  # 짧게 존재하는 동안에도 다른 계정이 못 읽게
-                    text = extract_text(dest)
-                    if not text.strip():
-                        _set_status(safe_name, "실패", "텍스트를 추출하지 못했습니다(스캔 PDF?)")
-                        continue
+                    cid = f"CV-{uuid.uuid4().hex[:8].upper()}"
+                    저장명 = store.store_file(cid, safe_name, f.content)
                     _set_status(safe_name, "대기중")
-                    _jobs.put((safe_name, text, None))
-                except UnsupportedFormat as exc:
-                    _set_status(safe_name, "실패", str(exc))
+                    _jobs.put((safe_name, cid, 저장명))
                 except Exception as exc:  # noqa: BLE001
                     _set_status(safe_name, "실패", f"{type(exc).__name__}: {exc}")
-                finally:
-                    dest.unlink(missing_ok=True)  # 원본 CV 는 디스크에 남기지 않는다
             return self._redirect("/")
 
         if path == "/candidate/delete":
@@ -524,13 +556,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/candidate/reanalyze":
             data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
             cid = (data.get("id") or [""])[0]
-            text = store.get_text(cid) if cid else ""
-            if not text:
+            meta = store.meta(cid) if cid else None
+            if not meta or not meta.get("저장_파일명"):
                 return self._redirect(f"/candidate?id={urllib.parse.quote(cid)}")
-            meta = store.meta(cid) or {}
-            # 같은 지원자_ID 로 다시 넣어 덮어쓴다 (행이 늘어나지 않게)
-            _set_status(meta.get("원본_파일명") or cid, "대기중", "재분석")
-            _jobs.put((meta.get("원본_파일명") or cid, text, cid))
+            name = meta.get("원본_파일명") or cid
+            _set_status(name, "대기중", "재분석")
+            _jobs.put((name, cid, meta["저장_파일명"]))
             return self._redirect("/")
 
         if path == "/status/clear":
@@ -566,13 +597,23 @@ def _startup_cleanup() -> list[str]:
         for suffix in ("", "-wal", "-shm"):
             secure_file(DATA_DIR / (name + suffix))
 
+    secure_dir(store.files_dir)
+    for f in store.files_dir.iterdir():
+        if f.is_file():
+            secure_file(f)
+
     leftovers = []
+    # 예전 버전이 쓰던 임시 폴더에 원본이 남아 있으면 지운다
     incoming = DATA_DIR / "incoming"
     if incoming.is_dir():
         for f in incoming.iterdir():
             if f.is_file():
                 leftovers.append(f.name)
                 f.unlink(missing_ok=True)
+    # DB 에 행이 없는 원본(추출 실패·크래시)도 개인정보이므로 지운다
+    for f in store.orphan_files():
+        leftovers.append(f.name)
+        f.unlink(missing_ok=True)
     return leftovers
 
 
