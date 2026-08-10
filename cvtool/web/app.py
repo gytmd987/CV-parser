@@ -24,6 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from ..config import settings
+from ..dotenv import LOADED_FROM, candidate_paths
 from ..export import records_to_tsv, records_to_xlsx
 from ..extract import extract_cv_from_text
 from ..ingestion.parsers import UnsupportedFormat, extract_text
@@ -355,8 +356,15 @@ class Handler(BaseHTTPRequestHandler):
             data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
             pw = (data.get("password") or [""])[0]
             if not WEB_PASSWORD:
-                return self._send(_login_page("서버에 CVTOOL_WEB_PASSWORD 가 설정되지 않았습니다."))
-            if secrets.compare_digest(pw, WEB_PASSWORD):
+                where = f".env 를 {LOADED_FROM} 에서 읽었지만" if LOADED_FROM else ".env 를 찾지 못했고"
+                return self._send(
+                    _login_page(
+                        f"CVTOOL_WEB_PASSWORD 가 비어 있습니다. {where} 그 안에 "
+                        "CVTOOL_WEB_PASSWORD 값이 없습니다. 서버 콘솔 메시지를 확인하세요."
+                    )
+                )
+            # compare_digest 는 비ASCII str 을 거부한다. 한글 비밀번호도 되도록 바이트로 비교.
+            if secrets.compare_digest(pw.encode("utf-8"), WEB_PASSWORD.encode("utf-8")):
                 token = secrets.token_urlsafe(32)
                 _sessions.add(token)
                 return self._redirect(
@@ -409,9 +417,22 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
+    if LOADED_FROM:
+        print(f".env 읽음        : {LOADED_FROM}")
+    else:
+        print("⚠️  .env 파일을 찾지 못했습니다. 아래 위치를 확인했습니다:")
+        for p in candidate_paths():
+            print(f"      - {p}")
+
     if not WEB_PASSWORD:
-        print("⚠️  CVTOOL_WEB_PASSWORD 가 설정되지 않았습니다. 로그인할 수 없습니다.")
-        print("    예: export CVTOOL_WEB_PASSWORD='사내에서정한비밀번호'")
+        print("⚠️  CVTOOL_WEB_PASSWORD 가 비어 있어 로그인할 수 없습니다.")
+        if LOADED_FROM:
+            print(f"    {LOADED_FROM} 안에 아래 줄이 있는지 확인하세요 (앞의 # 제거):")
+        print("      CVTOOL_WEB_PASSWORD=원하는비밀번호")
+        print("    또는: export CVTOOL_WEB_PASSWORD='원하는비밀번호'")
+    else:
+        print(f"로그인 비밀번호  : 설정됨 ({len(WEB_PASSWORD)}자)")
+
     print(f"데이터 저장 위치 : {DATA_DIR}")
     print(f"지원자 {store.count()}명 / 학회·저널 미분류 {registry.unclassified_count()}건")
     print(f"http://{HOST}:{PORT}/ 에서 실행합니다. (Ctrl+C 로 종료)")

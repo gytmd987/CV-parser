@@ -9,6 +9,10 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+# .env 를 os.environ 에 먼저 반영한다. 아래 기본값들이 계산되기 전에 실행돼야 하므로
+# 이 임포트 위치를 바꾸지 말 것.
+from .dotenv import LOADED_FROM  # noqa: F401
+
 
 def _env(key: str, default: str) -> str:
     return os.environ.get(key, default)

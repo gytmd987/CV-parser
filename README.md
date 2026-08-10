@@ -13,10 +13,9 @@ CV(PDF/docx/txt) 여러 개를 웹에서 업로드하면 → 로컬 LLM으로 �
 ```bash
 git pull                                   # 코드 받기
 
-cp .env.example .env && vi .env            # 비밀번호 2개 설정
-set -a && . ./.env && set +a               # 환경변수 반영
+cp .env.example .env && vi .env            # 비밀번호 2개 설정 (자동으로 읽힙니다)
 
-python3 -m pytest -q                       # LLM 없이 되는 검증 (38개)
+python3 -m pytest -q                       # LLM 없이 되는 검증 (51개)
 python3 -m cvtool.cli health               # vLLM / TEI 연결 확인
 python3 -m cvtool.web.app                  # 웹 실행 -> http://서버IP:8600
 ```
@@ -120,6 +119,7 @@ guided_json / response_format / 스키마 없음 세 방식을 비교합니다.
 
 | 증상 | 원인 |
 |---|---|
+| 로그인 화면에서 `CVTOOL_WEB_PASSWORD 가 비어 있습니다` | `.env` 를 못 읽었거나 그 안에 값이 없습니다. **서버 콘솔 첫 줄**에 어느 `.env` 를 읽었는지 찍히니 그걸 확인하세요. `.env.example` 을 고친 건 아닌지도 확인하세요 |
 | `출력이 토큰 한도에 걸려 잘렸습니다` | `CVTOOL_LLM_MAX_TOKENS` 를 늘리세요 |
 | `JSON 파싱 실패` | 진단 스크립트로 원본 확인 — 펜스/추론 태그는 자동 제거되지만 예외가 있을 수 있습니다 |
 | 처리 현황에 `텍스트를 추출하지 못했습니다` | 스캔 PDF입니다. OCR이 필요합니다 |
@@ -148,6 +148,7 @@ cvtool/
   export.py            xlsx / TSV 출력 (표준 라이브러리)
   retention.py         보관기간 만료 판정
   cli.py               `cvtool extract` / `cvtool health`
+  dotenv.py            .env 자동 로딩 (표준 라이브러리)
   ingestion/parsers.py .txt/.pdf/.docx 텍스트 추출
   clients/llm.py       vLLM 호출 + 응답 정제 (펜스·추론태그·잘림 처리)
   clients/embedding.py TEI 임베딩 (32개씩 배치)   ← 매칭 슬라이스에서 사용
@@ -155,7 +156,7 @@ cvtool/
   web/app.py           웹 앱 (로그인·다중 업로드·표·엑셀·학회관리)
   web/multipart.py     multipart 파서
 tools/diagnose_llm.py  LLM 응답 원본 진단
-tests/                 오프라인(LLM 목킹) 테스트 38개
+tests/                 오프라인(LLM 목킹) 테스트 51개
 ```
 
 ## 로드맵
@@ -170,8 +171,9 @@ tests/                 오프라인(LLM 목킹) 테스트 38개
 
 이 코드는 로컬 LLM이 **없는** 개발 환경에서 작성됐습니다.
 
-- ✅ 오프라인 테스트 38개 통과 (응답 정제, 섹션 분할, 학회 레지스트리, xlsx, 보관기간)
-- ✅ 웹 앱 실제 구동 검증 — 로그인, 파일 2개 동시 업로드, 2줄 결과, xlsx 다운로드
+- ✅ 오프라인 테스트 51개 통과 (응답 정제, 섹션 분할, 학회 레지스트리, xlsx, 보관기간)
+- ✅ 웹 앱 실제 구동 검증 — .env 자동 로딩, 한글 비밀번호 로그인, 파일 2개 동시 업로드,
+  2줄 결과, xlsx 다운로드
 - ❌ **실제 LLM 대상 추출 정확도는 미검증** — 서버에서 확인이 필요합니다
 
 ## 참고 (수정 금지)
