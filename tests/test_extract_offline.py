@@ -208,3 +208,49 @@ def test_row_has_every_column():
 def test_empty_text_raises():
     with pytest.raises(ValueError):
         extract_cv_from_text("   ")
+
+
+# --- 실제로 겪은 파싱 실패: 모델 응답은 정상인데 파서가 거부한 경우 -----------
+SCHEMA_HINT = {"properties": {"한글_이름": {}, "영문_이름": {}, "현재_신분": {}}}
+
+
+@pytest.mark.parametrize(
+    "label,raw",
+    [
+        ("JSON 뒤에 설명", '{"한글_이름": "홍길동"}\n\n위와 같이 추출했습니다.'),
+        ("JSON 앞뒤로 설명", '결과입니다:\n{"한글_이름": "홍길동"}\n이상입니다.'),
+        ("펜스 뒤에 설명", '```json\n{"한글_이름": "홍길동"}\n```\n확인 바랍니다.'),
+        ("같은 객체 두 번", '{"한글_이름": "홍길동"}\n{"한글_이름": "홍길동"}'),
+        ("닫히지 않은 think", '<think>이름을 찾자\n{"한글_이름": "홍길동"}'),
+        ("여는 태그 없는 </think>", '이름을 찾았다</think>\n{"한글_이름": "홍길동"}'),
+        ("설명에 중괄호", '{"한글_이름": "홍길동"}\n메모: {참고} 있음'),
+        ("앞에 공백/개행", '\n\n  {"한글_이름": "홍길동"}  \n'),
+    ],
+)
+def test_parses_responses_that_look_fine_to_a_human(label, raw):
+    """사람이 봐서 정상인 응답은 반드시 파싱돼야 한다.
+
+    JSON 뒤에 한 줄만 붙어도 json.loads 는 'Extra data' 로 실패한다.
+    실제로 이것 때문에 섹션 추출이 전부 실패했다.
+    """
+    body = {"choices": [{"finish_reason": "stop", "message": {"content": raw}}]}
+    assert parse_response(body, SCHEMA_HINT)["한글_이름"] == "홍길동", label
+
+
+def test_schema_picks_answer_over_example_json():
+    """추론 중 남긴 예시 JSON 이 아니라 스키마에 맞는 답을 골라야 한다."""
+    raw = (
+        '<think>이런 형식으로 만들자: {"예시": 1, "샘플": 2, "더미": 3, "테스트": 4}\n'
+        '이제 답을 쓰자</think>\n{"한글_이름": "홍길동", "현재_신분": "포닥"}'
+    )
+    body = {"choices": [{"finish_reason": "stop", "message": {"content": raw}}]}
+    result = parse_response(body, SCHEMA_HINT)
+    assert result["한글_이름"] == "홍길동"
+    assert "예시" not in result
+
+
+def test_no_json_at_all_still_errors():
+    """정말 JSON 이 없으면 실패해야 한다 (아무거나 지어내면 안 된다)."""
+    body = {"choices": [{"finish_reason": "stop", "message": {"content": "죄송합니다"}}]}
+    with pytest.raises(LLMError):
+        parse_response(body, SCHEMA_HINT)

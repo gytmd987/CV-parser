@@ -71,33 +71,30 @@ def build_json_payload(
     return payload
 
 
-def _clean_content(content: str) -> str:
-    """모델이 JSON 앞뒤에 덧붙인 것들을 걷어낸다."""
-    text = _THINK_RE.sub("", content).strip()
+def _strip_reasoning(content: str) -> str:
+    """추론 블록을 걷어낸다.
 
-    # ```json ... ``` 펜스가 있으면 그 안쪽만
-    fence = _FENCE_RE.search(text)
-    if fence:
-        text = fence.group(1).strip()
-
-    # 여전히 JSON 으로 시작하지 않으면, 균형 잡힌 첫 {...} 를 찾아낸다
-    if not text.startswith(("{", "[")):
-        extracted = _first_json_object(text)
-        if extracted is not None:
-            text = extracted
-    return text
+    닫는 태그가 없거나 여는 태그만 오는 경우도 있어서 세 가지를 모두 처리한다.
+    """
+    text = _THINK_RE.sub("", content)
+    # 짝이 안 맞고 </think> 만 남았으면 그 뒤가 답이다
+    if "</think>" in text:
+        text = text.rsplit("</think>", 1)[1]
+    return text.strip()
 
 
-def _first_json_object(text: str) -> str | None:
-    """문자열 안에서 괄호가 균형 잡힌 첫 JSON 객체를 잘라낸다."""
-    start = text.find("{")
-    if start == -1:
-        return None
+def _json_candidates(text: str) -> list[str]:
+    """문자열 안의 최상위 JSON 객체들을 전부 찾아낸다 (중첩은 제외).
+
+    모델이 JSON 앞뒤에 설명을 붙이거나, 추론 중 예시 JSON 을 남기거나,
+    같은 객체를 두 번 내보내는 일이 흔하다.
+    """
+    out: list[str] = []
     depth = 0
     in_str = False
     escape = False
-    for i in range(start, len(text)):
-        ch = text[i]
+    start = -1
+    for i, ch in enumerate(text):
         if escape:
             escape = False
             continue
@@ -110,15 +107,65 @@ def _first_json_object(text: str) -> str | None:
         if in_str:
             continue
         if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
             if depth == 0:
-                return text[start : i + 1]
-    return None
+                start = i
+            depth += 1
+        elif ch == "}" and depth:
+            depth -= 1
+            if depth == 0 and start >= 0:
+                out.append(text[start : i + 1])
+                start = -1
+    return out
 
 
-def parse_response(body: dict) -> dict:
+def _score(candidate: dict, schema: dict | None) -> int:
+    """스키마 속성과 얼마나 겹치는지. 예시 JSON 과 진짜 답을 가른다."""
+    if not schema:
+        return len(candidate)
+    props = set((schema or {}).get("properties", {}))
+    return sum(1 for k in candidate if k in props)
+
+
+def extract_json(content: str, schema: dict | None = None) -> dict:
+    """모델 응답 문자열에서 JSON 객체를 뽑아낸다.
+
+    JSON 뒤에 "위와 같이 추출했습니다" 한 줄만 붙어도 json.loads 는
+    'Extra data' 로 실패한다. 사람 눈에는 정상인 응답이므로 반드시 견뎌야 한다.
+    """
+    text = _strip_reasoning(content)
+
+    fence = _FENCE_RE.search(text)
+    if fence:
+        text = fence.group(1).strip()
+
+    # 통째로 파싱되면 그대로 (가장 흔한 정상 경로)
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+
+    # 앞뒤에 뭔가 붙었거나 객체가 여러 개인 경우: 스키마와 가장 잘 맞는 것을 고른다
+    best: dict | None = None
+    best_score = -1
+    for chunk in _json_candidates(text):
+        try:
+            candidate = json.loads(chunk)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(candidate, dict):
+            continue
+        score = _score(candidate, schema)
+        if score >= best_score:  # 동점이면 뒤쪽(최종 답)을 택한다
+            best, best_score = candidate, score
+    if best is not None:
+        return best
+
+    raise LLMError("응답에서 JSON 객체를 찾지 못했습니다.", raw=content)
+
+
+def parse_response(body: dict, schema: dict | None = None) -> dict:
     """OpenAI 호환 응답 본문에서 JSON 객체를 뽑아낸다.
 
     실패 시 LLMError.raw 에 **자르지 않은** 원본을 담는다.
@@ -148,15 +195,7 @@ def parse_response(body: dict) -> dict:
         else:
             raise LLMError("응답 content 가 비어 있습니다.", raw=str(message)[:1000])
 
-    cleaned = _clean_content(content)
-    try:
-        parsed = json.loads(cleaned)
-    except json.JSONDecodeError as exc:
-        raise LLMError(f"JSON 파싱 실패 ({exc}).", raw=content) from exc
-
-    if not isinstance(parsed, dict):
-        raise LLMError(f"객체가 아닌 JSON 을 받았습니다: {type(parsed).__name__}", raw=content)
-    return parsed
+    return extract_json(content, schema)
 
 
 class LLMClient:
@@ -199,7 +238,7 @@ class LLMClient:
                 raise LLMError(f"LLM 오류 {resp.status_code}: {resp.text[:300]}")
 
             try:
-                return parse_response(resp.json())
+                return parse_response(resp.json(), schema)
             except LLMTruncated:
                 raise  # 잘림은 폴백해도 같으므로 즉시 보고
             except LLMError as exc:
