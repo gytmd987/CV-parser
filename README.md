@@ -15,7 +15,7 @@ git pull                                   # 코드 받기
 
 cp .env.example .env && vi .env            # 비밀번호 2개 설정 (자동으로 읽힙니다)
 
-python3 -m pytest -q                       # LLM 없이 되는 검증 (161개)
+python3 -m pytest -q                       # LLM 없이 되는 검증 (169개)
 python3 -m cvtool.cli health               # vLLM / TEI 연결 확인
 python3 -m cvtool.web.app                  # 웹 실행 -> http://서버IP:8600
 ```
@@ -241,6 +241,18 @@ guided_json / response_format / 스키마 없음 세 방식을 비교합니다.
 | 처리 현황에 `텍스트를 추출하지 못했습니다` | 스캔 PDF입니다. OCR이 필요합니다 |
 | `ImportError: pypdf` | PDF 라이브러리 미설치 |
 
+### 여러 장으로 실제 품질을 재보세요
+
+한 장이 잘 나왔다고 "웬만한 CV 에 대응된다"고 볼 수 없습니다. 폴더에 CV 를 모아두고
+돌리면 어떤 항목이 자주 비는지, 어떤 파일이 실패하는지 한눈에 나옵니다.
+
+```bash
+python3 tools/batch_check.py ~/cv_samples
+```
+
+결과를 DB 에 저장하지 않는 순수 점검용입니다. 형식(PDF/docx)·길이·언어가 다른
+CV 를 섞어서 넣으세요. **`자주 비는 항목`이 곧 다음에 손볼 곳**입니다.
+
 ### 추출 품질이 나쁠 때 — 어느 단계가 문제인지 먼저 보세요
 
 추측하지 말고 단계별 출력을 확인하세요. 아무것도 자르지 않고 전 과정을 찍습니다.
@@ -320,7 +332,8 @@ cvtool/
 tools/diagnose_llm.py  LLM 응답 원본 진단 + 파일·이미지 입력 지원 여부
 tools/trace_extract.py 추출 전 과정 단계별 추적
 tools/check_json.py    모델 응답을 파서에 넣어보는 도구
-tests/                 오프라인(LLM 목킹) 테스트 161개
+tools/batch_check.py   CV 여러 장을 돌려 추출 품질 요약
+tests/                 오프라인(LLM 목킹) 테스트 169개
 ```
 
 ## 로드맵
@@ -335,7 +348,7 @@ tests/                 오프라인(LLM 목킹) 테스트 161개
 
 이 코드는 로컬 LLM이 **없는** 개발 환경에서 작성됐습니다.
 
-- ✅ 오프라인 테스트 161개 통과 (응답 정제, 섹션 분할, 학회 레지스트리, xlsx, 보관기간)
+- ✅ 오프라인 테스트 169개 통과 (응답 정제, 섹션 분할, 학회 레지스트리, xlsx, 보관기간)
 - ✅ 웹 앱 실제 구동 검증 — .env 자동 로딩, 한글 비밀번호 로그인, 다중 업로드,
   검색·필터, 단건/일괄 삭제, 상세 화면,
   2줄 결과, xlsx 다운로드

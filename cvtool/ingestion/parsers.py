@@ -63,12 +63,65 @@ def _extract_pdf(p: Path) -> str:
 
 
 def _extract_docx(p: Path) -> str:
+    """워드 문서에서 텍스트를 뽑는다.
+
+    ⚠️ document.paragraphs 는 **표 안의 글자를 포함하지 않는다.**
+    한국 이력서는 표로 된 것이 아주 흔해서, 문단만 읽으면 이름·연락처·학력이
+    통째로 사라진다(실제로 그런 버그가 있었다).
+    그래서 문단과 표를 **문서에 나온 순서대로** 함께 읽는다.
+    머리글·바닥글에도 연락처가 들어가는 경우가 있어 같이 훑는다.
+    """
     try:
         import docx  # python-docx
+        from docx.document import Document as _Doc
+        from docx.oxml.ns import qn
+        from docx.table import Table, _Cell
+        from docx.text.paragraph import Paragraph
     except ImportError as exc:  # pragma: no cover - 환경 의존
         raise ImportError(
             "docx 파싱에는 python-docx 가 필요합니다. `pip install cvtool[docx]` "
             "(폐쇄망이면 서버에 python-docx 설치 여부를 먼저 확인하세요)."
         ) from exc
+
+    def blocks(parent):
+        """문단과 표를 문서 순서대로 돌려준다."""
+        if isinstance(parent, _Doc):
+            element = parent.element.body
+        elif isinstance(parent, _Cell):
+            element = parent._tc
+        else:  # pragma: no cover - 방어적
+            return
+        for child in element.iterchildren():
+            if child.tag == qn("w:p"):
+                yield Paragraph(child, parent)
+            elif child.tag == qn("w:tbl"):
+                yield Table(child, parent)
+
+    def render(parent) -> list[str]:
+        out: list[str] = []
+        for block in blocks(parent):
+            if isinstance(block, Paragraph):
+                if block.text.strip():
+                    out.append(block.text)
+            else:  # Table
+                for row in block.rows:
+                    cells = []
+                    for cell in row.cells:
+                        # 셀 안에 또 표가 있을 수 있다
+                        cells.append(" ".join(render(cell)))
+                    line = " | ".join(c.strip() for c in cells if c.strip())
+                    if line:
+                        out.append(line)
+        return out
+
     document = docx.Document(str(p))
-    return "\n".join(para.text for para in document.paragraphs).strip()
+    parts = render(document)
+
+    # 머리글·바닥글 (연락처가 여기 있는 이력서가 있다)
+    for section in document.sections:
+        for area in (section.header, section.footer):
+            for para in area.paragraphs:
+                if para.text.strip():
+                    parts.append(para.text)
+
+    return "\n".join(parts).strip()
