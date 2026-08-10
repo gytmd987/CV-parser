@@ -26,6 +26,7 @@ from pathlib import Path
 from ..config import settings
 from ..dotenv import LOADED_FROM, candidate_paths
 from ..export import records_to_tsv, records_to_xlsx
+from ..fsutil import is_world_readable, mode_of, safe_filename, secure_dir, secure_file
 from ..extract import extract_cv_from_text
 from ..ingestion.parsers import UnsupportedFormat, extract_text
 from ..schemas import COLUMNS
@@ -480,22 +481,24 @@ class Handler(BaseHTTPRequestHandler):
             form = parse_multipart(self._read_body(), self.headers.get("Content-Type", ""))
             if not form.files:
                 return self._redirect("/")
-            tmp = DATA_DIR / "incoming"
-            tmp.mkdir(parents=True, exist_ok=True)
+            tmp = secure_dir(DATA_DIR / "incoming")
             for f in form.files:
-                dest = tmp / f.filename
+                # 경로 조작 방지: 디렉터리 성분을 버리고 파일명만 쓴다
+                safe_name = safe_filename(f.filename)
+                dest = tmp / safe_name
                 try:
                     dest.write_bytes(f.content)
+                    secure_file(dest)  # 짧게 존재하는 동안에도 다른 계정이 못 읽게
                     text = extract_text(dest)
                     if not text.strip():
-                        _set_status(f.filename, "실패", "텍스트를 추출하지 못했습니다(스캔 PDF?)")
+                        _set_status(safe_name, "실패", "텍스트를 추출하지 못했습니다(스캔 PDF?)")
                         continue
-                    _set_status(f.filename, "대기중")
-                    _jobs.put((f.filename, text, None))
+                    _set_status(safe_name, "대기중")
+                    _jobs.put((safe_name, text, None))
                 except UnsupportedFormat as exc:
-                    _set_status(f.filename, "실패", str(exc))
+                    _set_status(safe_name, "실패", str(exc))
                 except Exception as exc:  # noqa: BLE001
-                    _set_status(f.filename, "실패", f"{type(exc).__name__}: {exc}")
+                    _set_status(safe_name, "실패", f"{type(exc).__name__}: {exc}")
                 finally:
                     dest.unlink(missing_ok=True)  # 원본 CV 는 디스크에 남기지 않는다
             return self._redirect("/")
@@ -552,7 +555,32 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(_page("없음", "<div class='card'>없는 경로입니다.</div>"), code=404)
 
 
+def _startup_cleanup() -> list[str]:
+    """시작할 때 데이터 디렉터리 권한을 조이고, 크래시로 남은 원본을 지운다.
+
+    추출 도중 프로세스가 강제 종료되면 incoming/ 에 CV 원본이 남는다.
+    다음 기동 때 반드시 치운다.
+    """
+    secure_dir(DATA_DIR)
+    for name in ("candidates.db", "venues.db"):
+        for suffix in ("", "-wal", "-shm"):
+            secure_file(DATA_DIR / (name + suffix))
+
+    leftovers = []
+    incoming = DATA_DIR / "incoming"
+    if incoming.is_dir():
+        for f in incoming.iterdir():
+            if f.is_file():
+                leftovers.append(f.name)
+                f.unlink(missing_ok=True)
+    return leftovers
+
+
 def main() -> int:
+    leftovers = _startup_cleanup()
+    if leftovers:
+        print(f"⚠️  이전 실행에서 남은 CV 원본 {len(leftovers)}건을 삭제했습니다: "
+              f"{', '.join(leftovers[:5])}{' ...' if len(leftovers) > 5 else ''}")
     if LOADED_FROM:
         print(f".env 읽음        : {LOADED_FROM}")
     else:
@@ -569,7 +597,10 @@ def main() -> int:
     else:
         print(f"로그인 비밀번호  : 설정됨 ({len(WEB_PASSWORD)}자)")
 
-    print(f"데이터 저장 위치 : {DATA_DIR}")
+    print(f"데이터 저장 위치 : {DATA_DIR} (권한 {mode_of(DATA_DIR):o})")
+    db = DATA_DIR / "candidates.db"
+    if db.exists() and is_world_readable(db):
+        print("⚠️  candidates.db 를 다른 계정이 읽을 수 있습니다. 권한을 확인하세요.")
     print(f"지원자 {store.count()}명 / 학회·저널 미분류 {registry.unclassified_count()}건")
     print(f"http://{HOST}:{PORT}/ 에서 실행합니다. (Ctrl+C 로 종료)")
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()

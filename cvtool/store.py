@@ -16,6 +16,7 @@ import sqlite3
 from pathlib import Path
 
 from .config import settings
+from .fsutil import secure_dir, secure_file
 from .retention import expiry_date
 from .schemas import CVRecord
 from .timeutil import now_kst
@@ -40,12 +41,16 @@ _ADDED_COLUMNS = {
 class CandidateStore:
     def __init__(self, db_path: str | Path) -> None:
         self.path = Path(db_path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        # 개인정보가 들어가는 DB 다. 다른 계정이 읽지 못하게 권한을 조인다.
+        secure_dir(self.path.parent)
         self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
         self._migrate()
         self._conn.commit()
+        # sqlite 가 만든 -wal/-shm 파일에도 같은 내용이 들어간다
+        for suffix in ("", "-wal", "-shm"):
+            secure_file(Path(str(self.path) + suffix))
 
     def _migrate(self) -> None:
         existing = {

@@ -18,6 +18,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from .fsutil import secure_dir, secure_file
 from .timeutil import now_kst
 
 # 기본 등급. 웹에서 자유롭게 바꿀 수 있다.
@@ -77,11 +78,13 @@ CREATE TABLE IF NOT EXISTS venue_aliases (
 class VenueRegistry:
     def __init__(self, db_path: str | Path) -> None:
         self.path = Path(db_path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        secure_dir(self.path.parent)
         self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
+        for suffix in ("", "-wal", "-shm"):
+            secure_file(Path(str(self.path) + suffix))
 
     # -- 조회 -------------------------------------------------------------
     def _resolve_id(self, key: str) -> int | None:
