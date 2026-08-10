@@ -213,5 +213,44 @@ class LLMClient:
             raw=getattr(last_err, "raw", None),
         )
 
+    def chat_text(
+        self,
+        messages: list[dict],
+        *,
+        temperature: float = 0.0,
+        max_tokens: int | None = None,
+    ) -> str:
+        """스키마 없이 자유 서술을 받는다 (2단계 추출의 1단계).
+
+        guided_json 은 첫 토큰부터 JSON 문법을 강제해서 추론 모델이 생각할
+        자리를 없앤다. 읽고 정리하는 단계에서는 문법을 풀어준다.
+        """
+        payload = {
+            "model": settings.llm_model,
+            "temperature": temperature,
+            "messages": messages,
+            "max_tokens": max_tokens or settings.llm_max_tokens,
+        }
+        url = f"{self._base}/chat/completions"
+        try:
+            resp = self._client.post(url, json=payload, headers=self._headers)
+        except httpx.HTTPError as exc:
+            raise LLMError(f"LLM 요청 실패: {exc}") from exc
+        if resp.status_code >= 400:
+            raise LLMError(f"LLM 오류 {resp.status_code}: {resp.text[:300]}")
+
+        body = resp.json()
+        try:
+            choice = body["choices"][0]
+            message = choice.get("message", {})
+        except (KeyError, IndexError, TypeError) as exc:
+            raise LLMError(f"예상치 못한 응답 형태: {str(body)[:500]}") from exc
+
+        content = message.get("content") or ""
+        if not content.strip():
+            content = message.get("reasoning_content") or ""
+        # 추론 블록은 정리 결과가 아니므로 걷어낸다
+        return _THINK_RE.sub("", content).strip()
+
     def close(self) -> None:
         self._client.close()

@@ -39,16 +39,30 @@ def _cmd_health(_args: argparse.Namespace) -> int:
         ("TEI embed", f"{settings.embed_url.rstrip('/')}/embed", "POST", {"inputs": ["테스트"]}),
     ]
     ok = True
+    models_body = None
     for name, url, method, body in checks:
         try:
             with httpx.Client(timeout=5) as c:
                 r = c.get(url) if method == "GET" else c.post(url, json=body)
             status = "OK" if r.status_code < 400 else f"HTTP {r.status_code}"
             ok = ok and r.status_code < 400
+            if name == "vLLM" and r.status_code < 400:
+                models_body = r.json()
         except httpx.HTTPError as exc:
             status = f"연결 실패 ({exc})"
             ok = False
         print(f"  {name:12s} {url}  -> {status}")
+
+    # 컨텍스트 한도를 알려줘야 CVTOOL_MAX_INPUT_CHARS 를 감으로 정하지 않는다.
+    if models_body:
+        for m in models_body.get("data", []) or []:
+            limit = m.get("max_model_len")
+            if limit:
+                print(f"\n  모델 {m.get('id')} 의 max_model_len = {limit:,} 토큰")
+                print(f"  현재 CVTOOL_MAX_INPUT_CHARS = {settings.max_input_chars:,} 자")
+                print("  (한글은 대략 1자≈1토큰. 출력 몫도 남겨야 하니 여유 있게 잡으세요)")
+    print(f"\n  2단계 추출: {'켜짐' if settings.two_stage else '꺼짐'}"
+          f" (CVTOOL_TWO_STAGE)")
     return 0 if ok else 1
 
 

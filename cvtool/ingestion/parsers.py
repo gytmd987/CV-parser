@@ -45,7 +45,20 @@ def _extract_pdf(p: Path) -> str:
             "(폐쇄망이면 서버에 pypdf 설치 여부를 먼저 확인하세요)."
         ) from exc
     reader = PdfReader(str(p))
-    parts = [(page.extract_text() or "") for page in reader.pages]
+    parts = []
+    for page in reader.pages:
+        # 기본 추출은 2단 편집·표·탭 정렬을 평문으로 뭉개서 CV 를 망가뜨린다.
+        # layout 모드는 원본의 공간 배치를 살려준다 (pypdf 4.0+).
+        try:
+            text = page.extract_text(extraction_mode="layout")
+        except Exception:  # noqa: BLE001
+            # 구버전 pypdf 는 extraction_mode 를 모르고(TypeError),
+            # 일부 PDF 는 layout 모드에서 실패한다. 그때는 기본 모드로.
+            try:
+                text = page.extract_text()
+            except Exception:  # noqa: BLE001 - 한 페이지 실패로 전체를 버리지 않는다
+                text = ""
+        parts.append(text or "")
     return "\n".join(parts).strip()
 
 
