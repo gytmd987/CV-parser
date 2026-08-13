@@ -13,6 +13,9 @@ CV(PDF/docx/txt) 여러 개를 웹에서 업로드하면 → 로컬 LLM으로 �
 ```bash
 git pull                                   # 코드 받기
 
+pip install -r requirements.txt            # 필요한 패키지 설치
+python3 -m cvtool.cli deps                 # 설치 확인 (뭐가 없는지 알려줍니다)
+
 cp .env.example .env && vi .env            # 비밀번호 2개 설정 (자동으로 읽힙니다)
 
 python3 -m pytest -q                       # LLM 없이 되는 검증 (169개)
@@ -20,9 +23,12 @@ python3 -m cvtool.cli health               # vLLM / TEI 연결 확인
 python3 -m cvtool.web.app                  # 웹 실행 -> http://서버IP:8600
 ```
 
-`pip install` 없이 동작합니다. 웹·저장소·엑셀은 **표준 라이브러리만** 사용합니다
-(폐쇄망에서 설치 실패 위험을 없애려고 openpyxl·FastAPI를 쓰지 않았습니다).
-추출에만 `httpx`, `pydantic`이 필요하고, PDF/docx는 `pypdf`, `python-docx`가 있을 때만 됩니다.
+필요한 패키지는 **4개뿐**입니다 (`httpx`, `pydantic`, `pypdf`, `python-docx`).
+웹 서버·엑셀 출력·저장소는 **표준 라이브러리만** 써서 FastAPI·openpyxl·psycopg·
+qdrant-client 가 필요 없습니다. 테스트까지 하려면 `requirements-dev.txt` 를 쓰세요.
+
+`python3 -m cvtool.cli deps` 가 무엇이 없는지, **설치는 됐는데 깨졌는지**까지
+구분해서 알려줍니다.
 
 ---
 

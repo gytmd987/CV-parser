@@ -1,0 +1,10 @@
+# 테스트용. 운영 서버에는 없어도 됩니다.
+#
+#   pip install -r requirements-dev.txt
+#
+# 다만 pytest 가 있으면 `python3 -m pytest -q` 로 LLM 없이도
+# 파이프라인이 멀쩡한지 169개 테스트로 확인할 수 있어 권합니다.
+
+-r requirements.txt
+
+pytest>=8.0

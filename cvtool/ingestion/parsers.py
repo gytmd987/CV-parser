@@ -41,8 +41,14 @@ def _extract_pdf(p: Path) -> str:
         from pypdf import PdfReader
     except ImportError as exc:  # pragma: no cover - 환경 의존
         raise ImportError(
-            "PDF 파싱에는 pypdf 가 필요합니다. `pip install cvtool[pdf]` "
-            "(폐쇄망이면 서버에 pypdf 설치 여부를 먼저 확인하세요)."
+            "PDF 파싱에는 pypdf 가 필요합니다: pip install -r requirements.txt"
+        ) from exc
+    except BaseException as exc:  # pragma: no cover - 깨진 설치
+        # pypdf 는 있는데 의존성(cryptography 등)이 깨지면 ImportError 가 아닌
+        # 예외가 날아온다. 원시 panic 대신 무엇을 해야 할지 알려준다.
+        raise ImportError(
+            f"pypdf 는 설치돼 있지만 import 에 실패했습니다 ({type(exc).__name__}: {exc}). "
+            "의존성이 깨진 상태입니다: pip install --force-reinstall pypdf cryptography"
         ) from exc
     reader = PdfReader(str(p))
     parts = []
@@ -79,8 +85,13 @@ def _extract_docx(p: Path) -> str:
         from docx.text.paragraph import Paragraph
     except ImportError as exc:  # pragma: no cover - 환경 의존
         raise ImportError(
-            "docx 파싱에는 python-docx 가 필요합니다. `pip install cvtool[docx]` "
-            "(폐쇄망이면 서버에 python-docx 설치 여부를 먼저 확인하세요)."
+            "docx 파싱에는 python-docx 가 필요합니다: pip install -r requirements.txt"
+        ) from exc
+    except BaseException as exc:  # pragma: no cover - 깨진 설치
+        raise ImportError(
+            f"python-docx 는 설치돼 있지만 import 에 실패했습니다 "
+            f"({type(exc).__name__}: {exc}). "
+            "의존성이 깨진 상태입니다: pip install --force-reinstall python-docx lxml"
         ) from exc
 
     def blocks(parent):
