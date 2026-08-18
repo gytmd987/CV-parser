@@ -227,12 +227,14 @@ class CVRecord(BaseModel):
 
     def 해외논문_제출처(self) -> str:
         """해외 학회/저널 1저자 논문만 한 열로 합친다. 구분자는 ' | '."""
+        from .normalize import MULTI_SEP
+
         items = []
         for p in self.논문:
             if p.국내해외 != "해외":
                 continue
             items.append(f"{p.제출처} {p.연도}".strip())
-        return " | ".join(items)
+        return MULTI_SEP.join(items)
 
     def to_row(self) -> dict[str, str]:
         """엑셀 한 줄(dict)로 변환. COLUMNS 순서는 export 에서 적용."""

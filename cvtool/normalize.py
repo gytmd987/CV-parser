@@ -143,3 +143,110 @@ def enum(value: str, allowed: list[str], fallback: str = "") -> str:
 def text(value: str) -> str:
     """셀 안 줄바꿈·탭을 없앤다. 엑셀 표가 깨지지 않게."""
     return " ".join(str(value or "").split())
+
+
+# ---------------------------------------------------------------------------
+# 다중값 — 여러 개일 때 항상 같은 형식으로
+# ---------------------------------------------------------------------------
+#: 값이 여러 개일 때 쓰는 유일한 구분자. 엑셀 셀 안에서 안전하다.
+MULTI_SEP = " | "
+
+# 모델은 같은 항목도 , / ; 줄바꿈을 섞어 쓴다. 전부 이걸로 나눈다.
+# 가운뎃점(·)은 '전기·전자공학' 처럼 이름의 일부라 나누지 않는다.
+_SPLIT_RE = re.compile(r"[,;/\n\r]+|\s\|\s")
+
+
+def multi(value) -> str:
+    """여러 값을 MULTI_SEP 하나로 통일한다. 중복과 빈 값은 버린다.
+
+    이메일이 어떤 건 ',' 어떤 건 '/' 로 구분돼 나오던 문제를 없앤다.
+    """
+    if value is None:
+        return ""
+    items = value if isinstance(value, (list, tuple)) else _SPLIT_RE.split(str(value))
+    out: list[str] = []
+    for item in items:
+        cleaned = text(item)
+        if cleaned and cleaned not in out:  # 순서 유지 + 중복 제거
+            out.append(cleaned)
+    return MULTI_SEP.join(out)
+
+
+def emails(value) -> str:
+    """이메일 여러 개를 통일된 형식으로. 소문자로 맞춘다.
+
+    소문자로 바꾼 뒤에 중복을 없애야 'A@x.com' 과 'a@X.com' 이 하나로 합쳐진다.
+    """
+    joined = multi(value)
+    if not joined:
+        return ""
+    out: list[str] = []
+    for part in joined.split(MULTI_SEP):
+        low = part.lower()
+        if low not in out:
+            out.append(low)
+    return MULTI_SEP.join(out)
+
+
+def phones(value) -> str:
+    """전화번호 여러 개를 통일된 형식으로."""
+    joined = multi(value)
+    if not joined:
+        return ""
+    return MULTI_SEP.join(phone(part) for part in joined.split(MULTI_SEP))
+
+
+# ---------------------------------------------------------------------------
+# 전공명
+# ---------------------------------------------------------------------------
+# 전공은 보통 '~학' 이나 '~과' 로 끝난다. 뒤에 붙는 이 꼬리표들은 떼어낸다.
+# 긴 것부터 지워야 '전공과정' 이 '전공' 으로 잘못 잘리지 않는다.
+_MAJOR_TAILS = ("전공과정", "학위과정", "협동과정", "세부전공", "전공", "과정")
+
+
+def major(value) -> str:
+    """전공명을 다듬는다. '전기공학전공' -> '전기공학'.
+
+    여러 전공이면 MULTI_SEP 로 이어 붙인다(복수전공).
+    남는 글자가 너무 짧아지면 원문을 그대로 둔다. 잘못 자르느니 그대로가 낫다.
+    """
+    joined = multi(value)
+    if not joined:
+        return ""
+    out = []
+    for part in joined.split(MULTI_SEP):
+        for tail in _MAJOR_TAILS:
+            if part.endswith(tail) and len(part) - len(tail) >= 2:
+                part = part[: -len(tail)].strip()
+                break
+        out.append(part)
+    return MULTI_SEP.join(out)
+
+
+# ---------------------------------------------------------------------------
+# 학위 상태 — 졸업일과 모순되지 않게
+# ---------------------------------------------------------------------------
+def degree_status(status: str, 졸업: str, 오늘: str) -> tuple[str, str]:
+    """학위상태를 졸업일과 대조해 바로잡는다.
+
+    졸업일이 이미 지났는데 '재학' 으로 나오는 오류가 있었다.
+    지난 날짜면 졸업으로 보고, 무엇을 바꿨는지 함께 돌려준다.
+
+    Args:
+        status: 모델이 낸 학위상태
+        졸업:   YYYYMM (빈 문자열이면 판단 불가)
+        오늘:   YYYYMM (KST 기준)
+    Returns:
+        (보정된 상태, 보정 사유 — 없으면 빈 문자열)
+    """
+    현재 = (status or "").strip()
+    if not 졸업 or len(졸업) != 6 or not 졸업.isdigit():
+        return 현재, ""
+
+    지남 = 졸업 <= 오늘  # YYYYMM 문자열은 그대로 비교해도 순서가 맞다
+    if 지남 and 현재 in ("재학", "예정", ""):
+        원래 = 현재 or "(빈칸)"
+        return "졸업", f"졸업일({졸업})이 지나 학위상태를 {원래}->졸업 으로 보정"
+    if not 지남 and 현재 == "졸업":
+        return 현재, f"졸업일({졸업})이 아직 오지 않았는데 상태가 졸업 (확인 필요)"
+    return 현재, ""
