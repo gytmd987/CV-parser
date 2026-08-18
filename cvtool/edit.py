@@ -1,0 +1,155 @@
+"""지원자 정보 수동 수정.
+
+세 가지를 함께 지킨다.
+
+1. **형식 강제** — 정해진 형식에 맞지 않으면 저장을 거부한다. 드롭다운이 있는
+   항목은 목록 밖의 값을 받지 않는다. 잘못된 값이 표에 들어가면 정렬·필터가
+   전부 망가지기 때문이다.
+
+2. **필드 단위 저장** — 행 전체를 덮어쓰지 않고 바꾼 칸만 고친다.
+   두 사람이 서로 다른 칸을 고치면 충돌 자체가 생기지 않는다.
+
+3. **낙관적 잠금** — 같은 칸을 동시에 고치면, 나중 사람에게 "다른 사람이 방금
+   이 값을 바꿨다" 고 알린다. 조용히 덮어쓰지 않는다.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from . import normalize as N
+from .schemas import 학위상태_ENUM, 현재_신분_ENUM
+
+#: 수정할 수 없는 항목 (시스템이 관리한다)
+READONLY_FIELDS = {"지원자_ID", "추출_일시", "원본_파일명"}
+
+#: 드롭다운으로만 고를 수 있는 항목
+CHOICE_FIELDS: dict[str, list[str]] = {
+    "현재_신분": 현재_신분_ENUM,
+    "박사_학위상태": 학위상태_ENUM,
+    "검토_필요": ["", "Y"],
+}
+
+#: 형식이 정해진 항목
+_YYYYMM_FIELDS = {
+    "박사_시작", "박사_졸업", "석사_시작", "석사_졸업", "학사_시작", "학사_졸업",
+}
+_YYYYMMDD_FIELDS = {"생년월일"}
+_EMAIL_FIELDS = {"이메일"}
+_PHONE_FIELDS = {"전화번호"}
+_MAJOR_FIELDS = {"박사_전공", "석사_전공", "학사_전공"}
+#: 여러 값을 넣을 수 있는 항목 (구분자 통일 대상)
+_MULTI_FIELDS = {"연구분야_키워드"}
+
+
+class ValidationError(ValueError):
+    """형식이 맞지 않아 저장을 거부한다."""
+
+
+class ConflictError(RuntimeError):
+    """다른 사람이 먼저 바꿨다. 덮어쓰지 않고 알린다."""
+
+    def __init__(self, 항목: str, 현재값: str, 기대값: str) -> None:
+        super().__init__(
+            f"'{항목}' 을 다른 사람이 방금 바꿨습니다. "
+            f"화면에 있던 값은 '{기대값 or '(빈칸)'}' 인데 지금은 '{현재값 or '(빈칸)'}' 입니다."
+        )
+        self.항목, self.현재값, self.기대값 = 항목, 현재값, 기대값
+
+
+@dataclass
+class FieldSpec:
+    이름: str
+    입력: str          # text | select | yyyymm | yyyymmdd | email | phone
+    선택지: list[str]
+    도움말: str = ""
+
+
+def field_spec(항목: str) -> FieldSpec:
+    """화면에서 어떤 입력칸을 그릴지 정한다."""
+    if 항목 in CHOICE_FIELDS:
+        return FieldSpec(항목, "select", CHOICE_FIELDS[항목], "목록에서 고르세요")
+    if 항목 in _YYYYMMDD_FIELDS:
+        return FieldSpec(항목, "yyyymmdd", [], "YYYYMMDD 8자리 (예: 19920315)")
+    if 항목 in _YYYYMM_FIELDS:
+        return FieldSpec(항목, "yyyymm", [], "YYYYMM 6자리 (예: 201903)")
+    if 항목 in _EMAIL_FIELDS:
+        return FieldSpec(항목, "email", [], "여러 개면 쉼표로 구분")
+    if 항목 in _PHONE_FIELDS:
+        return FieldSpec(항목, "phone", [], "010-1234-5678")
+    return FieldSpec(항목, "text", [])
+
+
+def validate(항목: str, 값: str) -> str:
+    """입력값을 검사하고 저장할 형태로 정규화한다.
+
+    형식이 어긋나면 ValidationError 를 낸다. 조용히 고쳐서 넣지 않는다 —
+    사람이 잘못 입력한 것을 모르고 지나가면 안 되기 때문이다.
+    """
+    if 항목 in READONLY_FIELDS:
+        raise ValidationError(f"'{항목}' 은 수정할 수 없습니다.")
+
+    원본 = (값 or "").strip()
+
+    if 항목 in CHOICE_FIELDS:
+        허용 = CHOICE_FIELDS[항목]
+        if 원본 not in 허용:
+            보기 = ", ".join(v or "(빈칸)" for v in 허용)
+            raise ValidationError(f"'{항목}' 은 다음 중 하나여야 합니다: {보기}")
+        return 원본
+
+    if not 원본:
+        return ""
+
+    if 항목 in _YYYYMMDD_FIELDS:
+        결과 = N.yyyymmdd(원본)
+        if not 결과:
+            raise ValidationError(
+                f"'{항목}' 은 YYYYMMDD 8자리여야 합니다. 입력값: {원본!r}"
+            )
+        return 결과
+
+    if 항목 in _YYYYMM_FIELDS:
+        결과 = N.yyyymm(원본)
+        if not 결과:
+            raise ValidationError(f"'{항목}' 은 YYYYMM 6자리여야 합니다. 입력값: {원본!r}")
+        return 결과
+
+    if 항목 in _EMAIL_FIELDS:
+        결과 = N.emails(원본)
+        for part in 결과.split(N.MULTI_SEP):
+            if "@" not in part or part.startswith("@") or part.endswith("@"):
+                raise ValidationError(f"이메일 형식이 아닙니다: {part!r}")
+        return 결과
+
+    if 항목 in _PHONE_FIELDS:
+        return N.phones(원본)
+
+    if 항목 in _MAJOR_FIELDS:
+        return N.major(원본)
+
+    if 항목 in _MULTI_FIELDS:
+        return N.multi(원본)
+
+    return N.text(원본)
+
+
+def apply_edit(rec, 항목: str, 새값: str, 기대_이전값: str | None = None) -> tuple[str, str]:
+    """레코드의 한 항목만 고친다.
+
+    Args:
+        기대_이전값: 화면에 보이던 값. 지금 값과 다르면 다른 사람이 먼저
+            고친 것이므로 ConflictError 를 낸다. None 이면 검사하지 않는다.
+    Returns:
+        (이전값, 저장된 값)
+    """
+    if not hasattr(rec, 항목):
+        raise ValidationError(f"없는 항목입니다: {항목}")
+
+    현재값 = str(getattr(rec, 항목) or "")
+    if 기대_이전값 is not None and 현재값 != str(기대_이전값 or ""):
+        raise ConflictError(항목, 현재값, str(기대_이전값 or ""))
+
+    저장값 = validate(항목, 새값)
+    setattr(rec, 항목, 저장값)
+    return 현재값, 저장값

@@ -66,10 +66,54 @@ def test_expired_count_and_purge(store):
     assert store.count() == 1
 
 
-def test_expiry_map_has_every_candidate(store):
+def test_no_expiry_by_default(store):
+    """보관 기간은 무제한이 기본. 자동 삭제 대상이 되면 안 된다."""
+    from cvtool.config import settings
+
+    assert settings.retention_months == 0
     store.save(_rec("A"))
-    m = store.expiry_map()
-    assert "A" in m and m["A"]
+    assert store.expiry_map()["A"] == ""
+    assert store.expired_count() == 0
+    assert store.purge_expired() == []
+
+
+def test_registration_year_defaults_to_now(store):
+    from cvtool.timeutil import now_kst
+
+    store.save(_rec("A"))
+    assert store.year_of("A") == now_kst().strftime("%Y")
+
+
+def test_registration_year_is_editable(store):
+    store.save(_rec("A"))
+    store.set_year("A", "2024")
+    assert store.year_of("A") == "2024"
+    assert store.years() == ["2024"]
+
+
+def test_registration_year_rejects_bad_format(store):
+    store.save(_rec("A"))
+    for 잘못 in ("24", "twentyfour", "", "20255"):
+        with pytest.raises(ValueError):
+            store.set_year("A", 잘못)
+
+
+def test_filter_by_year(store):
+    store.save(_rec("A"))
+    store.save(_rec("B"))
+    store.set_year("A", "2024")
+    store.set_year("B", "2025")
+    assert [r.지원자_ID for r in store.list_filtered(년도="2024")] == ["A"]
+
+
+def test_reanalyze_keeps_registration_year(store):
+    """재분석해도 등록년도와 등록일시는 유지돼야 한다."""
+    store.save(_rec("A"))
+    store.set_year("A", "2023")
+    처음 = store.meta("A")["등록일시"]
+    store.save(_rec("A", 한글_이름="수정본"))
+    assert store.year_of("A") == "2023"
+    assert store.meta("A")["등록일시"] == 처음
 
 
 # --- 검색 / 필터 -------------------------------------------------------------

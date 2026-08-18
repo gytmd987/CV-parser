@@ -38,6 +38,7 @@ _ADDED_COLUMNS = {
     "저장_파일명": "TEXT DEFAULT ''",
     "지문": "TEXT DEFAULT ''",          # 중복 검토용. 원문 복원 불가
     "중복_메모": "TEXT DEFAULT ''",      # 등록 시 발견한 중복 후보
+    "등록년도": "TEXT DEFAULT ''",       # 기본은 등록 시점 연도. 수정 가능
 }
 
 SUPPORTED_SUFFIXES = {".pdf", ".docx", ".txt", ".md"}
@@ -119,7 +120,12 @@ class CandidateStore:
         중복_메모: str | None = None,
     ) -> None:
         now = now_kst()
-        만료 = expiry_date(now, settings.retention_months).strftime("%Y-%m-%d")
+        # 보관 기간 0 = 무제한. 만료일을 비워두면 자동 삭제 대상이 되지 않는다.
+        만료 = (
+            expiry_date(now, settings.retention_months).strftime("%Y-%m-%d")
+            if settings.retention_months > 0
+            else ""
+        )
         보관할_원문 = 원문_텍스트 if settings.store_cv_text else ""
         if 저장_파일명 is None:  # 재분석 등에서 기존 값을 유지
             row = self._conn.execute(
@@ -127,7 +133,7 @@ class CandidateStore:
             ).fetchone()
             저장_파일명 = row["저장_파일명"] if row else ""
         기존 = self._conn.execute(
-            "SELECT 지문, 중복_메모, 등록일시 FROM candidates WHERE 지원자_ID=?",
+            "SELECT 지문, 중복_메모, 등록일시, 등록년도 FROM candidates WHERE 지원자_ID=?",
             (rec.지원자_ID,),
         ).fetchone()
         if 지문 is None:
@@ -138,12 +144,14 @@ class CandidateStore:
             중복_메모 = 기존["중복_메모"] if 기존 else ""
         # 재분석해도 최초 등록일시는 유지한다
         등록일시 = 기존["등록일시"] if 기존 else now.strftime("%Y-%m-%d %H:%M:%S")
+        # 등록년도는 기본이 등록 시점 연도이고, 담당자가 고칠 수 있다
+        등록년도 = (기존["등록년도"] if 기존 and 기존["등록년도"] else "") or now.strftime("%Y")
 
         self._conn.execute(
             "INSERT OR REPLACE INTO candidates"
             " (지원자_ID, 등록일시, 원본_파일명, 보관_만료일, record_json,"
-            "  원문_텍스트, 저장_파일명, 지문, 중복_메모)"
-            " VALUES (?,?,?,?,?,?,?,?,?)",
+            "  원문_텍스트, 저장_파일명, 지문, 중복_메모, 등록년도)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
                 rec.지원자_ID,
                 등록일시,
@@ -154,9 +162,38 @@ class CandidateStore:
                 저장_파일명 or "",
                 지문_json,
                 중복_메모 or "",
+                등록년도,
             ),
         )
         self._conn.commit()
+
+    def set_year(self, 지원자_ID: str, 등록년도: str) -> None:
+        """등록년도를 고친다. 4자리 숫자만 받는다."""
+        년도 = (등록년도 or "").strip()
+        if not (len(년도) == 4 and 년도.isdigit()):
+            raise ValueError(f"등록년도는 4자리 숫자여야 합니다: {등록년도!r}")
+        self._conn.execute(
+            "UPDATE candidates SET 등록년도=? WHERE 지원자_ID=?", (년도, 지원자_ID)
+        )
+        self._conn.commit()
+
+    def year_of(self, 지원자_ID: str) -> str:
+        row = self._conn.execute(
+            "SELECT 등록년도 FROM candidates WHERE 지원자_ID=?", (지원자_ID,)
+        ).fetchone()
+        return (row["등록년도"] or "") if row else ""
+
+    def years(self) -> list[str]:
+        """등록된 연도 목록 (최신순)."""
+        rows = self._conn.execute(
+            "SELECT DISTINCT 등록년도 FROM candidates WHERE 등록년도 != ''"
+            " ORDER BY 등록년도 DESC"
+        )
+        return [r["등록년도"] for r in rows]
+
+    def year_map(self) -> dict[str, str]:
+        rows = self._conn.execute("SELECT 지원자_ID, 등록년도 FROM candidates")
+        return {r["지원자_ID"]: r["등록년도"] or "" for r in rows}
 
     def fingerprints(self) -> list[tuple[CVRecord, list[str]]]:
         """중복 검토용 (레코드, 지문) 목록."""
@@ -231,9 +268,14 @@ class CandidateStore:
         ).fetchall()
         return [self._row_to_record(r) for r in rows]
 
-    def list_filtered(self, q: str = "", review_only: bool = False) -> list[CVRecord]:
-        """이름·소속·학교·파일명으로 검색하고, 검토 필요만 골라 본다."""
+    def list_filtered(
+        self, q: str = "", review_only: bool = False, 년도: str = ""
+    ) -> list[CVRecord]:
+        """이름·소속·학교·파일명으로 검색하고, 검토 필요·등록년도로 거른다."""
         records = self.list_all()
+        if 년도:
+            연도맵 = self.year_map()
+            records = [r for r in records if 연도맵.get(r.지원자_ID) == 년도]
         if review_only:
             records = [r for r in records if r.검토_필요 == "Y"]
         term = q.strip().lower()

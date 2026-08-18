@@ -139,8 +139,10 @@ def test_store_roundtrip_and_expiry_recorded(tmp_path):
     assert store.count() == 1
     assert store.get("CV-1").한글_이름 == "홍길동"
 
-    row = store._conn.execute("SELECT 보관_만료일 FROM candidates").fetchone()
-    assert row["보관_만료일"]  # 엑셀 열에는 없지만 DB 에는 남아야 자동삭제가 된다
+    # 보관은 무제한이 기본이라 만료일을 비워 둔다 (자동 삭제 안 함)
+    row = store._conn.execute("SELECT 보관_만료일, 등록년도 FROM candidates").fetchone()
+    assert row["보관_만료일"] == ""
+    assert row["등록년도"]  # 대신 언제 등록했는지는 남는다
 
 
 def test_purge_expired_removes_only_past_due(tmp_path):

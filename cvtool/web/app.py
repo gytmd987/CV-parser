@@ -24,7 +24,10 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from ..audit import AuditLog
+from ..auth import ROLES, AuthStore, User, can
 from ..config import settings
+from ..edit import CHOICE_FIELDS, READONLY_FIELDS, ConflictError, ValidationError, apply_edit, field_spec
 from ..dotenv import LOADED_FROM, candidate_paths
 from ..export import records_to_tsv, records_to_xlsx
 from ..fsutil import is_world_readable, mode_of, safe_filename, secure_dir, secure_file
@@ -58,8 +61,26 @@ if _old_venues.is_file() and not _names_db.is_file():
 
     shutil.copy2(_old_venues, _names_db)
 registry = NameRegistry(_names_db)
+auth = AuthStore(DATA_DIR / "admin.db")
+audit = AuditLog(DATA_DIR / "audit.db")
 
-_sessions: set[str] = set()
+
+def bootstrap_admin() -> str | None:
+    """계정이 하나도 없으면 관리자를 만든다.
+
+    예전처럼 CVTOOL_WEB_PASSWORD 만 설정해 두었어도 그대로 쓸 수 있게,
+    그 값을 admin 계정의 비밀번호로 삼는다.
+    """
+    if auth.count():
+        return None
+    pw = os.environ.get("CVTOOL_ADMIN_PASSWORD") or WEB_PASSWORD
+    if not pw:
+        return None
+    아이디 = os.environ.get("CVTOOL_ADMIN_ID", "admin")
+    auth.create_user(아이디, "관리자", pw, "관리자", 생성자="(최초 설정)")
+    audit.record(아이디, "계정", 아이디, 비고="최초 관리자 계정 생성")
+    return 아이디
+
 _jobs: "queue.Queue[tuple[str, str, str | None]]" = queue.Queue()
 _status_lock = threading.Lock()
 _status: dict[str, dict] = {}  # filename -> {state, message}
@@ -161,14 +182,25 @@ input[type=password],input[type=text],select{padding:7px 9px;border:1px solid va
 """
 
 
-def _page(title: str, body: str, nav: bool = True) -> bytes:
+def _page(title: str, body: str, nav: bool = True, me: User | None = None) -> bytes:
     미분류 = registry.unclassified_count() if nav else 0
     badge = f' <span class="pill p-미분류">{미분류}</span>' if 미분류 else ""
+    링크 = ["<a href='/'>지원자</a>"]
+    if can(me, "명칭_관리"):
+        링크.append(f"<a href='/names?kind=학회'>명칭 관리{badge}</a>")
+    if can(me, "부서과제_관리"):
+        링크.append("<a href='/org'>부서·과제</a>")
+    if can(me, "계정_현업추가"):
+        링크.append("<a href='/users'>계정</a>")
+    if me is not None:
+        링크.append("<a href='/history'>변경 이력</a>")
+    누구 = (
+        f"<span class='muted' style='color:#94a3b8'>{html.escape(me.이름)} ({me.역할})</span> "
+        if me else ""
+    )
     header = (
-        "<header><a href='/'>CV 분석</a>"
-        "<a href='/'>지원자</a>"
-        f"<a href='/names?kind=학회'>명칭 관리{badge}</a>"
-        "<span class='sp'></span><a href='/logout'>로그아웃</a></header>"
+        "<header><a href='/'>CV 분석</a>" + "".join(링크)
+        + f"<span class='sp'></span>{누구}<a href='/logout'>로그아웃</a></header>"
         if nav
         else ""
     )
@@ -186,10 +218,10 @@ def _login_page(error: str = "") -> bytes:
         "로그인",
         f"""<div class='card login'><h2>CV 분석 툴</h2>{msg}
         <form method='post' action='/login'>
-        <p><input type='password' name='password' placeholder='비밀번호' autofocus
-           style='width:100%'></p>
+        <p><input type='text' name='userid' placeholder='아이디' autofocus style='width:100%'></p>
+        <p><input type='password' name='password' placeholder='비밀번호' style='width:100%'></p>
         <button type='submit' style='width:100%'>로그인</button></form>
-        <p class='muted'>채용 담당자 전용입니다.</p></div>""",
+        <p class='muted'>사내 채용 담당자 전용입니다.</p></div>""",
         nav=False,
     )
 
@@ -219,11 +251,11 @@ def _status_table() -> str:
     )
 
 
-def _dashboard(q: str = "", review_only: bool = False) -> bytes:
-    records = store.list_filtered(q, review_only)
+def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "") -> bytes:
+    records = store.list_filtered(q, review_only, 년도)
     전체 = store.count()
     만료 = store.expired_count()
-    expiry = store.expiry_map()
+    연도맵 = store.year_map()
     미분류 = registry.unclassified_count()
 
     warns = []
@@ -240,6 +272,11 @@ def _dashboard(q: str = "", review_only: bool = False) -> bytes:
             f"<button class='danger' onclick=\"return confirm('만료된 {만료}명을 삭제합니다. "
             f"되돌릴 수 없습니다. 진행할까요?')\">만료분 {만료}명 삭제</button></form></div>"
         )
+    연도목록 = store.years()
+    연도선택 = "".join(
+        f"<option value='{y}'{' selected' if y == 년도 else ''}>{y}년</option>"
+        for y in 연도목록
+    )
 
     COLS = table_columns(registry)
     head = "".join(f"<th>{html.escape(c)}</th>" for c in COLS)
@@ -249,7 +286,7 @@ def _dashboard(q: str = "", review_only: bool = False) -> bytes:
         cells = [
             f"<td><input type='checkbox' name='ids' value='{html.escape(rec.지원자_ID)}'></td>",
             f"<td><a href='/candidate?id={urllib.parse.quote(rec.지원자_ID)}'>상세</a></td>",
-            f"<td class='muted'>{html.escape(expiry.get(rec.지원자_ID, ''))}</td>",
+            f"<td class='muted'>{html.escape(연도맵.get(rec.지원자_ID, ''))}</td>",
         ]
         for c in COLS:
             v = html.escape(str(row.get(c, "") or ""))
@@ -266,7 +303,7 @@ def _dashboard(q: str = "", review_only: bool = False) -> bytes:
           <div class='scroll'><table>
             <tr><th><input type='checkbox' onclick="for(const c of
                 this.closest('table').querySelectorAll('input[name=ids]'))c.checked=this.checked">
-            </th><th></th><th>보관만료</th>{head}</tr>
+            </th><th></th><th>등록년도</th>{head}</tr>
             {''.join(body_rows)}
           </table></div>
         </form>"""
@@ -294,6 +331,7 @@ def _dashboard(q: str = "", review_only: bool = False) -> bytes:
           <h2>지원자 {len(records)}명{f' / 전체 {전체}명' if len(records) != 전체 else ''}</h2>
           <form method='get' action='/' style='margin-bottom:12px'>
             <input type='text' name='q' value='{html.escape(q)}' placeholder='이름·소속·학교·파일명 검색'>
+            <select name='year'><option value=''>전체 년도</option>{연도선택}</select>
             <label class='muted'><input type='checkbox' name='review' value='1'{checked}>
               검토 필요만</label>
             <button type='submit'>검색</button>
@@ -303,62 +341,114 @@ def _dashboard(q: str = "", review_only: bool = False) -> bytes:
              <a class='btn sec' href='/export.tsv'>TSV 보기(복사용)</a></p>
           {table}
         </div>""",
+        me=me,
     )
 
 
-def _candidate_page(지원자_ID: str) -> bytes:
+def _candidate_page(지원자_ID: str, me: User, error: str = "") -> bytes:
     rec = store.get(지원자_ID)
     if rec is None:
         return _page("없음", "<div class='card'>해당 지원자를 찾을 수 없습니다.</div>")
     meta = store.meta(지원자_ID) or {}
     row = rec.to_row(registry)
+    수정가능 = can(me, "지원자_수정")
 
-    항목 = "".join(
-        f"<tr><th style='width:180px'>{html.escape(c)}</th>"
-        f"<td style='white-space:normal;max-width:none'>{html.escape(str(row.get(c,'') or '')) or '<span class=muted>-</span>'}</td></tr>"
-        for c in table_columns(registry)
-    )
-    관리 = "".join(
-        f"<tr><th style='width:180px'>{k}</th><td>{html.escape(str(v))}</td></tr>"
-        for k, v in (
-            ("원본 파일명", meta.get("원본_파일명") or "-"),
-            ("등록 일시", meta.get("등록일시") or "-"),
-            ("보관 만료일", meta.get("보관_만료일") or "-"),
-            ("원본 파일 보관", "예" if meta.get("원본보유") else "아니오 (삭제됨)"),
-            ("원문 텍스트 보관", "예" if meta.get("원문보유") else "아니오"),
+    def 입력칸(항목: str, 값: str) -> str:
+        spec = field_spec(항목)
+        if spec.입력 == "select":
+            opts = "".join(
+                f"<option value='{html.escape(o)}'{' selected' if o == 값 else ''}>"
+                f"{html.escape(o) or '(빈칸)'}</option>"
+                for o in spec.선택지
+            )
+            return f"<select name='새값'>{opts}</select>"
+        도움 = f" placeholder='{html.escape(spec.도움말)}'" if spec.도움말 else ""
+        return f"<input type='text' name='새값' value='{html.escape(값)}' style='width:260px'{도움}>"
+
+    항목행 = []
+    for c in table_columns(registry):
+        값 = str(row.get(c, "") or "")
+        보기 = html.escape(값) or "<span class='muted'>-</span>"
+        if not 수정가능 or c in READONLY_FIELDS or c.startswith("1저자_해외논문_"):
+            항목행.append(
+                f"<tr><th style='width:170px'>{html.escape(c)}</th>"
+                f"<td style='white-space:normal;max-width:none'>{보기}</td></tr>"
+            )
+            continue
+        원본값 = str(getattr(rec, c, "") or "")
+        항목행.append(
+            f"<tr><th style='width:170px'>{html.escape(c)}</th>"
+            f"<td style='white-space:normal;max-width:none'>"
+            f"<form method='post' action='/candidate/edit' style='display:flex;gap:6px'>"
+            f"<input type='hidden' name='id' value='{html.escape(지원자_ID)}'>"
+            f"<input type='hidden' name='항목' value='{html.escape(c)}'>"
+            f"<input type='hidden' name='이전값' value='{html.escape(원본값)}'>"
+            f"{입력칸(c, 원본값)}<button type='submit'>저장</button></form></td></tr>"
         )
+
+    년도 = store.year_of(지원자_ID)
+    년도폼 = (
+        f"<form method='post' action='/candidate/year' style='display:flex;gap:6px'>"
+        f"<input type='hidden' name='id' value='{html.escape(지원자_ID)}'>"
+        f"<input type='text' name='년도' value='{html.escape(년도)}' style='width:90px'"
+        f" placeholder='YYYY'><button type='submit'>저장</button></form>"
+        if 수정가능
+        else html.escape(년도)
     )
+
+    관리 = (
+        f"<tr><th style='width:170px'>등록 년도</th><td>{년도폼}</td></tr>"
+        f"<tr><th>원본 파일명</th><td>{html.escape(meta.get('원본_파일명') or '-')}</td></tr>"
+        f"<tr><th>등록 일시</th><td>{html.escape(meta.get('등록일시') or '-')}</td></tr>"
+        f"<tr><th>원본 파일 보관</th><td>{'예' if meta.get('원본보유') else '아니오'}</td></tr>"
+    )
+    중복 = store.duplicate_note(지원자_ID)
+    if 중복:
+        관리 += f"<tr><th>중복 후보</th><td class='flag' style='white-space:normal'>{html.escape(중복)}</td></tr>"
+
+    이력 = audit.for_target("지원자", 지원자_ID)
+    이력행 = "".join(
+        f"<tr><td>{html.escape(e.일시)}</td><td>{html.escape(e.사용자)}</td>"
+        f"<td style='white-space:normal'>{html.escape(e.summary())}</td></tr>"
+        for e in 이력
+    ) or "<tr><td colspan=3 class='muted'>아직 수정 내역이 없습니다.</td></tr>"
 
     원본있음 = meta.get("원본보유")
     원본버튼 = (
-        f"<a class='btn' href='/candidate/file?id={urllib.parse.quote(지원자_ID)}'>"
-        f"원본 다운로드 ({html.escape(meta.get('원본_파일명') or '파일')})</a> "
-        if 원본있음
-        else ""
+        f"<a class='btn' href='/candidate/file?id={urllib.parse.quote(지원자_ID)}'>원본 다운로드</a> "
+        if 원본있음 else ""
     )
     재분석 = (
         "<form method='post' action='/candidate/reanalyze' style='display:inline'>"
         f"<input type='hidden' name='id' value='{html.escape(지원자_ID)}'>"
         "<button type='submit'>다시 분석</button></form> "
-        if 원본있음
-        else "<span class='muted'>보관된 원본이 없어 다시 분석하려면 재업로드해야 합니다.</span><br><br>"
+        if 원본있음 and 수정가능 else ""
     )
+    삭제 = (
+        "<form method='post' action='/candidate/delete' style='display:inline'"
+        " onsubmit=\"return confirm('이 지원자를 삭제합니다. 되돌릴 수 없습니다.')\">"
+        f"<input type='hidden' name='id' value='{html.escape(지원자_ID)}'>"
+        "<button type='submit' class='danger'>삭제</button></form> "
+        if can(me, "지원자_삭제") else ""
+    )
+    오류 = f"<div class='warn'>{html.escape(error)}</div>" if error else ""
 
     return _page(
         f"지원자 {rec.한글_이름 or rec.지원자_ID}",
-        f"""<div class='card'>
+        f"""{오류}
+        <div class='card'>
           <h2>{html.escape(rec.한글_이름 or '(이름 미상)')}
               <span class='muted'>{html.escape(rec.지원자_ID)}</span></h2>
-          <p>{원본버튼}{재분석}
-             <form method='post' action='/candidate/delete' style='display:inline'
-                   onsubmit="return confirm('이 지원자를 삭제합니다. 되돌릴 수 없습니다.')">
-               <input type='hidden' name='id' value='{html.escape(지원자_ID)}'>
-               <button type='submit' class='danger'>삭제</button>
-             </form>
-             <a class='btn sec' href='/'>목록으로</a></p>
+          <p>{원본버튼}{재분석}{삭제}<a class='btn sec' href='/'>목록으로</a></p>
+          {'<p class=muted>수정 권한이 없어 읽기 전용입니다.</p>' if not 수정가능 else ''}
         </div>
         <div class='card'><h2>관리 정보</h2><table>{관리}</table></div>
-        <div class='card'><h2>추출 결과</h2><table>{항목}</table></div>""",
+        <div class='card'><h2>추출 결과 {'(칸을 고치고 저장을 누르세요)' if 수정가능 else ''}</h2>
+          <table>{''.join(항목행)}</table></div>
+        <div class='card'><h2>변경 이력</h2><div class='scroll'>
+          <table><tr><th>일시</th><th>사용자</th><th>내용</th></tr>{이력행}</table>
+        </div></div>""",
+        me=me,
     )
 
 
@@ -451,6 +541,133 @@ def _names_page(종류: str) -> bytes:
     )
 
 
+
+def _users_page(me: User, error: str = "") -> bytes:
+    """계정 관리. 관리자는 전원, 채용담당자는 현업만 추가할 수 있다."""
+    users = auth.list_users()
+    projects = auth.projects()
+    추가가능 = ROLES if me.is_admin else ("현업",)
+
+    rows = []
+    for u in users:
+        배정 = auth.project_ids_of(u.아이디) if u.역할 == "현업" else set()
+        과제표시 = ", ".join(
+            f"{p['부서명']}/{p['이름']}" for p in projects if p["id"] in 배정
+        ) or ("-" if u.역할 == "현업" else "")
+        수정가능 = me.is_admin or u.역할 == "현업"
+        조작 = ""
+        if 수정가능 and u.아이디 != me.아이디:
+            라벨 = "비활성화" if u.활성 else "활성화"
+            조작 = (
+                "<form method='post' action='/users/toggle' style='display:inline'>"
+                f"<input type='hidden' name='id' value='{html.escape(u.아이디)}'>"
+                f"<button class='sec'>{라벨}</button></form> "
+                "<form method='post' action='/users/delete' style='display:inline'"
+                " onsubmit=\"return confirm('계정을 삭제합니다.')\">"
+                f"<input type='hidden' name='id' value='{html.escape(u.아이디)}'>"
+                "<button class='danger'>삭제</button></form>"
+            )
+        상태 = "활성" if u.활성 else "<span class='flag'>비활성</span>"
+        rows.append(
+            f"<tr><td>{html.escape(u.아이디)}</td><td>{html.escape(u.이름)}</td>"
+            f"<td>{u.역할}</td><td>{상태}</td><td>{html.escape(과제표시)}</td>"
+            f"<td class='muted'>{html.escape(u.생성일시)} ({html.escape(u.생성자 or '-')})</td>"
+            f"<td>{조작}</td></tr>"
+        )
+
+    역할옵션 = "".join(f"<option>{r}</option>" for r in 추가가능)
+    과제옵션 = "".join(
+        f"<option value='{p['id']}'>{html.escape(p['부서명'])} / {html.escape(p['이름'])}</option>"
+        for p in projects
+    )
+    오류 = f"<p class='flag'>{html.escape(error)}</p>" if error else ""
+    안내 = (
+        "관리자는 모든 역할을 만들 수 있습니다."
+        if me.is_admin
+        else "채용담당자는 <b>현업 계정만</b> 만들 수 있습니다."
+    )
+    return _page(
+        "계정 관리",
+        "<div class='card'><h2>계정 추가</h2>" + 오류
+        + "<form method='post' action='/users/add' style='display:flex;gap:8px;flex-wrap:wrap'>"
+        "<input type='text' name='userid' placeholder='아이디' required>"
+        "<input type='text' name='name' placeholder='이름'>"
+        "<input type='password' name='password' placeholder='비밀번호(4자 이상)' required>"
+        f"<select name='role'>{역할옵션}</select>"
+        f"<select name='project'><option value=''>과제 배정(현업만)</option>{과제옵션}</select>"
+        "<button type='submit'>추가</button></form>"
+        f"<p class='muted'>{안내} 현업은 배정된 과제의 지원자만 볼 수 있습니다.</p></div>"
+        f"<div class='card'><h2>계정 {len(users)}개</h2><div class='scroll'>"
+        "<table><tr><th>아이디</th><th>이름</th><th>역할</th><th>상태</th>"
+        "<th>배정 과제</th><th>생성</th><th></th></tr>"
+        + "".join(rows) + "</table></div></div>",
+        me=me,
+    )
+
+
+def _org_page(me: User, error: str = "") -> bytes:
+    """부서 · 과제 관리. 과제는 부서에 속한다."""
+    depts = auth.departments()
+    projects = auth.projects()
+
+    카드 = []
+    for d in depts:
+        소속 = [p for p in projects if p["부서_id"] == d["id"]]
+        항목 = "".join(
+            f"<li>{html.escape(p['이름'])}"
+            + (" <span class='muted'>(초대암호 있음)</span>" if p["초대암호"] else "")
+            + " <form method='post' action='/org/project/delete' style='display:inline'"
+            " onsubmit=\"return confirm('과제를 삭제합니다. 배정도 함께 지워집니다.')\">"
+            f"<input type='hidden' name='id' value='{p['id']}'>"
+            "<button class='danger'>삭제</button></form></li>"
+            for p in 소속
+        ) or "<li class='muted'>과제 없음</li>"
+        카드.append(
+            f"<div class='card'><h2>{html.escape(d['이름'])}"
+            f" <span class='muted'>과제 {len(소속)}개</span></h2><ul>{항목}</ul>"
+            "<form method='post' action='/org/project/add' style='display:flex;gap:8px'>"
+            f"<input type='hidden' name='dept' value='{d['id']}'>"
+            "<input type='text' name='name' placeholder='과제 이름' required>"
+            "<input type='password' name='invite' placeholder='초대암호(선택)'>"
+            "<button type='submit'>과제 추가</button></form></div>"
+        )
+
+    오류 = f"<p class='flag'>{html.escape(error)}</p>" if error else ""
+    본문 = (
+        "<div class='card'><h2>부서 추가</h2>" + 오류
+        + "<form method='post' action='/org/dept/add' style='display:flex;gap:8px'>"
+        "<input type='text' name='name' placeholder='부서 이름' required>"
+        "<button type='submit'>추가</button></form>"
+        "<p class='muted'>과제는 부서에 속합니다. 표에서 부서를 고르면 그 부서의 과제만 나옵니다.</p>"
+        "</div>"
+        + ("".join(카드) or "<div class='card muted'>부서를 먼저 추가하세요.</div>")
+    )
+    return _page("부서·과제 관리", 본문, me=me)
+
+
+def _history_page(me: User, 대상종류: str = "", limit: int = 300) -> bytes:
+    entries = audit.recent(limit, 대상종류=대상종류)
+    rows = "".join(
+        f"<tr><td>{html.escape(e.일시)}</td><td>{html.escape(e.사용자)}</td>"
+        f"<td>{html.escape(e.대상종류)}</td><td>{html.escape(e.대상)}</td>"
+        f"<td style='white-space:normal'>{html.escape(e.summary())}</td></tr>"
+        for e in entries
+    ) or "<tr><td colspan='5' class='muted'>이력이 없습니다.</td></tr>"
+    탭 = " ".join(
+        f"<a class='btn {'' if k == 대상종류 else 'sec'}'"
+        f" href='/history?kind={urllib.parse.quote(k)}'>{k or '전체'}</a>"
+        for k in ("", "지원자", "계정", "명칭", "과제", "로그인")
+    )
+    return _page(
+        "변경 이력",
+        f"<div class='card'><h2>변경 이력 <span class='muted'>총 {audit.count()}건</span></h2>"
+        f"<p>{탭}</p><div class='scroll'><table>"
+        "<tr><th>일시</th><th>사용자</th><th>종류</th><th>대상</th><th>내용</th></tr>"
+        f"{rows}</table></div></div>",
+        me=me,
+    )
+
+
 # ---------------------------------------------------------------------------
 # HTTP 핸들러
 # ---------------------------------------------------------------------------
@@ -461,13 +678,25 @@ class Handler(BaseHTTPRequestHandler):
         print(f"[{now_kst().strftime('%H:%M:%S')}] {fmt % args}")
 
     # -- 유틸 ---------------------------------------------------------------
-    def _session_ok(self) -> bool:
-        cookie = self.headers.get("Cookie", "")
-        for part in cookie.split(";"):
+    def _token(self) -> str:
+        for part in self.headers.get("Cookie", "").split(";"):
             k, _, v = part.strip().partition("=")
-            if k == "cvsession" and v in _sessions:
-                return True
-        return False
+            if k == "cvsession":
+                return v
+        return ""
+
+    def _user(self) -> User | None:
+        return auth.user_for_session(self._token())
+
+    def _session_ok(self) -> bool:
+        return self._user() is not None
+
+    def _deny(self, 이유: str = "권한이 없습니다.") -> None:
+        self._send(
+            _page("권한 없음", f"<div class='card'><h2>권한 없음</h2><p>{html.escape(이유)}</p>"
+                  "<p><a class='btn sec' href='/'>돌아가기</a></p></div>"),
+            code=403,
+        )
 
     def _send(self, body: bytes, ctype: str = "text/html; charset=utf-8", code: int = 200,
               extra: dict[str, str] | None = None) -> None:
@@ -498,28 +727,40 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/login":
             return self._send(_login_page())
         if path == "/logout":
-            cookie = self.headers.get("Cookie", "")
-            for part in cookie.split(";"):
-                k, _, v = part.strip().partition("=")
-                if k == "cvsession":
-                    _sessions.discard(v)
+            auth.end_session(self._token())
             return self._redirect("/login")
 
-        if not self._session_ok():
+        me = self._user()
+        if me is None:
             return self._redirect("/login")
 
         if path == "/":
             params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             return self._send(
                 _dashboard(
+                    me,
                     q=(params.get("q") or [""])[0],
                     review_only=bool(params.get("review")),
+                    년도=(params.get("year") or [""])[0],
                 )
             )
         if path == "/candidate":
             params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             cid = (params.get("id") or [""])[0]
-            return self._send(_candidate_page(cid))
+            return self._send(_candidate_page(cid, me, (params.get("err") or [""])[0]))
+        if path == "/users":
+            if not can(me, "계정_현업추가"):
+                return self._deny()
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            return self._send(_users_page(me, (params.get("err") or [""])[0]))
+        if path == "/org":
+            if not can(me, "부서과제_관리"):
+                return self._deny()
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            return self._send(_org_page(me, (params.get("err") or [""])[0]))
+        if path == "/history":
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            return self._send(_history_page(me, (params.get("kind") or [""])[0]))
         if path == "/candidate/file":
             params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             cid = (params.get("id") or [""])[0]
@@ -537,6 +778,8 @@ class Handler(BaseHTTPRequestHandler):
                 extra={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"},
             )
         if path == "/names":
+            if not can(me, "명칭_관리"):
+                return self._deny()
             params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             return self._send(_names_page((params.get("kind") or ["학회"])[0]))
         if path == "/export.xlsx":
@@ -564,28 +807,29 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/login":
             data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            아이디 = (data.get("userid") or [""])[0].strip()
             pw = (data.get("password") or [""])[0]
-            if not WEB_PASSWORD:
-                where = f".env 를 {LOADED_FROM} 에서 읽었지만" if LOADED_FROM else ".env 를 찾지 못했고"
+            if not auth.count():
                 return self._send(
-                    _login_page(
-                        f"CVTOOL_WEB_PASSWORD 가 비어 있습니다. {where} 그 안에 "
-                        "CVTOOL_WEB_PASSWORD 값이 없습니다. 서버 콘솔 메시지를 확인하세요."
-                    )
+                    _login_page("계정이 하나도 없습니다. 서버 콘솔 안내를 확인하세요.")
                 )
-            # compare_digest 는 비ASCII str 을 거부한다. 한글 비밀번호도 되도록 바이트로 비교.
-            if secrets.compare_digest(pw.encode("utf-8"), WEB_PASSWORD.encode("utf-8")):
-                token = secrets.token_urlsafe(32)
-                _sessions.add(token)
-                return self._redirect(
-                    "/", {"Set-Cookie": f"cvsession={token}; HttpOnly; Path=/; SameSite=Strict"}
-                )
-            return self._send(_login_page("비밀번호가 틀렸습니다."))
+            user = auth.authenticate(아이디, pw)
+            if user is None:
+                audit.record(아이디 or "(빈칸)", "로그인", 아이디 or "-", 비고="로그인 실패")
+                return self._send(_login_page("아이디 또는 비밀번호가 틀렸습니다."))
+            token = auth.start_session(user.아이디)
+            audit.record(user.아이디, "로그인", user.아이디, 비고="로그인")
+            return self._redirect(
+                "/", {"Set-Cookie": f"cvsession={token}; HttpOnly; Path=/; SameSite=Strict"}
+            )
 
-        if not self._session_ok():
+        me = self._user()
+        if me is None:
             return self._redirect("/login")
 
         if path == "/upload":
+            if not can(me, "지원자_등록"):
+                return self._deny()
             form = parse_multipart(self._read_body(), self.headers.get("Content-Type", ""))
             if not form.files:
                 return self._redirect("/")
@@ -605,7 +849,131 @@ class Handler(BaseHTTPRequestHandler):
                     _set_status(safe_name, "실패", f"{type(exc).__name__}: {exc}")
             return self._redirect("/")
 
+        if path == "/candidate/edit":
+            if not can(me, "지원자_수정"):
+                return self._deny()
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            cid = (data.get("id") or [""])[0]
+            항목 = (data.get("항목") or [""])[0]
+            새값 = (data.get("새값") or [""])[0]
+            이전값 = (data.get("이전값") or [""])[0]
+            rec = store.get(cid)
+            뒤로 = f"/candidate?id={urllib.parse.quote(cid)}"
+            if rec is None:
+                return self._redirect(뒤로)
+            try:
+                옛값, 저장값 = apply_edit(rec, 항목, 새값, 기대_이전값=이전값)
+            except (ValidationError, ConflictError) as exc:
+                return self._redirect(f"{뒤로}&err={urllib.parse.quote(str(exc))}")
+            if 옛값 != 저장값:
+                store.save(rec)
+                audit.record(me.아이디, "지원자", cid, 항목=항목, 이전값=옛값, 새값=저장값)
+            return self._redirect(뒤로)
+
+        if path == "/candidate/year":
+            if not can(me, "지원자_수정"):
+                return self._deny()
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            cid = (data.get("id") or [""])[0]
+            년도 = (data.get("년도") or [""])[0]
+            뒤로 = f"/candidate?id={urllib.parse.quote(cid)}"
+            옛 = store.year_of(cid)
+            try:
+                store.set_year(cid, 년도)
+            except ValueError as exc:
+                return self._redirect(f"{뒤로}&err={urllib.parse.quote(str(exc))}")
+            if 옛 != 년도:
+                audit.record(me.아이디, "지원자", cid, 항목="등록년도", 이전값=옛, 새값=년도)
+            return self._redirect(뒤로)
+
+        if path == "/users/add":
+            if not can(me, "계정_현업추가"):
+                return self._deny()
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            역할 = (data.get("role") or ["현업"])[0]
+            if 역할 != "현업" and not can(me, "계정_전체관리"):
+                return self._redirect("/users?err=" + urllib.parse.quote(
+                    "채용담당자는 현업 계정만 만들 수 있습니다."))
+            try:
+                u = auth.create_user(
+                    (data.get("userid") or [""])[0],
+                    (data.get("name") or [""])[0],
+                    (data.get("password") or [""])[0],
+                    역할,
+                    생성자=me.아이디,
+                )
+            except ValueError as exc:
+                return self._redirect("/users?err=" + urllib.parse.quote(str(exc)))
+            과제 = (data.get("project") or [""])[0]
+            if 과제 and u.역할 == "현업":
+                auth.assign(u.아이디, int(과제))
+            audit.record(me.아이디, "계정", u.아이디, 비고=f"{u.역할} 계정 생성")
+            return self._redirect("/users")
+
+        if path == "/users/toggle":
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            대상 = auth.get_user((data.get("id") or [""])[0])
+            if 대상 is None or 대상.아이디 == me.아이디:
+                return self._redirect("/users")
+            if not (can(me, "계정_전체관리") or 대상.역할 == "현업"):
+                return self._deny()
+            auth.set_active(대상.아이디, not 대상.활성)
+            if 대상.활성:
+                auth.end_all_sessions(대상.아이디)
+            audit.record(me.아이디, "계정", 대상.아이디,
+                         비고="비활성화" if 대상.활성 else "활성화")
+            return self._redirect("/users")
+
+        if path == "/users/delete":
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            대상 = auth.get_user((data.get("id") or [""])[0])
+            if 대상 is None or 대상.아이디 == me.아이디:
+                return self._redirect("/users")
+            if not (can(me, "계정_전체관리") or 대상.역할 == "현업"):
+                return self._deny()
+            auth.delete_user(대상.아이디)
+            audit.record(me.아이디, "계정", 대상.아이디, 비고="계정 삭제")
+            return self._redirect("/users")
+
+        if path == "/org/dept/add":
+            if not can(me, "부서과제_관리"):
+                return self._deny()
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            try:
+                auth.add_department((data.get("name") or [""])[0])
+            except ValueError as exc:
+                return self._redirect("/org?err=" + urllib.parse.quote(str(exc)))
+            audit.record(me.아이디, "과제", (data.get("name") or [""])[0], 비고="부서 추가")
+            return self._redirect("/org")
+
+        if path == "/org/project/add":
+            if not can(me, "부서과제_관리"):
+                return self._deny()
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            try:
+                auth.add_project(
+                    int((data.get("dept") or ["0"])[0]),
+                    (data.get("name") or [""])[0],
+                    (data.get("invite") or [""])[0],
+                )
+            except (ValueError, TypeError) as exc:
+                return self._redirect("/org?err=" + urllib.parse.quote(str(exc)))
+            audit.record(me.아이디, "과제", (data.get("name") or [""])[0], 비고="과제 추가")
+            return self._redirect("/org")
+
+        if path == "/org/project/delete":
+            if not can(me, "부서과제_관리"):
+                return self._deny()
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            try:
+                auth.delete_project(int((data.get("id") or ["0"])[0]))
+            except (ValueError, TypeError):
+                pass
+            return self._redirect("/org")
+
         if path == "/candidate/delete":
+            if not can(me, "지원자_삭제"):
+                return self._deny()
             data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
             cid = (data.get("id") or [""])[0]
             if cid:
@@ -613,6 +981,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._redirect("/")
 
         if path == "/candidates/delete":
+            if not can(me, "지원자_삭제"):
+                return self._deny()
             data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
             ids = data.get("ids") or []
             if ids:
@@ -640,6 +1010,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._redirect("/")
 
         if path == "/names/save":
+            if not can(me, "명칭_관리"):
+                return self._deny()
             data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
             kind = (data.get("kind") or ["학회"])[0]
             try:
@@ -655,6 +1027,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._redirect(f"/names?kind={urllib.parse.quote(kind)}")
 
         if path == "/names/merge":
+            if not can(me, "명칭_관리"):
+                return self._deny()
             data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
             kind = (data.get("kind") or ["학회"])[0]
             try:
@@ -666,6 +1040,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._redirect(f"/names?kind={urllib.parse.quote(kind)}")
 
         if path == "/names/tiers":
+            if not can(me, "열_구성"):
+                return self._deny("표 열 구성은 관리자만 바꿀 수 있습니다.")
             data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
             kind = (data.get("kind") or ["학회"])[0]
             켠것 = set(data.get("tier") or [])
@@ -709,6 +1085,16 @@ def _startup_cleanup() -> list[str]:
 
 
 def main() -> int:
+    새관리자 = bootstrap_admin()
+    if 새관리자:
+        print(f"✅ 최초 관리자 계정을 만들었습니다: 아이디 '{새관리자}'")
+        print("   비밀번호는 CVTOOL_ADMIN_PASSWORD (없으면 CVTOOL_WEB_PASSWORD) 값입니다.")
+    elif not auth.count():
+        print("⚠️  계정이 하나도 없고 비밀번호 설정도 없어 로그인할 수 없습니다.")
+        print("   .env 에 CVTOOL_ADMIN_PASSWORD 를 넣고 다시 실행하세요.")
+    else:
+        print(f"계정 {auth.count()}개 / 변경 이력 {audit.count()}건")
+
     leftovers = _startup_cleanup()
     if leftovers:
         print(f"⚠️  이전 실행에서 남은 CV 원본 {len(leftovers)}건을 삭제했습니다: "

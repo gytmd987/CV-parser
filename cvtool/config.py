@@ -55,8 +55,9 @@ class Settings:
     pg_db: str = _env("CVTOOL_PG_DB", "cvtool_db")
     qdrant_url: str = _env("CVTOOL_QDRANT_URL", "http://127.0.0.1:6335")
 
-    # --- 개인정보 보관 기간 (채용 종료 후 N개월) ---
-    retention_months: int = int(_env("CVTOOL_RETENTION_MONTHS", "6"))
+    # --- 개인정보 보관 기간 (개월). 0 이면 무제한(자동 삭제 안 함) ---
+    # 무제한이 기본이다. 파기 시점은 담당자가 직접 판단해 수동으로 삭제한다.
+    retention_months: int = int(_env("CVTOOL_RETENTION_MONTHS", "0"))
 
     # CV 원문 텍스트를 DB 에 보관할지. 기본은 끔(개인정보 최소 수집).
     # 켜면 재업로드 없이 재분석할 수 있지만 CV 전문이 DB 에 남는다.
