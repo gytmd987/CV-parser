@@ -30,10 +30,11 @@ from ..export import records_to_tsv, records_to_xlsx
 from ..fsutil import is_world_readable, mode_of, safe_filename, secure_dir, secure_file
 from ..extract import extract_cv_from_text
 from ..ingestion.parsers import UnsupportedFormat, extract_text
-from ..schemas import COLUMNS
+from ..schemas import columns as table_columns
 from ..store import SUPPORTED_SUFFIXES, CandidateStore
 from ..timeutil import now_kst
-from ..venues import DEFAULT_TIERS, VenueRegistry, apply_registry
+from ..dedup import fingerprint, find_duplicates
+from ..names import GRADED_KINDS, KINDS, NameRegistry, observe_record
 from .multipart import parse_multipart
 
 DATA_DIR = Path(os.environ.get("CVTOOL_DATA_DIR", Path.home() / ".cvtool"))
@@ -49,7 +50,14 @@ CONTENT_TYPES = {
 }
 
 store = CandidateStore(DATA_DIR / "candidates.db", DATA_DIR / "files")
-registry = VenueRegistry(DATA_DIR / "venues.db")
+_names_db = DATA_DIR / "names.db"
+_old_venues = DATA_DIR / "venues.db"
+if _old_venues.is_file() and not _names_db.is_file():
+    # 예전 학회 목록을 그대로 이어받는다 (분류해둔 등급이 날아가면 안 된다)
+    import shutil
+
+    shutil.copy2(_old_venues, _names_db)
+registry = NameRegistry(_names_db)
 
 _sessions: set[str] = set()
 _jobs: "queue.Queue[tuple[str, str, str | None]]" = queue.Queue()
@@ -78,9 +86,26 @@ def _worker() -> None:
                 _set_status(filename, "실패", "텍스트를 추출하지 못했습니다(스캔 PDF?)")
                 continue
             rec = extract_cv_from_text(text, 원본_파일명=filename, 지원자_ID=지원자_ID)
-            apply_registry(rec, registry)
-            store.save(rec, 원문_텍스트=text, 저장_파일명=저장_파일명)
-            state = "검토필요" if rec.검토_필요 == "Y" else "완료"
+
+            # 이름들을 사전에 등록만 한다. 레코드 값은 건드리지 않는다.
+            미분류 = observe_record(rec, registry)
+            if 미분류:
+                사유 = "미분류 학회/저널: " + ", ".join(미분류)
+                rec.검토_사유 = f"{rec.검토_사유} / {사유}" if rec.검토_사유 else 사유
+                rec.검토_필요 = "Y"
+
+            # 중복 검토
+            fp = fingerprint(text)
+            후보 = find_duplicates(rec, fp, store.fingerprints())
+            메모 = " / ".join(str(m) for m in 후보)
+            if 후보:
+                확실 = [m for m in 후보 if m.수준 == "확실"]
+                말머리 = "중복 확실" if 확실 else "중복 의심"
+                rec.검토_사유 = f"{rec.검토_사유} / {말머리}: {메모}" if rec.검토_사유 else f"{말머리}: {메모}"
+                rec.검토_필요 = "Y"
+
+            store.save(rec, 원문_텍스트=text, 저장_파일명=저장_파일명, 지문=fp, 중복_메모=메모)
+            state = "중복의심" if 후보 else ("검토필요" if rec.검토_필요 == "Y" else "완료")
             _set_status(filename, state, rec.검토_사유)
         except Exception as exc:  # noqa: BLE001 - 워커가 죽으면 안 된다
             _set_status(filename, "실패", f"{type(exc).__name__}: {exc}")
@@ -130,6 +155,9 @@ input[type=password],input[type=text],select{padding:7px 9px;border:1px solid va
 .p-완료{background:#dcfce7;color:#15803d}
 .p-검토필요{background:#fef3c7;color:#92400e}
 .p-실패{background:#fee2e2;color:#b91c1c}
+.p-중복의심{background:#ffe4e6;color:#9f1239}
+.p-대기중{background:#e5e7eb;color:#374151}
+.dup{background:#fff1f2}
 """
 
 
@@ -139,7 +167,7 @@ def _page(title: str, body: str, nav: bool = True) -> bytes:
     header = (
         "<header><a href='/'>CV 분석</a>"
         "<a href='/'>지원자</a>"
-        f"<a href='/venues'>학회·저널 관리{badge}</a>"
+        f"<a href='/names?kind=학회'>명칭 관리{badge}</a>"
         "<span class='sp'></span><a href='/logout'>로그아웃</a></header>"
         if nav
         else ""
@@ -213,16 +241,17 @@ def _dashboard(q: str = "", review_only: bool = False) -> bytes:
             f"되돌릴 수 없습니다. 진행할까요?')\">만료분 {만료}명 삭제</button></form></div>"
         )
 
-    head = "".join(f"<th>{html.escape(c)}</th>" for c in COLUMNS)
+    COLS = table_columns(registry)
+    head = "".join(f"<th>{html.escape(c)}</th>" for c in COLS)
     body_rows = []
     for rec in records:
-        row = rec.to_row()
+        row = rec.to_row(registry)
         cells = [
             f"<td><input type='checkbox' name='ids' value='{html.escape(rec.지원자_ID)}'></td>",
             f"<td><a href='/candidate?id={urllib.parse.quote(rec.지원자_ID)}'>상세</a></td>",
             f"<td class='muted'>{html.escape(expiry.get(rec.지원자_ID, ''))}</td>",
         ]
-        for c in COLUMNS:
+        for c in COLS:
             v = html.escape(str(row.get(c, "") or ""))
             cls = " class='flag'" if c == "검토_필요" and v == "Y" else ""
             cells.append(f"<td{cls} title='{v}'>{v}</td>")
@@ -282,12 +311,12 @@ def _candidate_page(지원자_ID: str) -> bytes:
     if rec is None:
         return _page("없음", "<div class='card'>해당 지원자를 찾을 수 없습니다.</div>")
     meta = store.meta(지원자_ID) or {}
-    row = rec.to_row()
+    row = rec.to_row(registry)
 
     항목 = "".join(
         f"<tr><th style='width:180px'>{html.escape(c)}</th>"
         f"<td style='white-space:normal;max-width:none'>{html.escape(str(row.get(c,'') or '')) or '<span class=muted>-</span>'}</td></tr>"
-        for c in COLUMNS
+        for c in table_columns(registry)
     )
     관리 = "".join(
         f"<tr><th style='width:180px'>{k}</th><td>{html.escape(str(v))}</td></tr>"
@@ -333,52 +362,92 @@ def _candidate_page(지원자_ID: str) -> bytes:
     )
 
 
-def _venues_page() -> bytes:
-    venues = registry.list_all()
-    tier_opts = lambda cur: "".join(  # noqa: E731
-        f"<option value='{t}'{' selected' if t == cur else ''}>{t}</option>"
-        for t in DEFAULT_TIERS
-    )
-    sel = lambda name, cur, opts: (  # noqa: E731
-        f"<select name='{name}'>"
-        + "".join(
-            f"<option value='{o}'{' selected' if o == cur else ''}>{o or '-'}</option>"
-            for o in opts
-        )
-        + "</select>"
+def _names_page(종류: str) -> bytes:
+    """학교·학회·저널·전공을 같은 화면에서 관리한다.
+
+    같은 대상을 다르게 적은 표기들을 하나로 묶고, 대표명을 정한다.
+    여기서 고치면 이미 등록된 지원자 표에도 곧바로 반영된다.
+    """
+    if 종류 not in KINDS:
+        종류 = "학회"
+    items = registry.list_all(종류)
+    등급목록 = registry.tier_names()
+
+    탭 = " ".join(
+        f"<a class='btn {'' if k == 종류 else 'sec'}' href='/names?kind={urllib.parse.quote(k)}'>"
+        f"{k}"
+        + (f" <b>{registry.unclassified_count(k)}</b>" if k in GRADED_KINDS
+           and registry.unclassified_count(k) else "")
+        + "</a>"
+        for k in KINDS
     )
 
+    등급열 = ""
+    if 종류 in GRADED_KINDS:
+        체크 = "".join(
+            f"<label style='margin-right:14px'><input type='checkbox' name='tier'"
+            f" value='{html.escape(t['이름'])}'{' checked' if t['표에_표시'] else ''}>"
+            f"{html.escape(t['이름'])}</label>"
+            for t in registry.tiers()
+            if t["이름"] != "미분류"
+        )
+        등급열 = (
+            "<div class='card'><h2>표에 개수 열로 낼 등급</h2>"
+            "<form method='post' action='/names/tiers'>"
+            f"<input type='hidden' name='kind' value='{html.escape(종류)}'>"
+            f"{체크}<button type='submit'>저장</button></form>"
+            "<p class='muted'>켠 등급마다 <code>1저자_해외논문_(등급)</code> 열이 표에 생깁니다.</p>"
+            "</div>"
+        )
+
+    선택지 = "".join(
+        f"<option value='{i.id}'>{html.escape(i.표시명)}</option>" for i in items
+    )
     rows = []
-    for v in venues:
+    for i in items:
+        별칭 = registry.aliases_of(i.id)
+        별칭표시 = f"<span class='muted'> +별칭 {len(별칭)}</span>" if 별칭 else ""
+        등급칸 = ""
+        if 종류 in GRADED_KINDS:
+            등급opt = "".join(
+                f"<option{' selected' if t == i.등급 else ''}>{html.escape(t)}</option>"
+                for t in 등급목록
+            )
+            해외opt = "".join(
+                f"<option{' selected' if v == i.국내해외 else ''}>{v}</option>"
+                for v in ("불명", "해외", "국내")
+            )
+            등급칸 = f"<select name='등급'>{등급opt}</select><select name='국내해외'>{해외opt}</select>"
         rows.append(
-            f"<tr><td>{html.escape(v.표시명)}</td>"
-            f"<td>{v.발견횟수}</td>"
-            f"<td><form method='post' action='/venues' style='display:flex;gap:6px'>"
-            f"<input type='hidden' name='id' value='{v.id}'>"
-            f"<select name='등급'>{tier_opts(v.등급)}</select>"
-            f"{sel('유형', v.유형, ['', '학회', '저널', '기타'])}"
-            f"{sel('국내해외', v.국내해외, ['불명', '해외', '국내'])}"
-            f"<button type='submit'>저장</button></form></td></tr>"
+            f"<tr><td>{html.escape(i.표시명)}{별칭표시}</td><td>{i.발견횟수}</td>"
+            f"<td><form method='post' action='/names/save' style='display:flex;gap:6px'>"
+            f"<input type='hidden' name='id' value='{i.id}'>"
+            f"<input type='hidden' name='kind' value='{html.escape(종류)}'>"
+            f"<input type='text' name='표시명' value='{html.escape(i.표시명)}' style='width:200px'>"
+            f"{등급칸}<button type='submit'>저장</button></form></td>"
+            f"<td><form method='post' action='/names/merge' style='display:flex;gap:6px'"
+            f" onsubmit=\"return confirm('이 표기를 선택한 항목으로 묶습니다. 되돌리려면 다시 등록해야 합니다.')\">"
+            f"<input type='hidden' name='id' value='{i.id}'>"
+            f"<input type='hidden' name='kind' value='{html.escape(종류)}'>"
+            f"<select name='into'>{선택지}</select>"
+            f"<button type='submit' class='sec'>여기로 묶기</button></form></td></tr>"
         )
 
-    미분류 = registry.unclassified_count()
-    note = (
-        f"<div class='warn'>미분류 <b>{미분류}건</b> — 위쪽에 먼저 표시됩니다.</div>"
-        if 미분류
-        else "<p class='ok'>모두 분류되었습니다.</p>"
-    )
-    table = (
-        f"<table><tr><th>학회/저널</th><th>발견</th><th>분류</th></tr>{''.join(rows)}</table>"
+    표 = (
+        f"<table><tr><th>대표명</th><th>발견</th><th>수정</th><th>다른 표기와 묶기</th></tr>"
+        f"{''.join(rows)}</table>"
         if rows
-        else "<p class='muted'>아직 등록된 학회·저널이 없습니다. CV를 업로드하면 자동으로 등록됩니다.</p>"
+        else "<p class='muted'>아직 등록된 항목이 없습니다. CV를 업로드하면 자동으로 등록됩니다.</p>"
     )
     return _page(
-        "학회·저널 관리",
-        f"""<div class='card'><h2>학회·저널 등급 관리</h2>{note}
-        <p class='muted'>CV에서 발견된 제출처 중 목록에 없는 것은 자동으로
-        '미분류'로 추가됩니다. 등급·유형·국내해외를 지정하면 이후 추출과
-        엑셀 출력에 반영됩니다.</p>
-        <div class='scroll'>{table}</div></div>""",
+        f"{종류} 관리",
+        f"""<div class='card'><h2>명칭 관리</h2><p>{탭}</p>
+        <p class='muted'>같은 대상을 다르게 적은 표기(예: 포항공대 / POSTECH / 포항공과대학교)를
+        <b>여기로 묶기</b>로 하나로 만들고 대표명을 정하세요.
+        <b>고치면 이미 등록된 지원자 표에도 바로 반영됩니다.</b></p></div>
+        {등급열}
+        <div class='card'><h2>{html.escape(종류)} {len(items)}건</h2>
+        <div class='scroll'>{표}</div></div>""",
     )
 
 
@@ -467,10 +536,11 @@ class Handler(BaseHTTPRequestHandler):
                 fpath.read_bytes(), ctype,
                 extra={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"},
             )
-        if path == "/venues":
-            return self._send(_venues_page())
+        if path == "/names":
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            return self._send(_names_page((params.get("kind") or ["학회"])[0]))
         if path == "/export.xlsx":
-            data = records_to_xlsx(store.list_all())
+            data = records_to_xlsx(store.list_all(), registry)
             stamp = now_kst().strftime("%Y%m%d_%H%M")
             return self._send(
                 data,
@@ -478,7 +548,7 @@ class Handler(BaseHTTPRequestHandler):
                 extra={"Content-Disposition": f'attachment; filename="cv_{stamp}.xlsx"'},
             )
         if path == "/export.tsv":
-            tsv = records_to_tsv(store.list_all())
+            tsv = records_to_tsv(store.list_all(), registry)
             body = _page(
                 "TSV",
                 "<div class='card'><h2>엑셀 붙여넣기용 TSV</h2>"
@@ -569,19 +639,40 @@ class Handler(BaseHTTPRequestHandler):
                 _status.clear()
             return self._redirect("/")
 
-        if path == "/venues":
+        if path == "/names/save":
             data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            kind = (data.get("kind") or ["학회"])[0]
             try:
-                vid = int((data.get("id") or ["0"])[0])
+                nid = int((data.get("id") or ["0"])[0])
             except ValueError:
-                return self._redirect("/venues")
+                return self._redirect(f"/names?kind={urllib.parse.quote(kind)}")
             registry.classify(
-                vid,
+                nid,
+                표시명=(data.get("표시명") or [None])[0],
                 등급=(data.get("등급") or [None])[0],
-                유형=(data.get("유형") or [None])[0],
                 국내해외=(data.get("국내해외") or [None])[0],
             )
-            return self._redirect("/venues")
+            return self._redirect(f"/names?kind={urllib.parse.quote(kind)}")
+
+        if path == "/names/merge":
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            kind = (data.get("kind") or ["학회"])[0]
+            try:
+                registry.merge(
+                    int((data.get("id") or ["0"])[0]), int((data.get("into") or ["0"])[0])
+                )
+            except (ValueError, TypeError):
+                pass
+            return self._redirect(f"/names?kind={urllib.parse.quote(kind)}")
+
+        if path == "/names/tiers":
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            kind = (data.get("kind") or ["학회"])[0]
+            켠것 = set(data.get("tier") or [])
+            for t in registry.tiers():
+                if t["이름"] != "미분류":
+                    registry.set_tier_column(t["이름"], t["이름"] in 켠것)
+            return self._redirect(f"/names?kind={urllib.parse.quote(kind)}")
 
         return self._send(_page("없음", "<div class='card'>없는 경로입니다.</div>"), code=404)
 

@@ -36,6 +36,8 @@ CREATE INDEX IF NOT EXISTS idx_expiry ON candidates(보관_만료일);
 _ADDED_COLUMNS = {
     "원문_텍스트": "TEXT DEFAULT ''",
     "저장_파일명": "TEXT DEFAULT ''",
+    "지문": "TEXT DEFAULT ''",          # 중복 검토용. 원문 복원 불가
+    "중복_메모": "TEXT DEFAULT ''",      # 등록 시 발견한 중복 후보
 }
 
 SUPPORTED_SUFFIXES = {".pdf", ".docx", ".txt", ".md"}
@@ -57,6 +59,8 @@ class CandidateStore:
         )
         self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
         self._migrate()
         self._conn.commit()
@@ -106,7 +110,14 @@ class CandidateStore:
                 path.unlink(missing_ok=True)
 
     # -- 쓰기 -------------------------------------------------------------
-    def save(self, rec: CVRecord, 원문_텍스트: str = "", 저장_파일명: str | None = None) -> None:
+    def save(
+        self,
+        rec: CVRecord,
+        원문_텍스트: str = "",
+        저장_파일명: str | None = None,
+        지문: list[str] | None = None,
+        중복_메모: str | None = None,
+    ) -> None:
         now = now_kst()
         만료 = expiry_date(now, settings.retention_months).strftime("%Y-%m-%d")
         보관할_원문 = 원문_텍스트 if settings.store_cv_text else ""
@@ -115,21 +126,54 @@ class CandidateStore:
                 "SELECT 저장_파일명 FROM candidates WHERE 지원자_ID=?", (rec.지원자_ID,)
             ).fetchone()
             저장_파일명 = row["저장_파일명"] if row else ""
+        기존 = self._conn.execute(
+            "SELECT 지문, 중복_메모, 등록일시 FROM candidates WHERE 지원자_ID=?",
+            (rec.지원자_ID,),
+        ).fetchone()
+        if 지문 is None:
+            지문_json = 기존["지문"] if 기존 else ""
+        else:
+            지문_json = json.dumps(지문)
+        if 중복_메모 is None:
+            중복_메모 = 기존["중복_메모"] if 기존 else ""
+        # 재분석해도 최초 등록일시는 유지한다
+        등록일시 = 기존["등록일시"] if 기존 else now.strftime("%Y-%m-%d %H:%M:%S")
+
         self._conn.execute(
             "INSERT OR REPLACE INTO candidates"
-            " (지원자_ID, 등록일시, 원본_파일명, 보관_만료일, record_json, 원문_텍스트, 저장_파일명)"
-            " VALUES (?,?,?,?,?,?,?)",
+            " (지원자_ID, 등록일시, 원본_파일명, 보관_만료일, record_json,"
+            "  원문_텍스트, 저장_파일명, 지문, 중복_메모)"
+            " VALUES (?,?,?,?,?,?,?,?,?)",
             (
                 rec.지원자_ID,
-                now.strftime("%Y-%m-%d %H:%M:%S"),
+                등록일시,
                 rec.원본_파일명,
                 만료,
                 rec.model_dump_json(),
                 보관할_원문,
                 저장_파일명 or "",
+                지문_json,
+                중복_메모 or "",
             ),
         )
         self._conn.commit()
+
+    def fingerprints(self) -> list[tuple[CVRecord, list[str]]]:
+        """중복 검토용 (레코드, 지문) 목록."""
+        out = []
+        for row in self._conn.execute("SELECT record_json, 지문 FROM candidates"):
+            try:
+                fp = json.loads(row["지문"]) if row["지문"] else []
+            except json.JSONDecodeError:
+                fp = []
+            out.append((self._row_to_record(row), fp))
+        return out
+
+    def duplicate_note(self, 지원자_ID: str) -> str:
+        row = self._conn.execute(
+            "SELECT 중복_메모 FROM candidates WHERE 지원자_ID=?", (지원자_ID,)
+        ).fetchone()
+        return (row["중복_메모"] or "") if row else ""
 
     def delete(self, 지원자_ID: str) -> bool:
         self._unlink_files([지원자_ID])

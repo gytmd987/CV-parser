@@ -59,6 +59,38 @@ COLUMNS: list[str] = [
     "검토_사유",
 ]
 
+#: 명칭 사전으로 대표명을 붙일 열 (열 이름 -> 사전 종류)
+NAME_COLUMNS: dict[str, str] = {
+    "현재_소속": "학교",
+    "박사_학교": "학교",
+    "석사_학교": "학교",
+    "학사_학교": "학교",
+    "박사_전공": "전공",
+    "석사_전공": "전공",
+    "학사_전공": "전공",
+}
+
+#: 등급별 논문 수 열의 접두사
+TIER_COLUMN_PREFIX = "1저자_해외논문_"
+
+
+def columns(registry=None) -> list[str]:
+    """표에 나갈 열 목록.
+
+    등급별 논문 수 열은 담당자가 켠 등급만 나온다(기본 최우수·우수).
+    registry 가 없으면 기본 열만 돌려준다.
+    """
+    if registry is None:
+        return list(COLUMNS)
+    tiers = registry.column_tiers()
+    out: list[str] = []
+    for col in COLUMNS:
+        out.append(col)
+        if col == "1저자_해외논문_제출처":
+            out.extend(f"{TIER_COLUMN_PREFIX}{t}" for t in tiers)
+    return out
+
+
 # 엑셀에서 반드시 텍스트로 써야 하는 열 (앞자리 0 보존, 날짜 자동변환 방지)
 TEXT_COLUMNS: set[str] = {
     "생년월일",
@@ -225,22 +257,74 @@ class CVRecord(BaseModel):
     원본_파일명: str = ""
     추출_일시: str = ""
 
-    def 해외논문_제출처(self) -> str:
-        """해외 학회/저널 1저자 논문만 한 열로 합친다. 구분자는 ' | '."""
+    def papers_view(self, registry=None) -> list[dict]:
+        """논문을 화면에 보일 형태로 푼다.
+
+        ⚠️ 저장된 값을 고치지 않는다. 대표명·등급·국내해외를 **볼 때마다**
+        사전에서 다시 읽는다. 그래야 관리화면에서 등급을 바꾸면 이미 등록된
+        지원자 표에도 곧바로 반영된다.
+        """
+        out = []
+        for p in self.논문:
+            종류 = "저널" if p.유형 == "저널" else "학회"
+            표시명, 등급, 국내해외 = p.제출처, "", p.국내해외
+            if registry is not None and p.제출처:
+                found = registry.lookup(종류, p.제출처)
+                if found is not None:
+                    표시명 = found.표시명
+                    등급 = found.등급
+                    # 담당자가 판별한 값이 LLM 추측을 이긴다
+                    if found.국내해외 in ("국내", "해외"):
+                        국내해외 = found.국내해외
+            out.append(
+                {"표시명": 표시명, "연도": p.연도, "등급": 등급, "국내해외": 국내해외}
+            )
+        return out
+
+    def 해외논문_제출처(self, registry=None) -> str:
+        """해외 학회/저널 1저자 논문만 한 열로 합친다."""
         from .normalize import MULTI_SEP
 
-        items = []
-        for p in self.논문:
-            if p.국내해외 != "해외":
-                continue
-            items.append(f"{p.제출처} {p.연도}".strip())
+        items = [
+            f"{v['표시명']} {v['연도']}".strip()
+            for v in self.papers_view(registry)
+            if v["국내해외"] == "해외"
+        ]
         return MULTI_SEP.join(items)
 
-    def to_row(self) -> dict[str, str]:
-        """엑셀 한 줄(dict)로 변환. COLUMNS 순서는 export 에서 적용."""
+    def 등급별_해외논문_수(self, registry=None) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for v in self.papers_view(registry):
+            if v["국내해외"] == "해외" and v["등급"]:
+                counts[v["등급"]] = counts.get(v["등급"], 0) + 1
+        return counts
+
+    def to_row(self, registry=None) -> dict[str, str]:
+        """표 한 줄(dict)로 변환.
+
+        registry 를 주면 학교·전공·학회 이름이 대표명으로 바뀌고
+        등급별 논문 수 열이 붙는다.
+        """
         data = self.model_dump()
-        data["1저자_해외논문_제출처"] = self.해외논문_제출처()
-        return {col: str(data.get(col, "") or "") for col in COLUMNS}
+        data["1저자_해외논문_제출처"] = self.해외논문_제출처(registry)
+
+        if registry is not None:
+            from .normalize import MULTI_SEP
+
+            for col, 종류 in NAME_COLUMNS.items():
+                raw = str(data.get(col, "") or "")
+                if not raw:
+                    continue
+                # 값이 여러 개면 각각 대표명으로 바꾼다
+                parts = [registry.display(종류, part) for part in raw.split(MULTI_SEP)]
+                data[col] = MULTI_SEP.join(parts)
+
+            counts = self.등급별_해외논문_수(registry)
+            for tier in registry.column_tiers():
+                data[f"{TIER_COLUMN_PREFIX}{tier}"] = counts.get(tier, 0) or ""
+
+        cols = columns(registry)
+        return {col: str(data.get(col, "") or "") for col in cols}
 
     def pii_fields(self) -> dict:
         """벡터 DB payload 에 절대 넣으면 안 되는 개인식별정보."""

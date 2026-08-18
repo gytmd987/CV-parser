@@ -14,7 +14,7 @@ import io
 import zipfile
 from typing import Iterable, Sequence
 
-from .schemas import COLUMNS, TEXT_COLUMNS, CVRecord
+from .schemas import COLUMNS, TEXT_COLUMNS, CVRecord, columns
 
 _ESCAPE = {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;"}
 
@@ -138,17 +138,20 @@ def build_xlsx(rows: Sequence[dict[str, str]], header: Sequence[str] | None = No
     return buf.getvalue()
 
 
-def records_to_xlsx(records: Iterable[CVRecord]) -> bytes:
-    return build_xlsx([r.to_row() for r in records])
+def records_to_xlsx(records: Iterable[CVRecord], registry=None) -> bytes:
+    """registry 를 주면 대표명·등급 열이 반영된다."""
+    cols = columns(registry)
+    return build_xlsx([r.to_row(registry) for r in records], cols)
 
 
-def records_to_tsv(records: Iterable[CVRecord]) -> str:
+def records_to_tsv(records: Iterable[CVRecord], registry=None) -> str:
     """엑셀에 그대로 붙여넣을 수 있는 TSV. 셀 안 탭/줄바꿈은 공백으로 치환."""
     def clean(v: str) -> str:
         return v.replace("\t", " ").replace("\r", " ").replace("\n", " ")
 
-    lines = ["\t".join(COLUMNS)]
+    cols = columns(registry)
+    lines = ["\t".join(cols)]
     for rec in records:
-        row = rec.to_row()
-        lines.append("\t".join(clean(str(row.get(c, "") or "")) for c in COLUMNS))
+        row = rec.to_row(registry)
+        lines.append("\t".join(clean(str(row.get(c, "") or "")) for c in cols))
     return "\n".join(lines)
