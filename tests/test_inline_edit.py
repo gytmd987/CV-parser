@@ -43,7 +43,7 @@ def web(tmp_path_factory):
         base = f"http://127.0.0.1:{port}"
 
         def post(self, path: str, **fields):
-            body = urllib.parse.urlencode(fields, encoding="utf-8").encode()
+            body = urllib.parse.urlencode(fields, doseq=True, encoding="utf-8").encode()
             req = urllib.request.Request(self.base + path, data=body)
             try:
                 with self._opener.open(req) as r:
@@ -230,3 +230,146 @@ def test_logged_out_cell_edit_returns_json(web, cid):
 def test_recruit_table_cells_are_editable(web, cid):
     page = web.get("/recruit")
     assert "data-col=" in page and "/api/cell" in page
+
+
+# --- 명칭 관리 화면 ----------------------------------------------------------
+@pytest.fixture
+def names(web):
+    """소속 3건을 넣고 {표시명: id} 를 돌려준다."""
+    reg = web.module.registry
+    reg._conn.execute("DELETE FROM name_aliases")
+    reg._conn.execute("DELETE FROM names WHERE 종류='소속'")
+    reg._conn.commit()
+    made = [reg.observe("소속", n) for n in ("포항공과대학교", "포항공대", "서울대학교")]
+    return {i.표시명: i.id for i in made}
+
+
+def test_names_page_keeps_navigation(web):
+    """예전에는 이 화면만 me 를 넘기지 않아 상단 메뉴가 통째로 사라졌다."""
+    page = web.get("/names?kind=" + urllib.parse.quote("학교"))
+    assert "/history" in page and "/org" in page
+
+
+def test_names_page_has_merge_bar(web, names):
+    page = web.get("/names?kind=" + urllib.parse.quote("학교"))
+    assert "id='mergeform'" in page
+    assert "form='mergeform' name='ids'" in page
+    assert "대표로 남길 항목 고르기" in page
+
+
+def test_merge_column_is_not_clipped(web, names):
+    """수정 칸이 max-width 260px 에 잘려서 안 보이던 문제."""
+    page = web.get("/names?kind=" + urllib.parse.quote("학교"))
+    assert "td.ctl" in page and "<td class='ctl'>" in page
+
+
+def test_merge_many_at_once(web, names):
+    code, _ = web.post("/names/merge", kind="학교", into=names["포항공과대학교"],
+                       ids=[names["포항공대"], names["서울대학교"]])
+    남은 = [i.표시명 for i in web.module.registry.list_all("학교")]
+    assert 남은 == ["포항공과대학교"]
+    assert web.module.registry.display("학교", "포항공대") == "포항공과대학교"
+
+
+def test_merge_without_selection_explains_why(web, names):
+    web.post("/names/merge", kind="학교", into=names["포항공대"])
+    assert len(web.module.registry.list_all("학교")) == 3      # 아무것도 안 사라졌다
+
+
+def test_merge_ignores_target_itself(web, names):
+    """대표를 자기 자신에 묶으면 항목이 사라져버린다. 걸러야 한다."""
+    web.post("/names/merge", kind="학교", into=names["포항공대"], ids=[names["포항공대"]])
+    assert web.module.registry.get(names["포항공대"]) is not None
+
+
+def test_merge_is_recorded_in_history(web, names):
+    web.post("/names/merge", kind="학교", into=names["포항공과대학교"],
+             ids=[names["포항공대"]])
+    이력 = web.module.audit.recent(50, 대상종류="명칭")
+    assert any(e.항목 == "표기 묶기" and e.이전값 == "포항공대" for e in 이력)
+
+
+def test_bulk_save_renames_only_changed_rows(web, names):
+    """줄마다 저장 버튼을 누르지 않고 표 전체를 한 번에 보낸다."""
+    fields = {"kind": "소속", "id": list(names.values())}
+    for 이름, nid in names.items():
+        fields[f"표시명_{nid}"] = "SNU" if 이름 == "서울대학교" else 이름
+    web.post("/names/save", **fields)
+
+    이름들 = {i.표시명 for i in web.module.registry.list_all("소속")}
+    assert "SNU" in 이름들 and "포항공대" in 이름들
+    이력 = web.module.audit.recent(50, 대상종류="명칭")
+    변경 = [e for e in 이력 if e.항목 == "표시명"]
+    assert len(변경) == 1 and 변경[0].새값 == "SNU"      # 안 바뀐 줄은 이력이 안 남는다
+
+
+def test_save_tells_what_changed(web, names):
+    """저장하고 나면 무엇을 바꿨는지 화면에 남아야 한다."""
+    nid = names["서울대학교"]
+    code, body = web.post("/names/save", kind="소속", id=nid,
+                          **{f"표시명_{nid}": "SNU"})
+    assert "class='done'" in body                    # 리다이렉트를 따라간 결과 화면
+    assert "서울대학교" in body and "SNU" in body
+    assert "1건 저장했습니다" in body
+
+
+def test_old_single_row_merge_form_still_works(web, names):
+    """예전 화면(줄마다 id 하나)에서 온 요청도 받아준다."""
+    web.post("/names/merge", kind="학교", id=names["포항공대"],
+             into=names["포항공과대학교"])
+    assert web.module.registry.get(names["포항공대"]) is None
+
+
+def test_grade_and_display_saved_together(web):
+    """학회 화면은 이름·등급·국내해외를 한 폼으로 함께 저장한다."""
+    reg = web.module.registry
+    나 = reg.observe("학회", "International Conference on Sample Things")
+    code, body = web.post("/names/save", kind="학회", id=나.id,
+                          **{f"표시명_{나.id}": "ICST",
+                             f"등급_{나.id}": "최우수",
+                             f"국내해외_{나.id}": "해외"})
+    이후 = reg.get(나.id)
+    assert (이후.표시명, 이후.등급, 이후.국내해외) == ("ICST", "최우수", "해외")
+    assert "등급 최우수" in body and "해외" in body
+
+
+def test_school_kind_renamed_to_affiliation(web):
+    """학교 사전이 회사까지 담게 '소속' 으로 바뀌었다."""
+    from cvtool.names import KINDS
+    from cvtool.schemas import NAME_COLUMNS
+
+    assert "소속" in KINDS and "학교" not in KINDS
+    assert NAME_COLUMNS["현재_소속"] == "소속"
+    assert NAME_COLUMNS["박사_학교"] == "소속"
+
+
+def test_old_school_bookmark_still_opens(web):
+    """예전 링크(`?kind=학교`)로 들어와도 소속 화면이 떠야 한다."""
+    page = web.get("/names?kind=" + urllib.parse.quote("학교"))
+    assert "소속 " in page
+
+
+def test_company_names_normalize_together(web):
+    """(주) 같은 괄호 표기는 저절로 묶인다."""
+    reg = web.module.registry
+    a = reg.observe("소속", "(주)가나다소프트")
+    b = reg.observe("소속", "가나다소프트")
+    assert a.id == b.id
+
+
+# --- CV 업로드 탭 ------------------------------------------------------------
+def test_upload_has_its_own_tab(web):
+    page = web.get("/")
+    assert "href='/upload'" in page
+
+
+def test_upload_page_has_the_form(web):
+    page = web.get("/upload")
+    assert "enctype='multipart/form-data'" in page
+    assert "CV 없이 지원자 추가" in page
+
+
+def test_dashboard_no_longer_shows_upload_box(web):
+    """표를 보러 올 때마다 업로드 상자가 자리를 차지하지 않게 뺐다."""
+    page = web.get("/")
+    assert "enctype='multipart/form-data'" not in page

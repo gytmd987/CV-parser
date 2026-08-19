@@ -185,3 +185,41 @@ def test_workshop_can_be_merged_into_main_venue(tmp_path):
     reg.merge(워크샵.id, 본.id)
     assert reg.display("학회", "ICML Workshop on Federated Learning") == "ICML"
     assert reg.lookup("학회", "ICML Workshop on Federated Learning").등급 == "최우수"
+
+
+# --- '학교' -> '소속' 이름 변경 ------------------------------------------------
+def test_existing_school_rows_migrate_to_affiliation(tmp_path):
+    """이미 분류해 둔 학교 항목이 마이그레이션으로 사라지면 안 된다."""
+    import sqlite3
+
+    from cvtool.names import NameRegistry
+
+    path = tmp_path / "n.db"
+    conn = sqlite3.connect(str(path))
+    conn.executescript(
+        "CREATE TABLE names (id INTEGER PRIMARY KEY AUTOINCREMENT, 종류 TEXT NOT NULL,"
+        " 정규화키 TEXT NOT NULL, 표시명 TEXT NOT NULL, 등급 TEXT DEFAULT '미분류',"
+        " 국내해외 TEXT DEFAULT '불명', 발견횟수 INTEGER DEFAULT 0,"
+        " 최초등록 TEXT DEFAULT '', UNIQUE(종류, 정규화키));"
+        "CREATE TABLE name_aliases (종류 TEXT NOT NULL, 별칭키 TEXT NOT NULL,"
+        " name_id INTEGER NOT NULL, PRIMARY KEY (종류, 별칭키));"
+    )
+    conn.execute(
+        "INSERT INTO names (종류,정규화키,표시명,발견횟수) VALUES ('학교','postech','POSTECH',7)"
+    )
+    conn.execute("INSERT INTO name_aliases VALUES ('학교','포항공대',1)")
+    conn.commit()
+    conn.close()
+
+    reg = NameRegistry(path)
+    남은 = reg.list_all("소속")
+    assert [(n.표시명, n.발견횟수) for n in 남은] == [("POSTECH", 7)]
+    assert reg.display("소속", "포항공대") == "POSTECH"      # 묶어둔 별칭도 살아 있다
+    assert reg.list_all("학교") == 남은                     # 옛 이름으로 물어도 같은 것
+
+
+def test_company_and_school_share_one_dictionary():
+    """지원자의 현재 소속은 학교일 수도 회사일 수도 있다."""
+    from cvtool.schemas import NAME_COLUMNS
+
+    assert NAME_COLUMNS["현재_소속"] == NAME_COLUMNS["박사_학교"] == "소속"

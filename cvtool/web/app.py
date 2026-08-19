@@ -49,7 +49,13 @@ from ..schemas import columns as table_columns
 from ..store import CUSTOM_TYPES, SUPPORTED_SUFFIXES, CandidateStore
 from ..timeutil import now_kst
 from ..dedup import fingerprint, find_duplicates
-from ..names import GRADED_KINDS, KINDS, NameRegistry, observe_record
+from ..names import (
+    GRADED_KINDS,
+    KINDS,
+    NameRegistry,
+    canonical_kind,
+    observe_record,
+)
 from ..recruit import RECRUIT_COLUMNS, STAGES, STATUSES, RecruitStore
 from .multipart import parse_multipart
 
@@ -198,6 +204,15 @@ td.edit:hover{outline:2px solid var(--accent);outline-offset:-2px}
 td.saved{background:#dcfce7 !important}
 td.err{background:#fee2e2 !important}
 td.edit input,td.edit select{padding:2px 4px;font-size:12.5px;width:100%}
+td.ctl,th.ctl{white-space:normal;max-width:none;overflow:visible}
+.mergebar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#eff6ff;
+ border:1px solid #bfdbfe;border-radius:6px;padding:10px 12px;margin:0 0 12px}
+.mergebar select{min-width:280px;max-width:100%}
+.mergebar b{color:#1d4ed8}
+tr.hide{display:none}
+input.dirty,select.dirty{background:#fef3c7;border-color:#fcd34d}
+.done{background:#dcfce7;border:1px solid #86efac;color:#14532d;padding:10px 14px;
+ border-radius:6px;margin-bottom:14px}
 """
 
 
@@ -205,6 +220,8 @@ def _page(title: str, body: str, nav: bool = True, me: User | None = None) -> by
     미분류 = registry.unclassified_count() if nav else 0
     badge = f' <span class="pill p-미분류">{미분류}</span>' if 미분류 else ""
     링크 = ["<a href='/'>지원자</a>", "<a href='/recruit'>채용 현황</a>"]
+    if can(me, "지원자_등록"):
+        링크.append("<a href='/upload'>CV 업로드</a>")
     if can(me, "명칭_관리"):
         링크.append(f"<a href='/names?kind=학회'>명칭 관리{badge}</a>")
     if can(me, "부서과제_관리"):
@@ -467,24 +484,15 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
         if 수정가능 else ""
     )
     checked = " checked" if review_only else ""
-    보관 = "켜짐 (재분석 가능)" if settings.store_cv_text else "꺼짐 (재분석하려면 재업로드 필요)"
+    처리중 = _busy_count()
+    처리중알림 = (
+        f"<div class='warn'>CV {처리중}건을 분석하고 있습니다. "
+        f"<a href='/upload'>진행 상황 보기 →</a></div>" if 처리중 else ""
+    )
 
     return _page(
         "지원자",
-        f"""{''.join(warns)}
-        <div class='card'><h2>CV 업로드</h2>
-          <form method='post' action='/upload' enctype='multipart/form-data'>
-            <p><input type='file' name='files' multiple accept='.pdf,.docx,.txt,.md'></p>
-            <button type='submit'>업로드 후 분석</button>
-            <span class='muted'>여러 개를 한 번에 선택할 수 있습니다 (PDF/docx/txt).</span>
-          </form>
-          <form method='post' action='/candidate/new' style='margin-top:10px'>
-            <button type='submit' class='sec'>CV 없이 지원자 추가</button>
-            <span class='muted'>다른 지원서로 지원한 경우. 빈 칸을 직접 채웁니다.</span>
-          </form>
-          <p class='muted'>원문 텍스트 보관: <b>{보관}</b> · 보관 기간 {settings.retention_months}개월</p>
-        </div>
-        {_status_table()}
+        f"""{''.join(warns)}{처리중알림}
         <div class='card'>
           <h2>지원자 {len(records)}명{f' / 전체 {전체}명' if len(records) != 전체 else ''}</h2>
           <form method='get' action='/' style='margin-bottom:12px'>
@@ -495,13 +503,55 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
             <button type='submit'>검색</button>
             <a class='btn sec' href='/'>초기화</a>
           </form>
-          <p><a class='btn' href='/export.xlsx'>엑셀(.xlsx) 다운로드</a>
+          <p><a class='btn' href='/upload'>CV 업로드</a>
+             <a class='btn' href='/export.xlsx'>엑셀(.xlsx) 다운로드</a>
              <a class='btn sec' href='/export.tsv'>TSV 보기(복사용)</a></p>
           {안내}
           {table}
         </div>""",
         me=me,
     )
+
+
+def _busy_count() -> int:
+    with _status_lock:
+        return sum(1 for s in _status.values() if s["state"] in ("대기중", "처리중"))
+
+
+def _upload_page(me: User) -> bytes:
+    """CV 업로드 전용 화면.
+
+    예전에는 지원자 목록 맨 위에 업로드 상자가 붙어 있어서, 표를 보러 올 때마다
+    쓰지도 않는 상자가 화면을 차지했다. 탭으로 뺐다.
+    """
+    보관 = "켜짐 (재분석 가능)" if settings.store_cv_text else "꺼짐 (재분석하려면 재업로드 필요)"
+    가능 = ", ".join(sorted(SUPPORTED_SUFFIXES))
+    등록가능 = can(me, "지원자_등록")
+    if not 등록가능:
+        본문 = "<div class='card'><h2>CV 업로드</h2><p>업로드 권한이 없습니다.</p></div>"
+    else:
+        본문 = f"""
+        <div class='card'><h2>CV 업로드</h2>
+          <form method='post' action='/upload' enctype='multipart/form-data'>
+            <p><input type='file' name='files' multiple accept='{가능}'></p>
+            <button type='submit'>업로드 후 분석</button>
+            <span class='muted'>여러 개를 한 번에 고를 수 있습니다 ({가능}).</span>
+          </form>
+          <p class='muted'>분석은 뒤에서 돌아갑니다. 끝나면 아래 현황에 뜨고
+          <a href='/'>지원자 목록</a>에 줄이 생깁니다.</p>
+        </div>
+        <div class='card'><h2>CV 없이 지원자 추가</h2>
+          <form method='post' action='/candidate/new'>
+            <button type='submit' class='sec'>빈 지원자 만들기</button>
+            <span class='muted'>다른 지원서로 지원한 경우. 빈 칸을 직접 채웁니다.</span>
+          </form>
+        </div>
+        <div class='card'><h2>보관 설정</h2>
+          <p class='muted'>원문 텍스트 보관: <b>{보관}</b> ·
+          보관 기간 {settings.retention_months}개월
+          (0 = 무제한) · 설정은 <code>.env</code> 에서 바꿉니다.</p>
+        </div>"""
+    return _page("CV 업로드", 본문 + _status_table(), me=me)
 
 
 def _candidate_page(지원자_ID: str, me: User, error: str = "") -> bytes:
@@ -677,16 +727,58 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "") -> bytes:
     )
 
 
-def _names_page(종류: str) -> bytes:
-    """학교·학회·저널·전공을 같은 화면에서 관리한다.
+#: 명칭 관리 화면 전용 — 이름 좁히기 + 묶기 확인
+_NAMES_JS = """
+function filterNames(q){
+  q = (q || '').trim().toLowerCase();
+  var rows = document.querySelectorAll('tr[data-name]'), 보임 = 0;
+  rows.forEach(function(tr){
+    var hit = !q || (tr.dataset.name || '').indexOf(q) >= 0;
+    tr.classList.toggle('hide', !hit);
+    if(hit) 보임++; else { var c = tr.querySelector('input[name=ids]'); if(c) c.checked = false; }
+  });
+  var out = document.getElementById('namecount');
+  if(out) out.textContent = q ? (보임 + '건 보임') : '';
+}
+function markDirty(el){
+  el.classList.toggle('dirty', el.value !== (el.dataset.orig || ''));
+}
+function confirmMerge(form){
+  var 고른것 = document.querySelectorAll('input[name=ids]:checked');
+  if(!고른것.length){ alert('묶을 표기를 왼쪽에서 하나 이상 체크하세요.'); return false; }
+  var sel = form.querySelector('select[name=into]');
+  if(!sel.value){ alert('대표로 남길 항목을 고르세요.'); return false; }
+  var 대표 = sel.options[sel.selectedIndex].text;
+  for(var i = 0; i < 고른것.length; i++){
+    if(고른것[i].value === sel.value){
+      alert('대표로 고른 항목은 체크에서 빼주세요.'); return false;
+    }
+  }
+  return confirm('체크한 ' + 고른것.length + '개 표기를 「' + 대표 + '」 로 묶습니다.\\n'
+    + '되돌리려면 다시 등록해야 합니다. 진행할까요?');
+}
+"""
+
+
+def _names_page(종류: str, me: User | None = None,
+                error: str = "", msg: str = "") -> bytes:
+    """소속·학회·저널·전공을 같은 화면에서 관리한다.
 
     같은 대상을 다르게 적은 표기들을 하나로 묶고, 대표명을 정한다.
     여기서 고치면 이미 등록된 지원자 표에도 곧바로 반영된다.
+
+    화면 규칙 두 가지가 예전과 다르다.
+      - **저장 버튼은 맨 위 하나뿐이다.** 여러 줄을 고치고 한 번에 저장한다.
+        줄마다 저장을 누르게 하면 20건 고칠 때 20번 눌러야 했다.
+      - **묶기는 체크박스로 여러 개를 한 번에** 한다. 줄마다 목록 상자를 두면
+        항목이 수백 개일 때 상자마다 수백 줄을 그려 화면이 무겁고 칸도 잘렸다.
     """
+    종류 = canonical_kind(종류)
     if 종류 not in KINDS:
         종류 = "학회"
     items = registry.list_all(종류)
     등급목록 = registry.tier_names()
+    등급종류 = 종류 in GRADED_KINDS
 
     탭 = " ".join(
         f"<a class='btn {'' if k == 종류 else 'sec'}' href='/names?kind={urllib.parse.quote(k)}'>"
@@ -698,7 +790,7 @@ def _names_page(종류: str) -> bytes:
     )
 
     등급열 = ""
-    if 종류 in GRADED_KINDS:
+    if 등급종류:
         체크 = "".join(
             f"<label style='margin-right:14px'><input type='checkbox' name='tier'"
             f" value='{html.escape(t['이름'])}'{' checked' if t['표에_표시'] else ''}>"
@@ -715,56 +807,112 @@ def _names_page(종류: str) -> bytes:
             "</div>"
         )
 
-    선택지 = "".join(
-        f"<option value='{i.id}'>{html.escape(i.표시명)}</option>" for i in items
-    )
     rows = []
     for i in items:
         별칭 = registry.aliases_of(i.id)
-        별칭표시 = f"<span class='muted'> +별칭 {len(별칭)}</span>" if 별칭 else ""
+        별칭표시 = (
+            f" <span class='muted' title='{html.escape(chr(10).join(별칭))}'>"
+            f"(묶인 표기 {len(별칭)}개)</span>" if 별칭 else ""
+        )
         등급칸 = ""
-        if 종류 in GRADED_KINDS:
+        if 등급종류:
             등급opt = "".join(
-                f"<option{' selected' if t == i.등급 else ''}>{html.escape(t)}</option>"
-                for t in 등급목록
+                f"<option{' selected' if g == i.등급 else ''}>{html.escape(g)}</option>"
+                for g in 등급목록
             )
             해외opt = "".join(
                 f"<option{' selected' if v == i.국내해외 else ''}>{v}</option>"
                 for v in ("불명", "해외", "국내")
             )
-            등급칸 = f"<select name='등급'>{등급opt}</select><select name='국내해외'>{해외opt}</select>"
+            등급칸 = (
+                f"<td class='ctl'><select form='saveform' name='등급_{i.id}'"
+                f" data-orig='{html.escape(i.등급)}' onchange='markDirty(this)'>{등급opt}</select></td>"
+                f"<td class='ctl'><select form='saveform' name='국내해외_{i.id}'"
+                f" data-orig='{html.escape(i.국내해외)}' onchange='markDirty(this)'>{해외opt}"
+                f"</select></td>"
+            )
+        미분류표시 = (
+            " <span class='pill p-미분류'>미분류</span>"
+            if 등급종류 and i.등급 == "미분류" else ""
+        )
         rows.append(
-            f"<tr><td>{html.escape(i.표시명)}{별칭표시}</td><td>{i.발견횟수}</td>"
-            f"<td><form method='post' action='/names/save' style='display:flex;gap:6px'>"
-            f"<input type='hidden' name='id' value='{i.id}'>"
-            f"<input type='hidden' name='kind' value='{html.escape(종류)}'>"
-            f"<input type='text' name='표시명' value='{html.escape(i.표시명)}' style='width:200px'>"
-            f"{등급칸}<button type='submit'>저장</button></form></td>"
-            f"<td><form method='post' action='/names/merge' style='display:flex;gap:6px'"
-            f" onsubmit=\"return confirm('이 표기를 선택한 항목으로 묶습니다. 되돌리려면 다시 등록해야 합니다.')\">"
-            f"<input type='hidden' name='id' value='{i.id}'>"
-            f"<input type='hidden' name='kind' value='{html.escape(종류)}'>"
-            f"<select name='into'>{선택지}</select>"
-            f"<button type='submit' class='sec'>여기로 묶기</button></form></td></tr>"
+            f"<tr data-name='{html.escape((i.표시명 + ' ' + ' '.join(별칭)).lower())}'>"
+            f"<td><input type='checkbox' form='mergeform' name='ids' value='{i.id}'></td>"
+            f"<td style='white-space:normal'>{html.escape(i.표시명)}{미분류표시}{별칭표시}</td>"
+            f"<td>{i.발견횟수}</td>"
+            f"<td class='ctl'>"
+            f"<input type='hidden' form='saveform' name='id' value='{i.id}'>"
+            f"<input type='text' form='saveform' name='표시명_{i.id}'"
+            f" value='{html.escape(i.표시명)}' style='width:230px'"
+            f" data-orig='{html.escape(i.표시명)}' oninput='markDirty(this)'></td>"
+            f"{등급칸}</tr>"
         )
 
+    대표선택지 = "".join(
+        f"<option value='{i.id}'>{html.escape(i.표시명)}"
+        + (f"  ({i.발견횟수}건)" if i.발견횟수 else "")
+        + "</option>"
+        for i in items
+    )
+    저장바 = (
+        f"<form method='post' action='/names/save' id='saveform' class='mergebar'>"
+        f"<input type='hidden' name='kind' value='{html.escape(종류)}'>"
+        f"<button type='submit'>고친 내용 저장</button>"
+        f"<span class='muted'>여러 줄을 고친 뒤 <b>한 번만</b> 누르세요. "
+        f"고친 칸은 노랗게 표시됩니다.</span></form>"
+        if items else ""
+    )
+    묶기바 = (
+        f"<form method='post' action='/names/merge' id='mergeform' class='mergebar'"
+        f" onsubmit=\"return confirmMerge(this)\">"
+        f"<input type='hidden' name='kind' value='{html.escape(종류)}'>"
+        f"<span>왼쪽에서 <b>같은 대상인 표기들을 체크</b>하고 →</span>"
+        f"<select name='into' required>"
+        f"<option value=''>대표로 남길 항목 고르기…</option>{대표선택지}</select>"
+        f"<button type='submit'>체크한 표기를 여기로 묶기</button>"
+        f"<span class='muted'>체크한 것들이 사라지고, 앞으로 같은 표기가 들어오면 "
+        f"대표 항목으로 해석됩니다.</span></form>"
+        if len(items) >= 2 else ""
+    )
+
+    찾기 = (
+        "<p><input type='text' id='namefilter' placeholder='이름으로 좁히기'"
+        " style='width:260px' oninput='filterNames(this.value)'>"
+        " <span class='muted' id='namecount'></span></p>"
+        if len(items) > 10 else ""
+    )
+
+    등급머리 = "<th class='ctl'>등급</th><th class='ctl'>국내/해외</th>" if 등급종류 else ""
     표 = (
-        f"<table><tr><th>대표명</th><th>발견</th><th>수정</th><th>다른 표기와 묶기</th></tr>"
+        "<table><tr><th style='width:34px'>"
+        "<input type='checkbox' title='전체 선택' onclick=\"for(const c of "
+        "this.closest('table').querySelectorAll(\'input[name=ids]\'))"
+        "if(!c.closest('tr').classList.contains('hide'))c.checked=this.checked\">"
+        "</th><th>지금 이름</th><th style='width:60px'>발견</th>"
+        f"<th class='ctl'>이름 고치기</th>{등급머리}</tr>"
         f"{''.join(rows)}</table>"
         if rows
         else "<p class='muted'>아직 등록된 항목이 없습니다. CV를 업로드하면 자동으로 등록됩니다.</p>"
     )
+    알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
+    오류 = f"<div class='warn'>{html.escape(error)}</div>" if error else ""
+    설명 = (
+        "같은 학교·회사를 다르게 적은 표기(예: 포항공대 / POSTECH, (주)가나다 / 가나다)를"
+        if 종류 == "소속"
+        else "같은 대상을 다르게 적은 표기(예: ICML / Proc. of ICML 2023)를"
+    )
     return _page(
         f"{종류} 관리",
-        f"""<div class='card'><h2>명칭 관리</h2><p>{탭}</p>
-        <p class='muted'>같은 대상을 다르게 적은 표기(예: 포항공대 / POSTECH / 포항공과대학교)를
-        <b>여기로 묶기</b>로 하나로 만들고 대표명을 정하세요.
+        f"""{알림}{오류}<div class='card'><h2>명칭 관리</h2><p>{탭}</p>
+        <p class='muted'>{설명} 하나로 묶고 대표명을 정하세요.
         <b>고치면 이미 등록된 지원자 표에도 바로 반영됩니다.</b></p></div>
         {등급열}
         <div class='card'><h2>{html.escape(종류)} {len(items)}건</h2>
-        <div class='scroll'>{표}</div></div>""",
+        {찾기}{저장바}{묶기바}
+        <div class='scroll'>{표}</div></div>
+        <script>{_NAMES_JS}</script>""",
+        me=me,
     )
-
 
 
 def _users_page(me: User, error: str = "") -> bytes:
@@ -1206,6 +1354,8 @@ class Handler(BaseHTTPRequestHandler):
                     년도=(params.get("year") or [""])[0],
                 )
             )
+        if path == "/upload":
+            return self._send(_upload_page(me))
         if path == "/candidate":
             params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             cid = (params.get("id") or [""])[0]
@@ -1277,7 +1427,12 @@ class Handler(BaseHTTPRequestHandler):
             if not can(me, "명칭_관리"):
                 return self._deny()
             params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            return self._send(_names_page((params.get("kind") or ["학회"])[0]))
+            return self._send(_names_page(
+                (params.get("kind") or ["학회"])[0],
+                me,
+                error=(params.get("err") or [""])[0],
+                msg=(params.get("msg") or [""])[0],
+            ))
         if path == "/export.xlsx":
             data = records_to_xlsx(store.list_all(), registry,
                                    (store.field_names(), store.custom_map()))
@@ -1334,7 +1489,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._deny()
             form = parse_multipart(self._read_body(), self.headers.get("Content-Type", ""))
             if not form.files:
-                return self._redirect("/")
+                return self._redirect("/upload")
             for f in form.files:
                 safe_name = safe_filename(f.filename)
                 suffix = Path(safe_name).suffix.lower()
@@ -1349,7 +1504,7 @@ class Handler(BaseHTTPRequestHandler):
                     _jobs.put((safe_name, cid, 저장명))
                 except Exception as exc:  # noqa: BLE001
                     _set_status(safe_name, "실패", f"{type(exc).__name__}: {exc}")
-            return self._redirect("/")
+            return self._redirect("/upload")
 
         if path == "/fields/add":
             if not can(me, "열_구성"):
@@ -1755,43 +1910,108 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/status/clear":
             with _status_lock:
                 _status.clear()
-            return self._redirect("/")
+            return self._redirect("/upload")
 
         if path == "/names/save":
             if not can(me, "명칭_관리"):
                 return self._deny()
             data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            kind = (data.get("kind") or ["학회"])[0]
-            try:
-                nid = int((data.get("id") or ["0"])[0])
-            except ValueError:
-                return self._redirect(f"/names?kind={urllib.parse.quote(kind)}")
-            registry.classify(
-                nid,
-                표시명=(data.get("표시명") or [None])[0],
-                등급=(data.get("등급") or [None])[0],
-                국내해외=(data.get("국내해외") or [None])[0],
-            )
-            return self._redirect(f"/names?kind={urllib.parse.quote(kind)}")
+            kind = canonical_kind((data.get("kind") or ["학회"])[0])
+            뒤로 = f"/names?kind={urllib.parse.quote(kind)}"
+
+            # 화면에 있던 줄 전부가 들어온다. 실제로 값이 달라진 것만 저장한다.
+            바뀐것: list[str] = []
+            for 원시 in data.get("id") or []:
+                try:
+                    nid = int(원시)
+                except (ValueError, TypeError):
+                    continue
+                이전 = registry.get(nid)
+                if 이전 is None:
+                    continue
+                registry.classify(
+                    nid,
+                    표시명=(data.get(f"표시명_{nid}") or [None])[0],
+                    등급=(data.get(f"등급_{nid}") or [None])[0],
+                    국내해외=(data.get(f"국내해외_{nid}") or [None])[0],
+                )
+                이후 = registry.get(nid)
+                if 이후 is None:
+                    continue
+                변경 = [
+                    (항목, 옛, 새)
+                    for 항목, 옛, 새 in (
+                        ("표시명", 이전.표시명, 이후.표시명),
+                        ("등급", 이전.등급, 이후.등급),
+                        ("국내해외", 이전.국내해외, 이후.국내해외),
+                    )
+                    if 옛 != 새
+                ]
+                for 항목, 옛, 새 in 변경:
+                    audit.record(me.아이디, "명칭", f"{kind}:{이후.표시명}",
+                                 항목=항목, 이전값=옛, 새값=새)
+                if 변경:
+                    이름변경 = [v for v in 변경 if v[0] == "표시명"]
+                    머리 = (f"{이전.표시명} → {이후.표시명}" if 이름변경 else 이후.표시명)
+                    나머지 = [f"{항목} {새}" for 항목, _, 새 in 변경 if 항목 != "표시명"]
+                    바뀐것.append(머리 + (f" ({', '.join(나머지)})" if 나머지 else ""))
+
+            if not 바뀐것:
+                return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote("바뀐 내용이 없습니다."))
+            보임 = ", ".join(바뀐것[:5]) + (" 외" if len(바뀐것) > 5 else "")
+            return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(
+                f"{len(바뀐것)}건 저장했습니다 — {보임}"))
 
         if path == "/names/merge":
             if not can(me, "명칭_관리"):
                 return self._deny()
             data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            kind = (data.get("kind") or ["학회"])[0]
+            kind = canonical_kind((data.get("kind") or ["학회"])[0])
+            뒤로 = f"/names?kind={urllib.parse.quote(kind)}"
+
+            def 되돌리기(이유: str) -> None:
+                return self._redirect(f"{뒤로}&err={urllib.parse.quote(이유)}")
+
             try:
-                registry.merge(
-                    int((data.get("id") or ["0"])[0]), int((data.get("into") or ["0"])[0])
-                )
+                대표_id = int((data.get("into") or ["0"])[0])
             except (ValueError, TypeError):
-                pass
-            return self._redirect(f"/names?kind={urllib.parse.quote(kind)}")
+                대표_id = 0
+            if not 대표_id:
+                return 되돌리기("대표로 남길 항목을 고르세요.")
+            대표 = registry.get(대표_id)
+            if 대표 is None:
+                return 되돌리기("대표로 고른 항목을 찾을 수 없습니다.")
+
+            # 예전 화면은 줄마다 id 하나였다. 옛 폼도 계속 받아준다.
+            원본 = data.get("ids") or data.get("id") or []
+            묶은것: list[str] = []
+            for 값 in 원본:
+                try:
+                    별칭_id = int(값)
+                except (ValueError, TypeError):
+                    continue
+                if 별칭_id == 대표_id:
+                    continue
+                별칭 = registry.get(별칭_id)
+                if 별칭 is None:
+                    continue
+                try:
+                    registry.merge(별칭_id, 대표_id)
+                except ValueError as exc:
+                    return 되돌리기(str(exc))
+                묶은것.append(별칭.표시명)
+                audit.record(me.아이디, "명칭", f"{kind}:{대표.표시명}",
+                             항목="표기 묶기", 이전값=별칭.표시명, 새값=대표.표시명)
+            if not 묶은것:
+                return 되돌리기("묶을 표기를 하나 이상 체크하세요. (대표 항목 자신은 제외됩니다)")
+            return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(
+                f"{', '.join(묶은것)} → 「{대표.표시명}」 로 묶었습니다."))
 
         if path == "/names/tiers":
             if not can(me, "열_구성"):
                 return self._deny("표 열 구성은 관리자만 바꿀 수 있습니다.")
             data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            kind = (data.get("kind") or ["학회"])[0]
+            kind = canonical_kind((data.get("kind") or ["학회"])[0])
             켠것 = set(data.get("tier") or [])
             for t in registry.tiers():
                 if t["이름"] != "미분류":

@@ -1,11 +1,12 @@
 """명칭 사전 — 같은 대상을 여러 표기로 적은 것을 하나로 묶는다.
 
-같은 학교가 이렇게 들어온다:
+같은 소속(학교·회사)이 이렇게 들어온다:
     포항공대 / POSTECH / 포항공과대학교 / 포항공과대학교(POSTECH)
+    (주)가나다소프트 / 가나다소프트 / 가나다소프트웨어
 같은 학회도 마찬가지다:
     International Conference on Machine Learning / ICML / Proc. of ICML 2023
 
-학교·학회·저널·전공이 **모두 같은 문제**라서 한 구조로 처리한다.
+소속·학회·저널·전공이 **모두 같은 문제**라서 한 구조로 처리한다.
 종류(kind)만 다르고 화면도 같은 패턴을 쓴다.
 
 핵심 원칙: **원문 표기는 절대 바꾸지 않는다.**
@@ -24,11 +25,22 @@ from pathlib import Path
 from .fsutil import secure_dir, secure_file
 from .timeutil import now_kst
 
-#: 사전이 다루는 대상 종류
-KINDS = ("학교", "학회", "저널", "전공")
+#: 사전이 다루는 대상 종류.
+#: '소속' 은 학교와 회사를 함께 담는다 — 지원자의 현재 소속은 학교일 수도
+#: 회사일 수도 있어서 사전을 둘로 나누면 같은 곳이 양쪽에 생긴다.
+KINDS = ("소속", "학회", "저널", "전공")
 
-#: 등급이 의미 있는 종류 (학교·전공은 등급을 매기지 않는다)
+#: 등급이 의미 있는 종류 (소속·전공은 등급을 매기지 않는다)
 GRADED_KINDS = ("학회", "저널")
+
+#: 예전 이름 -> 지금 이름
+KIND_ALIASES = {"학교": "소속"}
+
+
+def canonical_kind(종류: str) -> str:
+    """예전 링크·북마크(`?kind=학교`)도 계속 열리게 한다."""
+    return KIND_ALIASES.get(종류, 종류)
+
 
 #: 기본 등급. 표에 열로 나올지는 종류별로 담당자가 켜고 끈다.
 DEFAULT_TIERS = [
@@ -112,6 +124,7 @@ class NameRegistry:
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
         self._seed_tiers()
+        self._migrate_kind_names()
         self._migrate_from_venues()
         self._conn.commit()
         for suffix in ("", "-wal", "-shm"):
@@ -123,6 +136,16 @@ class NameRegistry:
                 "INSERT OR IGNORE INTO tiers (이름, 순서, 표에_표시) VALUES (?,?,?)",
                 (이름, 순서, 표시),
             )
+
+    def _migrate_kind_names(self) -> None:
+        """'학교' 로 저장돼 있던 것을 '소속' 으로 옮긴다.
+
+        분류해 둔 대표명·별칭이 그대로 살아야 해서 행을 새로 만들지 않고
+        종류 이름만 바꾼다.
+        """
+        for 옛, 새 in KIND_ALIASES.items():
+            self._conn.execute("UPDATE names SET 종류=? WHERE 종류=?", (새, 옛))
+            self._conn.execute("UPDATE name_aliases SET 종류=? WHERE 종류=?", (새, 옛))
 
     def _migrate_from_venues(self) -> None:
         """예전 venues 표가 같은 파일에 있으면 학회로 옮겨 담는다."""
@@ -162,6 +185,7 @@ class NameRegistry:
 
     def lookup(self, 종류: str, 원문: str) -> Name | None:
         """등록하지 않고 조회만. 없으면 None."""
+        종류 = canonical_kind(종류)
         key = normalize(원문, 종류)
         if not key:
             return None
@@ -174,6 +198,7 @@ class NameRegistry:
         return found.표시명 if found else (원문 or "").strip()
 
     def list_all(self, 종류: str | None = None) -> list[Name]:
+        종류 = canonical_kind(종류) if 종류 else 종류
         sql = "SELECT * FROM names"
         args: tuple = ()
         if 종류:
@@ -193,6 +218,7 @@ class NameRegistry:
             ",".join("?" * len(GRADED_KINDS))
         )
         args = list(GRADED_KINDS)
+        종류 = canonical_kind(종류) if 종류 else 종류
         if 종류:
             sql += " AND 종류=?"
             args.append(종류)
@@ -201,6 +227,7 @@ class NameRegistry:
     # -- 등록 -------------------------------------------------------------
     def observe(self, 종류: str, 표시명: str, *, 국내해외: str = "불명") -> Name:
         """CV 에서 표기를 발견했을 때. 없으면 자동 등록하고 발견횟수를 센다."""
+        종류 = canonical_kind(종류)
         if 종류 not in KINDS:
             raise ValueError(f"알 수 없는 종류: {종류}")
         key = normalize(표시명, 종류)
