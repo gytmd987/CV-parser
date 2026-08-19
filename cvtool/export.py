@@ -138,20 +138,32 @@ def build_xlsx(rows: Sequence[dict[str, str]], header: Sequence[str] | None = No
     return buf.getvalue()
 
 
-def records_to_xlsx(records: Iterable[CVRecord], registry=None) -> bytes:
-    """registry 를 주면 대표명·등급 열이 반영된다."""
+def records_to_xlsx(records: Iterable[CVRecord], registry=None, custom=None) -> bytes:
+    """registry 를 주면 대표명·등급 열이, custom 을 주면 사용자 정의 열이 붙는다.
+
+    custom: {필드명 목록} 과 {지원자_ID: {필드: 값}} 을 담은 (이름들, 값맵) 튜플
+    """
     cols = columns(registry)
-    return build_xlsx([r.to_row(registry) for r in records], cols)
+    이름들, 값맵 = custom or ([], {})
+    cols = cols + list(이름들)
+    rows = []
+    for r in records:
+        row = r.to_row(registry)
+        row.update(값맵.get(r.지원자_ID, {}))
+        rows.append(row)
+    return build_xlsx(rows, cols)
 
 
-def records_to_tsv(records: Iterable[CVRecord], registry=None) -> str:
+def records_to_tsv(records: Iterable[CVRecord], registry=None, custom=None) -> str:
     """엑셀에 그대로 붙여넣을 수 있는 TSV. 셀 안 탭/줄바꿈은 공백으로 치환."""
     def clean(v: str) -> str:
         return v.replace("\t", " ").replace("\r", " ").replace("\n", " ")
 
-    cols = columns(registry)
+    이름들, 값맵 = custom or ([], {})
+    cols = columns(registry) + list(이름들)
     lines = ["\t".join(cols)]
     for rec in records:
         row = rec.to_row(registry)
+        row.update(값맵.get(rec.지원자_ID, {}))
         lines.append("\t".join(clean(str(row.get(c, "") or "")) for c in cols))
     return "\n".join(lines)

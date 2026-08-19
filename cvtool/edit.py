@@ -153,3 +153,59 @@ def apply_edit(rec, 항목: str, 새값: str, 기대_이전값: str | None = Non
     저장값 = validate(항목, 새값)
     setattr(rec, 항목, 저장값)
     return 현재값, 저장값
+
+
+# ---------------------------------------------------------------------------
+# 사용자 정의 열
+# ---------------------------------------------------------------------------
+def validate_custom(field: dict, 값: str) -> str:
+    """관리자가 웹에서 만든 열의 값을 검사한다.
+
+    기본 열과 같은 원칙이다 — 형식이 어긋나면 저장을 거부한다.
+    """
+    이름 = field.get("이름", "열")
+    유형 = field.get("유형", "텍스트")
+    원본 = (값 or "").strip()
+
+    if 유형 == "선택":
+        허용 = [o.strip() for o in (field.get("선택지") or "").split("|") if o.strip()]
+        if 원본 and 원본 not in 허용:
+            raise ValidationError(
+                f"'{이름}' 은 다음 중 하나여야 합니다: {', '.join(허용)}"
+            )
+        return 원본
+
+    if not 원본:
+        return ""
+
+    if 유형 == "연월":
+        결과 = N.yyyymm(원본)
+        if not 결과:
+            raise ValidationError(f"'{이름}' 은 YYYYMM 6자리여야 합니다. 입력값: {원본!r}")
+        return 결과
+
+    if 유형 == "숫자":
+        정리 = 원본.replace(",", "")
+        try:
+            float(정리)
+        except ValueError:
+            raise ValidationError(f"'{이름}' 은 숫자여야 합니다. 입력값: {원본!r}") from None
+        return 정리
+
+    return N.text(원본)
+
+
+def custom_field_spec(field: dict) -> FieldSpec:
+    """사용자 정의 열의 입력칸 모양."""
+    유형 = field.get("유형", "텍스트")
+    이름 = field.get("이름", "")
+    if 유형 == "선택":
+        선택지 = [""] + [
+            o.strip() for o in (field.get("선택지") or "").split("|") if o.strip()
+        ]
+        return FieldSpec(이름, "select", 선택지, "목록에서 고르세요")
+    if 유형 == "연월":
+        return FieldSpec(이름, "yyyymm", [], "YYYYMM 6자리 (예: 202603)")
+    if 유형 == "숫자":
+        return FieldSpec(이름, "number", [], "숫자만")
+    return FieldSpec(이름, "text", [])

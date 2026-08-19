@@ -39,7 +39,24 @@ CREATE TABLE IF NOT EXISTS attachments (
     올린일시      TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_attach ON attachments(지원자_ID, id);
+CREATE TABLE IF NOT EXISTS custom_fields (
+    이름         TEXT PRIMARY KEY,
+    유형         TEXT NOT NULL,      -- 텍스트 / 선택 / 연월 / 숫자
+    선택지       TEXT DEFAULT '',    -- '선택' 유형일 때 | 로 구분
+    순서         INTEGER DEFAULT 99,
+    만든이       TEXT DEFAULT '',
+    만든일시      TEXT DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS custom_values (
+    지원자_ID    TEXT NOT NULL,
+    필드명       TEXT NOT NULL,
+    값           TEXT DEFAULT '',
+    PRIMARY KEY (지원자_ID, 필드명)
+);
 """
+
+#: 사용자 정의 열이 가질 수 있는 유형
+CUSTOM_TYPES = ("텍스트", "선택", "연월", "숫자")
 
 # 나중에 추가된 열. 기존 DB 에도 없으면 붙인다.
 _ADDED_COLUMNS = {
@@ -126,6 +143,7 @@ class CandidateStore:
             for att in self.attachments(cid):
                 (self.files_dir / att["저장명"]).unlink(missing_ok=True)
             self._conn.execute("DELETE FROM attachments WHERE 지원자_ID=?", (cid,))
+            self._conn.execute("DELETE FROM custom_values WHERE 지원자_ID=?", (cid,))
 
     # -- 쓰기 -------------------------------------------------------------
     def save(
@@ -303,6 +321,83 @@ class CandidateStore:
         self._conn.execute("DELETE FROM attachments WHERE id=?", (att_id,))
         self._conn.commit()
         return att["파일명"]
+
+    # -- 사용자 정의 열 -----------------------------------------------------
+    def add_field(
+        self, 이름: str, 유형: str = "텍스트", 선택지: str = "", 만든이: str = ""
+    ) -> None:
+        """관리자가 웹에서 표에 열을 추가한다.
+
+        값은 사람이 채운다(LLM 이 자동으로 채우지 않는다).
+        """
+        이름 = (이름 or "").strip()
+        if not 이름:
+            raise ValueError("열 이름을 입력하세요")
+        if 유형 not in CUSTOM_TYPES:
+            raise ValueError(f"유형은 {'/'.join(CUSTOM_TYPES)} 중 하나여야 합니다")
+        from .schemas import COLUMNS
+
+        if 이름 in COLUMNS:
+            raise ValueError(f"이미 있는 기본 열입니다: {이름}")
+        if 유형 == "선택" and not (선택지 or "").strip():
+            raise ValueError("'선택' 유형은 선택지를 하나 이상 적어야 합니다")
+        if self.field(이름):
+            raise ValueError(f"이미 있는 열입니다: {이름}")
+        순서 = self._conn.execute(
+            "SELECT COALESCE(MAX(순서), 0) + 1 AS n FROM custom_fields"
+        ).fetchone()["n"]
+        self._conn.execute(
+            "INSERT INTO custom_fields (이름, 유형, 선택지, 순서, 만든이, 만든일시)"
+            " VALUES (?,?,?,?,?,?)",
+            (이름, 유형, (선택지 or "").strip(), 순서, 만든이,
+             now_kst().strftime("%Y-%m-%d %H:%M:%S")),
+        )
+        self._conn.commit()
+
+    def fields(self) -> list[dict]:
+        return [dict(r) for r in self._conn.execute(
+            "SELECT * FROM custom_fields ORDER BY 순서, 이름"
+        )]
+
+    def field(self, 이름: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM custom_fields WHERE 이름=?", (이름,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def field_names(self) -> list[str]:
+        return [f["이름"] for f in self.fields()]
+
+    def delete_field(self, 이름: str) -> None:
+        """열과 그 열에 들어 있던 값을 전부 지운다."""
+        self._conn.execute("DELETE FROM custom_fields WHERE 이름=?", (이름,))
+        self._conn.execute("DELETE FROM custom_values WHERE 필드명=?", (이름,))
+        self._conn.commit()
+
+    def set_custom(self, 지원자_ID: str, 필드명: str, 값: str) -> str:
+        """사용자 정의 열 값을 저장하고 이전 값을 돌려준다."""
+        if not self.field(필드명):
+            raise ValueError(f"없는 열입니다: {필드명}")
+        이전 = self.custom_values(지원자_ID).get(필드명, "")
+        self._conn.execute(
+            "INSERT INTO custom_values (지원자_ID, 필드명, 값) VALUES (?,?,?)"
+            " ON CONFLICT(지원자_ID, 필드명) DO UPDATE SET 값=excluded.값",
+            (지원자_ID, 필드명, 값 or ""),
+        )
+        self._conn.commit()
+        return 이전
+
+    def custom_values(self, 지원자_ID: str) -> dict[str, str]:
+        rows = self._conn.execute(
+            "SELECT 필드명, 값 FROM custom_values WHERE 지원자_ID=?", (지원자_ID,)
+        )
+        return {r["필드명"]: r["값"] or "" for r in rows}
+
+    def custom_map(self) -> dict[str, dict[str, str]]:
+        out: dict[str, dict[str, str]] = {}
+        for r in self._conn.execute("SELECT 지원자_ID, 필드명, 값 FROM custom_values"):
+            out.setdefault(r["지원자_ID"], {})[r["필드명"]] = r["값"] or ""
+        return out
 
     def create_blank(self, 지원자_ID: str | None = None) -> CVRecord:
         """CV 없이 지원자를 만든다.

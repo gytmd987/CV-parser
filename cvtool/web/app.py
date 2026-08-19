@@ -27,14 +27,23 @@ from pathlib import Path
 from ..audit import AuditLog
 from ..auth import ROLES, AuthStore, User, can
 from ..config import settings
-from ..edit import CHOICE_FIELDS, READONLY_FIELDS, ConflictError, ValidationError, apply_edit, field_spec
+from ..edit import (
+    CHOICE_FIELDS,
+    READONLY_FIELDS,
+    ConflictError,
+    ValidationError,
+    apply_edit,
+    custom_field_spec,
+    field_spec,
+    validate_custom,
+)
 from ..dotenv import LOADED_FROM, candidate_paths
 from ..export import records_to_tsv, records_to_xlsx
 from ..fsutil import is_world_readable, mode_of, safe_filename, secure_dir, secure_file
 from ..extract import extract_cv_from_text
 from ..ingestion.parsers import UnsupportedFormat, extract_text
 from ..schemas import columns as table_columns
-from ..store import SUPPORTED_SUFFIXES, CandidateStore
+from ..store import CUSTOM_TYPES, SUPPORTED_SUFFIXES, CandidateStore
 from ..timeutil import now_kst
 from ..dedup import fingerprint, find_duplicates
 from ..names import GRADED_KINDS, KINDS, NameRegistry, observe_record
@@ -194,6 +203,8 @@ def _page(title: str, body: str, nav: bool = True, me: User | None = None) -> by
         링크.append("<a href='/org'>부서·과제</a>")
     if can(me, "계정_현업추가"):
         링크.append("<a href='/users'>계정</a>")
+    if can(me, "열_구성"):
+        링크.append("<a href='/fields'>표 항목</a>")
     if me is not None:
         링크.append("<a href='/history'>변경 이력</a>")
     누구 = (
@@ -392,6 +403,42 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "") -> bytes:
             f"{입력칸(c, 원본값)}<button type='submit'>저장</button></form></td></tr>"
         )
 
+    사용자열 = store.fields()
+    사용자값 = store.custom_values(지원자_ID)
+    사용자행 = []
+    for f in 사용자열:
+        이름, 값 = f["이름"], 사용자값.get(f["이름"], "")
+        if not 수정가능:
+            사용자행.append(
+                f"<tr><th style='width:170px'>{html.escape(이름)}</th>"
+                f"<td>{html.escape(값) or '<span class=muted>-</span>'}</td></tr>"
+            )
+            continue
+        spec = custom_field_spec(f)
+        if spec.입력 == "select":
+            opts = "".join(
+                f"<option value='{html.escape(o)}'{' selected' if o == 값 else ''}>"
+                f"{html.escape(o) or '(빈칸)'}</option>" for o in spec.선택지
+            )
+            칸 = f"<select name='새값'>{opts}</select>"
+        else:
+            칸 = (
+                f"<input type='text' name='새값' value='{html.escape(값)}'"
+                f" style='width:260px' placeholder='{html.escape(spec.도움말)}'>"
+            )
+        사용자행.append(
+            f"<tr><th style='width:170px'>{html.escape(이름)}"
+            f"<br><span class='muted'>{html.escape(f['유형'])}</span></th>"
+            f"<td><form method='post' action='/candidate/custom' style='display:flex;gap:6px'>"
+            f"<input type='hidden' name='id' value='{html.escape(지원자_ID)}'>"
+            f"<input type='hidden' name='항목' value='{html.escape(이름)}'>"
+            f"{칸}<button type='submit'>저장</button></form></td></tr>"
+        )
+    사용자카드 = (
+        f"<div class='card'><h2>추가 항목</h2><table>{''.join(사용자행)}</table></div>"
+        if 사용자열 else ""
+    )
+
     년도 = store.year_of(지원자_ID)
     년도폼 = (
         f"<form method='post' action='/candidate/year' style='display:flex;gap:6px'>"
@@ -479,6 +526,7 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "") -> bytes:
         <div class='card'><h2>관리 정보</h2><table>{관리}</table></div>
         <div class='card'><h2>추출 결과 {'(칸을 고치고 저장을 누르세요)' if 수정가능 else ''}</h2>
           <table>{''.join(항목행)}</table></div>
+        {사용자카드}
         {첨부카드}
         <div class='card'><h2>변경 이력</h2><div class='scroll'>
           <table><tr><th>일시</th><th>사용자</th><th>내용</th></tr>{이력행}</table>
@@ -649,8 +697,13 @@ def _org_page(me: User, error: str = "") -> bytes:
     for d in depts:
         소속 = [p for p in projects if p["부서_id"] == d["id"]]
         항목 = "".join(
-            f"<li>{html.escape(p['이름'])}"
-            + (" <span class='muted'>(초대암호 있음)</span>" if p["초대암호"] else "")
+            "<li style='margin-bottom:6px'>"
+            "<form method='post' action='/org/project/rename' style='display:flex;gap:6px'>"
+            f"<input type='hidden' name='id' value='{p['id']}'>"
+            f"<input type='text' name='name' value='{html.escape(p['이름'])}' style='width:200px'>"
+            "<input type='password' name='invite' placeholder='초대암호 변경(비우면 유지)'>"
+            "<button type='submit'>이름/암호 저장</button></form>"
+            + (" <span class='muted'>초대암호 있음</span>" if p["초대암호"] else "")
             + " <form method='post' action='/org/project/delete' style='display:inline'"
             " onsubmit=\"return confirm('과제를 삭제합니다. 배정도 함께 지워집니다.')\">"
             f"<input type='hidden' name='id' value='{p['id']}'>"
@@ -658,7 +711,16 @@ def _org_page(me: User, error: str = "") -> bytes:
             for p in 소속
         ) or "<li class='muted'>과제 없음</li>"
         카드.append(
-            f"<div class='card'><h2>{html.escape(d['이름'])}"
+            "<div class='card'><h2>"
+            "<form method='post' action='/org/dept/rename' style='display:flex;gap:6px'>"
+            f"<input type='hidden' name='id' value='{d['id']}'>"
+            f"<input type='text' name='name' value='{html.escape(d['이름'])}' style='width:220px'>"
+            "<button type='submit'>부서명 저장</button>"
+            "<form method='post' action='/org/dept/delete' style='display:inline'"
+            " onsubmit=\"return confirm('부서를 삭제하면 그 아래 과제와 배정도 함께 지워집니다.')\">"
+            f"<input type='hidden' name='id' value='{d['id']}'>"
+            "<button class='danger'>부서 삭제</button></form>"
+            "</form>"
             f" <span class='muted'>과제 {len(소속)}개</span></h2><ul>{항목}</ul>"
             "<form method='post' action='/org/project/add' style='display:flex;gap:8px'>"
             f"<input type='hidden' name='dept' value='{d['id']}'>"
@@ -725,6 +787,8 @@ def _recruit_page(me: User, sort: str = "", error: str = "") -> bytes:
         ]
 
     표열 = recruit.columns()
+    사용자열이름 = set(store.field_names())
+    사용자값맵 = store.custom_map()
     수정가능 = can(me, "채용현황_수정")
     담당자 = can(me, "지원자_수정")
 
@@ -740,6 +804,8 @@ def _recruit_page(me: User, sort: str = "", error: str = "") -> bytes:
             return p.비고 if p else ""
         if col in STAGES:
             return (p.단계상태.get(col, "") if p else "")
+        if col in 사용자열이름:
+            return 사용자값맵.get(rec.지원자_ID, {}).get(col, "")
         return str(rec.to_row(registry).get(col, "") or "")
 
     # 정렬: 기본은 불합격 아래로. 열 제목을 누르면 그 열 기준
@@ -843,7 +909,7 @@ def _recruit_page(me: User, sort: str = "", error: str = "") -> bytes:
 
 def _recruit_columns_page(me: User) -> bytes:
     """관리자가 채용 현황 표에 보일 열과 순서를 정한다."""
-    전체 = list(table_columns(registry)) + list(RECRUIT_COLUMNS)
+    전체 = list(table_columns(registry)) + list(RECRUIT_COLUMNS) + store.field_names()
     현재 = recruit.columns()
     항목 = "".join(
         f"<label style='display:block;padding:3px 0'>"
@@ -863,6 +929,44 @@ def _recruit_columns_page(me: User) -> bytes:
           <button type='submit'>저장</button>
           <a class='btn sec' href='/recruit'>취소</a>
         </form></div>""",
+        me=me,
+    )
+
+
+
+def _fields_page(me: User, error: str = "") -> bytes:
+    """관리자가 표에 열을 추가한다.
+
+    값은 사람이 채운다. LLM 이 자동으로 채우지 않는다.
+    """
+    fields = store.fields()
+    유형옵션 = "".join(f"<option>{t}</option>" for t in CUSTOM_TYPES)
+    rows = "".join(
+        f"<tr><td>{html.escape(f['이름'])}</td><td>{html.escape(f['유형'])}</td>"
+        f"<td>{html.escape(f['선택지'] or '-')}</td>"
+        f"<td class='muted'>{html.escape(f['만든일시'])} ({html.escape(f['만든이'] or '-')})</td>"
+        "<td><form method='post' action='/fields/delete' style='display:inline'"
+        " onsubmit=\"return confirm('이 열과 여기 들어있던 모든 값이 지워집니다.')\">"
+        f"<input type='hidden' name='name' value='{html.escape(f['이름'])}'>"
+        "<button class='danger'>삭제</button></form></td></tr>"
+        for f in fields
+    ) or "<tr><td colspan='5' class='muted'>추가한 열이 없습니다.</td></tr>"
+    오류 = f"<p class='flag'>{html.escape(error)}</p>" if error else ""
+    return _page(
+        "표 항목 추가",
+        "<div class='card'><h2>표에 열 추가</h2>" + 오류
+        + "<form method='post' action='/fields/add' style='display:flex;gap:8px;flex-wrap:wrap'>"
+        "<input type='text' name='name' placeholder='열 이름' required>"
+        f"<select name='type'>{유형옵션}</select>"
+        "<input type='text' name='choices' placeholder=\"선택지 (선택 유형만, | 로 구분)\""
+        " style='width:280px'>"
+        "<button type='submit'>추가</button></form>"
+        "<p class='muted'>유형에 따라 입력칸이 달라지고 형식이 강제됩니다. "
+        "<b>값은 사람이 채웁니다</b> — LLM 이 자동으로 채우지 않습니다. "
+        "추가한 열은 지원자 상세·엑셀·채용 현황 표 구성에서 쓸 수 있습니다.</p></div>"
+        f"<div class='card'><h2>추가된 열 {len(fields)}개</h2><div class='scroll'><table>"
+        "<tr><th>이름</th><th>유형</th><th>선택지</th><th>만든 사람</th><th></th></tr>"
+        + rows + "</table></div></div>",
         me=me,
     )
 
@@ -982,6 +1086,11 @@ class Handler(BaseHTTPRequestHandler):
                 _recruit_page(me, (params.get("sort") or [""])[0],
                               (params.get("err") or [""])[0])
             )
+        if path == "/fields":
+            if not can(me, "열_구성"):
+                return self._deny("표 항목 추가는 관리자만 할 수 있습니다.")
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            return self._send(_fields_page(me, (params.get("err") or [""])[0]))
         if path == "/recruit/columns":
             if not can(me, "열_구성"):
                 return self._deny("표 열 구성은 관리자만 바꿀 수 있습니다.")
@@ -1011,7 +1120,8 @@ class Handler(BaseHTTPRequestHandler):
             params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             return self._send(_names_page((params.get("kind") or ["학회"])[0]))
         if path == "/export.xlsx":
-            data = records_to_xlsx(store.list_all(), registry)
+            data = records_to_xlsx(store.list_all(), registry,
+                                   (store.field_names(), store.custom_map()))
             stamp = now_kst().strftime("%Y%m%d_%H%M")
             return self._send(
                 data,
@@ -1019,7 +1129,8 @@ class Handler(BaseHTTPRequestHandler):
                 extra={"Content-Disposition": f'attachment; filename="cv_{stamp}.xlsx"'},
             )
         if path == "/export.tsv":
-            tsv = records_to_tsv(store.list_all(), registry)
+            tsv = records_to_tsv(store.list_all(), registry,
+                                  (store.field_names(), store.custom_map()))
             body = _page(
                 "TSV",
                 "<div class='card'><h2>엑셀 붙여넣기용 TSV</h2>"
@@ -1077,6 +1188,94 @@ class Handler(BaseHTTPRequestHandler):
                     _set_status(safe_name, "실패", f"{type(exc).__name__}: {exc}")
             return self._redirect("/")
 
+        if path == "/fields/add":
+            if not can(me, "열_구성"):
+                return self._deny("표 항목 추가는 관리자만 할 수 있습니다.")
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            이름 = (data.get("name") or [""])[0]
+            try:
+                store.add_field(
+                    이름,
+                    (data.get("type") or ["텍스트"])[0],
+                    (data.get("choices") or [""])[0],
+                    만든이=me.아이디,
+                )
+            except ValueError as exc:
+                return self._redirect("/fields?err=" + urllib.parse.quote(str(exc)))
+            audit.record(me.아이디, "표항목", 이름, 비고="열 추가")
+            return self._redirect("/fields")
+
+        if path == "/fields/delete":
+            if not can(me, "열_구성"):
+                return self._deny("표 항목 삭제는 관리자만 할 수 있습니다.")
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            이름 = (data.get("name") or [""])[0]
+            store.delete_field(이름)
+            audit.record(me.아이디, "표항목", 이름, 비고="열 삭제 (값도 함께 삭제)")
+            return self._redirect("/fields")
+
+        if path == "/candidate/custom":
+            if not can(me, "지원자_수정"):
+                return self._deny()
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            cid = (data.get("id") or [""])[0]
+            필드명 = (data.get("항목") or [""])[0]
+            뒤로 = f"/candidate?id={urllib.parse.quote(cid)}"
+            field = store.field(필드명)
+            if not field:
+                return self._redirect(뒤로)
+            try:
+                저장값 = validate_custom(field, (data.get("새값") or [""])[0])
+            except ValidationError as exc:
+                return self._redirect(f"{뒤로}&err={urllib.parse.quote(str(exc))}")
+            이전 = store.set_custom(cid, 필드명, 저장값)
+            if 이전 != 저장값:
+                audit.record(me.아이디, "지원자", cid, 항목=필드명, 이전값=이전, 새값=저장값)
+            return self._redirect(뒤로)
+
+        if path == "/org/dept/rename":
+            if not can(me, "부서과제_관리"):
+                return self._deny()
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            새이름 = (data.get("name") or [""])[0]
+            try:
+                옛이름 = auth.rename_department(int((data.get("id") or ["0"])[0]), 새이름)
+            except (ValueError, TypeError) as exc:
+                return self._redirect("/org?err=" + urllib.parse.quote(str(exc)))
+            if 옛이름 != 새이름:
+                audit.record(me.아이디, "과제", 새이름, 항목="부서명",
+                             이전값=옛이름, 새값=새이름)
+            return self._redirect("/org")
+
+        if path == "/org/dept/delete":
+            if not can(me, "부서과제_관리"):
+                return self._deny()
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            try:
+                auth.delete_department(int((data.get("id") or ["0"])[0]))
+            except (ValueError, TypeError):
+                pass
+            return self._redirect("/org")
+
+        if path == "/org/project/rename":
+            if not can(me, "부서과제_관리"):
+                return self._deny()
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            새이름 = (data.get("name") or [""])[0]
+            암호 = (data.get("invite") or [""])[0]
+            try:
+                pid = int((data.get("id") or ["0"])[0])
+                옛이름 = auth.rename_project(pid, 새이름)
+            except (ValueError, TypeError) as exc:
+                return self._redirect("/org?err=" + urllib.parse.quote(str(exc)))
+            if 암호.strip():          # 비우면 기존 암호를 그대로 둔다
+                auth.set_project_password(pid, 암호)
+                audit.record(me.아이디, "과제", 새이름, 비고="초대암호 변경")
+            if 옛이름 != 새이름:
+                audit.record(me.아이디, "과제", 새이름, 항목="과제명",
+                             이전값=옛이름, 새값=새이름)
+            return self._redirect("/org")
+
         if path == "/recruit/stage":
             if not can(me, "채용현황_수정"):
                 return self._deny()
@@ -1129,6 +1328,11 @@ class Handler(BaseHTTPRequestHandler):
                 audit.record(me.아이디, "채용현황", cid, 항목="비고", 이전값=이전, 새값=비고)
             return self._redirect("/recruit")
 
+        if path == "/fields":
+            if not can(me, "열_구성"):
+                return self._deny("표 항목 추가는 관리자만 할 수 있습니다.")
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            return self._send(_fields_page(me, (params.get("err") or [""])[0]))
         if path == "/recruit/columns":
             if not can(me, "열_구성"):
                 return self._deny("표 열 구성은 관리자만 바꿀 수 있습니다.")

@@ -253,6 +253,27 @@ class AuthStore:
     def departments(self) -> list[sqlite3.Row]:
         return list(self._conn.execute("SELECT * FROM departments ORDER BY 이름"))
 
+    def rename_department(self, dept_id: int, 새이름: str) -> str:
+        """부서 이름을 바꾼다. 이전 이름을 돌려준다(이력용)."""
+        새이름 = (새이름 or "").strip()
+        if not 새이름:
+            raise ValueError("부서 이름을 입력하세요")
+        row = self._conn.execute(
+            "SELECT 이름 FROM departments WHERE id=?", (dept_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError("없는 부서입니다")
+        if row["이름"] == 새이름:
+            return 새이름
+        겹침 = self._conn.execute(
+            "SELECT 1 FROM departments WHERE 이름=? AND id!=?", (새이름, dept_id)
+        ).fetchone()
+        if 겹침:
+            raise ValueError(f"이미 있는 부서 이름입니다: {새이름}")
+        self._conn.execute("UPDATE departments SET 이름=? WHERE id=?", (새이름, dept_id))
+        self._conn.commit()
+        return row["이름"]
+
     def delete_department(self, dept_id: int) -> None:
         self._conn.execute("DELETE FROM departments WHERE id=?", (dept_id,))
         self._conn.commit()
@@ -282,6 +303,36 @@ class AuthStore:
             args = (부서_id,)
         sql += " ORDER BY d.이름, p.이름"
         return list(self._conn.execute(sql, args))
+
+    def rename_project(self, project_id: int, 새이름: str) -> str:
+        """과제 이름을 바꾼다. 같은 부서 안에서 이름이 겹치면 거부한다."""
+        새이름 = (새이름 or "").strip()
+        if not 새이름:
+            raise ValueError("과제 이름을 입력하세요")
+        row = self._conn.execute(
+            "SELECT 이름, 부서_id FROM projects WHERE id=?", (project_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError("없는 과제입니다")
+        if row["이름"] == 새이름:
+            return 새이름
+        겹침 = self._conn.execute(
+            "SELECT 1 FROM projects WHERE 부서_id=? AND 이름=? AND id!=?",
+            (row["부서_id"], 새이름, project_id),
+        ).fetchone()
+        if 겹침:
+            raise ValueError(f"같은 부서에 이미 있는 과제 이름입니다: {새이름}")
+        self._conn.execute("UPDATE projects SET 이름=? WHERE id=?", (새이름, project_id))
+        self._conn.commit()
+        return row["이름"]
+
+    def set_project_password(self, project_id: int, 초대암호: str) -> None:
+        """초대암호를 바꾸거나(값 있음) 지운다(빈 값)."""
+        self._conn.execute(
+            "UPDATE projects SET 초대암호=? WHERE id=?",
+            (hash_password(초대암호) if 초대암호 else "", project_id),
+        )
+        self._conn.commit()
 
     def delete_project(self, project_id: int) -> None:
         self._conn.execute("DELETE FROM projects WHERE id=?", (project_id,))
