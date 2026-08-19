@@ -95,6 +95,7 @@ class Name:
     최초등록: str
     유형: str = "불명"          # 학회 / 저널 (학회·저널 종류에서만 씀)
     IF: str = ""               # Impact Factor (저널)
+    원표기: str = ""            # 처음 발견했을 때의 표기. 대표명을 고쳐도 남는다
 
     def google_url(self, 무엇: str = "impact factor") -> str:
         """IF 를 찾아보기 쉽게 검색어를 미리 채운 구글 링크."""
@@ -115,6 +116,7 @@ CREATE TABLE IF NOT EXISTS names (
     최초등록      TEXT DEFAULT '',
     유형         TEXT DEFAULT '불명',
     IF          TEXT DEFAULT '',
+    원표기        TEXT DEFAULT '',
     UNIQUE(종류, 정규화키)
 );
 CREATE TABLE IF NOT EXISTS name_aliases (
@@ -160,9 +162,24 @@ class NameRegistry:
     def _add_missing_columns(self) -> None:
         """예전 DB 에 없던 열을 붙인다."""
         있는열 = {r["name"] for r in self._conn.execute("PRAGMA table_info(names)")}
-        for 열, 기본 in (("유형", "'불명'"), ("IF", "''")):
+        for 열, 기본 in (("유형", "'불명'"), ("IF", "''"), ("원표기", "''")):
             if 열 not in 있는열:
                 self._conn.execute(f"ALTER TABLE names ADD COLUMN {열} TEXT DEFAULT {기본}")
+        if "원표기" not in 있는열:
+            self._backfill_original()
+
+    def _backfill_original(self) -> None:
+        """예전 DB 에는 원래 표기가 없다. 되살릴 수 있는 만큼만 되살린다.
+
+        대표명을 아직 안 고친 줄은 대표명이 곧 원래 표기다. 이미 고친 줄은
+        정규화키만 남아 있으므로 그것을 쓴다 (소문자·기호가 빠진 형태지만
+        '무엇이었는지' 는 알아볼 수 있다).
+        """
+        for row in self._conn.execute("SELECT id, 종류, 정규화키, 표시명 FROM names").fetchall():
+            원래 = row["표시명"]
+            if normalize(원래, row["종류"]) != row["정규화키"]:
+                원래 = row["정규화키"]      # 이름을 고친 줄 — 키가 유일한 흔적
+            self._conn.execute("UPDATE names SET 원표기=? WHERE id=?", (원래, row["id"]))
 
     def _migrate_kind_names(self) -> None:
         """'학교'->'소속', '학회'/'저널'->'학회·저널' 로 옮긴다.
@@ -241,35 +258,20 @@ class NameRegistry:
             ]
             for r in rows[1:]:
                 self._absorb(r, rows[0].id)
-        self.merge_same_display()
 
-    def merge_same_display(self, 종류: str | None = None) -> list[tuple[str, int]]:
-        """대표명이 똑같은 항목들을 하나로 합친다.
+    def same_display_groups(self, 종류: str | None = None) -> dict[str, list[int]]:
+        """대표명이 겹치는 항목들. {대표명: [id, ...]} — 2개 이상만.
 
-        담당자가 '포항공과대학교' 와 'POSTECH' 을 각각 '포항공대' 로 고쳐 놓으면
-        정규화키는 서로 달라서 표에 **같은 이름이 여러 줄** 남는다. 발견 횟수도
-        따로 세어져 어느 게 진짜인지 알 수 없다. 이름이 같다는 건 같은 대상이라는
-        뜻이므로 합친다 (지워지는 쪽 표기는 별칭으로 남아 계속 해석된다).
-
-        Returns:
-            [(대표명, 합친 줄 수), ...] — 화면에 알려줄 용도
+        합치지는 않는다. 서로 다른 표기를 같은 이름으로 부르기로 한 것일 수도
+        있어서, **알려만 주고 판단은 사람이** 한다.
         """
-        종류 = canonical_kind(종류) if 종류 else 종류
-        묶음: dict[tuple[str, str], list[Name]] = {}
+        묶음: dict[str, list[int]] = {}
         for n in self.list_all(종류):
-            묶음.setdefault((n.종류, n.표시명.strip().casefold()), []).append(n)
-
-        합친것: list[tuple[str, int]] = []
-        for rows in 묶음.values():
-            if len(rows) < 2:
-                continue
-            rows.sort(key=lambda n: (-n.발견횟수, n.id))
-            for r in rows[1:]:
-                self._absorb(r, rows[0].id)
-            합친것.append((rows[0].표시명, len(rows)))
-        if 합친것:
-            self._conn.commit()
-        return 합친것
+            묶음.setdefault(n.표시명.strip().casefold(), []).append(n.id)
+        return {
+            self.get(ids[0]).표시명: ids
+            for ids in 묶음.values() if len(ids) > 1
+        }
 
     def _migrate_from_venues(self) -> None:
         """예전 venues 표가 같은 파일에 있으면 학회로 옮겨 담는다."""
@@ -369,10 +371,11 @@ class NameRegistry:
             등급 = "미분류" if 종류 in GRADED_KINDS else ""
             cur = self._conn.execute(
                 "INSERT INTO names"
-                " (종류,정규화키,표시명,등급,국내해외,발견횟수,최초등록,유형)"
-                " VALUES (?,?,?,?,?,1,?,?)",
+                " (종류,정규화키,표시명,등급,국내해외,발견횟수,최초등록,유형,원표기)"
+                " VALUES (?,?,?,?,?,1,?,?,?)",
                 (종류, key, 표시명.strip(), 등급, 국내해외,
-                 now_kst().strftime("%Y-%m-%d %H:%M:%S"), 유형 or "불명"),
+                 now_kst().strftime("%Y-%m-%d %H:%M:%S"), 유형 or "불명",
+                 표시명.strip()),
             )
             nid = cur.lastrowid
         else:

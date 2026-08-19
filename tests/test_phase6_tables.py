@@ -171,64 +171,72 @@ def test_delete_does_not_touch_other_candidates(tmp_path):
     assert [f.name for f in store.files_dir.iterdir()] == ["CV-2.pdf"]
 
 
-# --- 대표명이 같아진 항목 정리 -------------------------------------------------
-def test_same_display_name_rows_are_merged(reg):
-    """'포항공과대학교'와 'POSTECH'을 각각 '포항공대'로 고치면 표에 같은 이름이 셋 남는다."""
+# --- 대표명을 고쳐도 원래 표기는 남는다 ---------------------------------------
+def test_original_spelling_survives_a_rename(reg):
+    """대표명을 고치고 나면 CV 에 뭐라고 적혀 있었는지 알 길이 없어지면 안 된다."""
+    나 = reg.observe("소속", "포항공과대학교(POSTECH)")
+    reg.classify(나.id, 표시명="포항공대")
+    이후 = reg.get(나.id)
+    assert 이후.표시명 == "포항공대"
+    assert 이후.원표기 == "포항공과대학교(POSTECH)"     # 원문은 그대로
+    assert 이후.정규화키 == "포항공과대학교"             # 매칭 키도 그대로
+
+
+def test_same_name_rows_are_kept_apart(reg):
+    """'포항공과대학교'와 'POSTECH'을 둘 다 '포항공대'로 불러도 줄은 남아 있어야 한다."""
     a = reg.observe("소속", "포항공과대학교")
-    reg.observe("소속", "포항공과대학교")          # 발견 2회
+    reg.observe("소속", "포항공과대학교")
     b = reg.observe("소속", "POSTECH")
-    reg.observe("소속", "포항공대")
     reg.classify(a.id, 표시명="포항공대")
     reg.classify(b.id, 표시명="포항공대")
 
-    assert len([n for n in reg.list_all("소속") if n.표시명 == "포항공대"]) == 3
-    assert reg.merge_same_display("소속") == [("포항공대", 3)]
-
     남은 = reg.list_all("소속")
-    assert [n.표시명 for n in 남은] == ["포항공대"]
-    assert 남은[0].발견횟수 == 4                    # 갈라져 있던 횟수를 합친다
-    # 합쳐진 표기들도 계속 이 항목으로 해석돼야 한다
-    for 표기 in ("포항공과대학교", "POSTECH", "포항공대"):
-        assert reg.display("소속", 표기) == "포항공대"
+    assert len(남은) == 2                                  # 합치지 않는다
+    assert {n.원표기 for n in 남은} == {"포항공과대학교", "POSTECH"}
+    assert {n.발견횟수 for n in 남은} == {2, 1}             # 각자 세던 횟수도 그대로
+    # 표에는 둘 다 같은 이름으로 나온다
+    assert reg.display("소속", "포항공과대학교") == "포항공대"
+    assert reg.display("소속", "POSTECH") == "포항공대"
 
 
-def test_display_merge_ignores_case_and_spaces(reg):
+def test_same_display_groups_reports_the_overlap(reg):
+    a = reg.observe("소속", "포항공과대학교")
+    b = reg.observe("소속", "POSTECH")
+    reg.observe("소속", "서울대학교")
+    assert reg.same_display_groups("소속") == {}
+
+    reg.classify(a.id, 표시명="포항공대")
+    reg.classify(b.id, 표시명="포항공대")
+    겹침 = reg.same_display_groups("소속")
+    assert list(겹침) == ["포항공대"]
+    assert sorted(겹침["포항공대"]) == sorted([a.id, b.id])
+
+
+def test_overlap_check_ignores_case_and_spaces(reg):
     a = reg.observe("학회", "ICML")
     b = reg.observe("학회", "Intl Conf Machine Learning")
     reg.classify(b.id, 표시명=" icml ")
-    reg.merge_same_display("학회·저널")
-    assert len(reg.list_all("학회·저널")) == 1
+    assert len(reg.same_display_groups("학회·저널")) == 1
 
 
-def test_merge_keeps_the_most_seen_row(reg):
-    a = reg.observe("소속", "가나다소프트웨어")
-    for _ in range(4):
-        reg.observe("소속", "가나다소프트웨어")     # 발견 5회
-    b = reg.observe("소속", "가나다 소프트")
-    reg.classify(b.id, 표시명="가나다소프트웨어")
-    reg.merge_same_display("소속")
-    남은 = reg.list_all("소속")
-    assert len(남은) == 1 and 남은[0].id == a.id and 남은[0].발견횟수 == 6
-
-
-def test_duplicates_repaired_when_the_file_is_opened(tmp_path):
-    """이미 중복이 생겨버린 DB 도 열기만 하면 정리돼야 한다."""
+def test_old_db_gets_an_original_spelling_column(tmp_path):
+    """원표기 열이 없던 DB 도 열려야 하고, 되살릴 수 있는 만큼 되살린다."""
     path = tmp_path / "n.db"
+    conn = sqlite3.connect(str(path))
+    conn.executescript(
+        "CREATE TABLE names (id INTEGER PRIMARY KEY AUTOINCREMENT, 종류 TEXT NOT NULL,"
+        " 정규화키 TEXT NOT NULL, 표시명 TEXT NOT NULL, 등급 TEXT DEFAULT '미분류',"
+        " 국내해외 TEXT DEFAULT '불명', 발견횟수 INTEGER DEFAULT 0,"
+        " 최초등록 TEXT DEFAULT '', UNIQUE(종류, 정규화키));"
+        "CREATE TABLE name_aliases (종류 TEXT NOT NULL, 별칭키 TEXT NOT NULL,"
+        " name_id INTEGER NOT NULL, PRIMARY KEY (종류, 별칭키));"
+    )
+    # 이름을 안 고친 줄과, 이미 '포항공대'로 고쳐버린 줄
+    conn.execute("INSERT INTO names (종류,정규화키,표시명) VALUES ('소속','서울대학교','서울대학교')")
+    conn.execute("INSERT INTO names (종류,정규화키,표시명) VALUES ('소속','postech','포항공대')")
+    conn.commit(); conn.close()
+
     reg = NameRegistry(path)
-    a = reg.observe("소속", "포항공과대학교")
-    b = reg.observe("소속", "POSTECH")
-    # 마이그레이션 로직을 거치지 않고 직접 같은 이름으로 만들어 둔다
-    reg._conn.execute("UPDATE names SET 표시명='포항공대' WHERE id IN (?,?)", (a.id, b.id))
-    reg._conn.commit()
-    reg.close()
-
-    다시 = NameRegistry(path)
-    assert [n.표시명 for n in 다시.list_all("소속")] == ["포항공대"]
-    assert 다시.display("소속", "POSTECH") == "포항공대"
-
-
-def test_merge_same_display_leaves_distinct_names_alone(reg):
-    reg.observe("소속", "서울대학교")
-    reg.observe("소속", "연세대학교")
-    assert reg.merge_same_display("소속") == []
-    assert len(reg.list_all("소속")) == 2
+    원표기 = {n.표시명: n.원표기 for n in reg.list_all("소속")}
+    assert 원표기["서울대학교"] == "서울대학교"      # 안 고친 줄은 그대로
+    assert 원표기["포항공대"] == "postech"          # 고친 줄은 키가 유일한 흔적

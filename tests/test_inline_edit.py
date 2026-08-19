@@ -265,12 +265,6 @@ def test_names_page_keeps_navigation(web):
     assert "/history" in page and "/org" in page
 
 
-def test_names_page_has_merge_bar(web, names):
-    page = web.get("/names?kind=" + urllib.parse.quote("학교"))
-    assert "id='mergeform'" in page
-    assert "form='mergeform' name='ids'" in page
-    assert "대표로 남길 항목 고르기" in page
-
 
 def test_merge_column_is_not_clipped(web, names):
     """수정 칸이 max-width 260px 에 잘려서 안 보이던 문제."""
@@ -278,30 +272,8 @@ def test_merge_column_is_not_clipped(web, names):
     assert "td.ctl" in page and "<td class='ctl'>" in page
 
 
-def test_merge_many_at_once(web, names):
-    code, _ = web.post("/names/merge", kind="학교", into=names["포항공과대학교"],
-                       ids=[names["포항공대"], names["서울대학교"]])
-    남은 = [i.표시명 for i in web.module.registry.list_all("학교")]
-    assert 남은 == ["포항공과대학교"]
-    assert web.module.registry.display("학교", "포항공대") == "포항공과대학교"
 
 
-def test_merge_without_selection_explains_why(web, names):
-    web.post("/names/merge", kind="학교", into=names["포항공대"])
-    assert len(web.module.registry.list_all("학교")) == 3      # 아무것도 안 사라졌다
-
-
-def test_merge_ignores_target_itself(web, names):
-    """대표를 자기 자신에 묶으면 항목이 사라져버린다. 걸러야 한다."""
-    web.post("/names/merge", kind="학교", into=names["포항공대"], ids=[names["포항공대"]])
-    assert web.module.registry.get(names["포항공대"]) is not None
-
-
-def test_merge_is_recorded_in_history(web, names):
-    web.post("/names/merge", kind="학교", into=names["포항공과대학교"],
-             ids=[names["포항공대"]])
-    이력 = web.module.audit.recent(50, 대상종류="명칭")
-    assert any(e.항목 == "표기 묶기" and e.이전값 == "포항공대" for e in 이력)
 
 
 def test_bulk_save_renames_only_changed_rows(web, names):
@@ -327,12 +299,6 @@ def test_save_tells_what_changed(web, names):
     assert "서울대학교" in body and "SNU" in body
     assert "1건 저장했습니다" in body
 
-
-def test_old_single_row_merge_form_still_works(web, names):
-    """예전 화면(줄마다 id 하나)에서 온 요청도 받아준다."""
-    web.post("/names/merge", kind="학교", id=names["포항공대"],
-             into=names["포항공과대학교"])
-    assert web.module.registry.get(names["포항공대"]) is None
 
 
 def test_grade_and_display_saved_together(web):
@@ -476,24 +442,6 @@ def test_tsv_view_is_gone(web):
 
 
 # --- 이름 바꾸기 / 브랜드 / 표 도구 --------------------------------------------
-def test_save_merges_rows_that_became_the_same_name(web, names):
-    """서로 다른 항목을 같은 이름으로 고치면 그건 같은 대상이라는 뜻이다."""
-    fields = {"kind": "소속", "id": list(names.values())}
-    for nid in names.values():
-        fields[f"표시명_{nid}"] = "포항공대"
-    code, body = web.post("/names/save", **fields)
-    assert "합쳤습니다" in body
-    남은 = web.module.registry.list_all("소속")
-    assert [n.표시명 for n in 남은] == ["포항공대"]
-
-
-def test_merge_is_recorded_when_names_collide(web, names):
-    fields = {"kind": "소속", "id": list(names.values())}
-    for nid in names.values():
-        fields[f"표시명_{nid}"] = "한곳"
-    web.post("/names/save", **fields)
-    이력 = web.module.audit.recent(50, 대상종류="명칭")
-    assert any(e.항목 == "같은 이름 합치기" for e in 이력)
 
 
 def test_system_is_named_for_applicants_not_cv_analysis(web):
@@ -525,3 +473,34 @@ def test_copy_includes_headers(web):
     page = web.get("/")
     assert "twithhead" in page                     # 머리글 포함 토글
     assert "if(withHead !== false) out.push(" in page
+
+
+# --- 명칭 관리: 원래 표기를 감추지 않는다 ---------------------------------------
+def test_names_page_shows_the_original_spelling(web, names):
+    page = web.get("/names?kind=" + urllib.parse.quote("소속"))
+    assert "<th>원래 표기</th>" in page and "<th>매칭 키</th>" in page
+    for 원문 in ("포항공과대학교", "포항공대", "서울대학교"):
+        assert 원문 in page
+
+
+def test_renaming_keeps_the_original_visible(web, names):
+    nid = names["포항공과대학교"]
+    web.post("/names/save", kind="소속", id=nid, **{f"표시명_{nid}": "포항공대"})
+    page = web.get("/names?kind=" + urllib.parse.quote("소속"))
+    assert "포항공과대학교" in page          # 고쳐도 원래 표기가 남아 있다
+    assert "이름 겹침" in page               # 같은 이름을 쓰는 줄이 있다고 알려준다
+
+
+def test_overlapping_names_are_reported_not_merged(web, names):
+    fields = {"kind": "소속", "id": list(names.values())}
+    for nid in names.values():
+        fields[f"표시명_{nid}"] = "포항공대"
+    code, body = web.post("/names/save", **fields)
+    assert "같은 이름을 쓰는 항목" in body
+    assert len(web.module.registry.list_all("소속")) == 3      # 합치지 않는다
+
+
+def test_merge_ui_is_gone(web, names):
+    page = web.get("/names?kind=" + urllib.parse.quote("소속"))
+    assert "mergeform" not in page
+    assert "여기로 묶기" not in page
