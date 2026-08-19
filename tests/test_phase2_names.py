@@ -157,3 +157,31 @@ def test_toggling_tier_changes_columns(reg):
 
 def test_columns_without_registry_have_no_tier_columns():
     assert not any("최우수" in c for c in columns(None))
+
+
+# --- 워크샵·세션 분리 --------------------------------------------------------
+def test_session_names_stay_separate_from_main_venue():
+    """워크샵 논문을 본 학회와 같은 등급으로 세면 최우수 개수가 부풀어 오른다."""
+    from cvtool.names import normalize
+
+    본학회 = normalize("ICML", "학회")
+    for 같음 in ("ICML 2023", "Proc. of ICML 2023", "ICML (Oral)"):
+        assert normalize(같음, "학회") == 본학회
+    for 다름 in ("ICML Workshop on Federated Learning",
+                 "NeurIPS Datasets and Benchmarks Track"):
+        assert normalize(다름, "학회") != 본학회
+
+
+def test_workshop_can_be_merged_into_main_venue(tmp_path):
+    """따로 잡히더라도 담당자가 묶으면 본 학회 등급을 따라간다."""
+    from cvtool.names import NameRegistry
+
+    reg = NameRegistry(tmp_path / "n.db")
+    본 = reg.observe("학회", "ICML")
+    워크샵 = reg.observe("학회", "ICML Workshop on Federated Learning")
+    assert 본.id != 워크샵.id
+
+    reg.classify(본.id, 등급="최우수")
+    reg.merge(워크샵.id, 본.id)
+    assert reg.display("학회", "ICML Workshop on Federated Learning") == "ICML"
+    assert reg.lookup("학회", "ICML Workshop on Federated Learning").등급 == "최우수"

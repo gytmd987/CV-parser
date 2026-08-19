@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import html
+import json
 import os
 import queue
 import secrets
@@ -42,6 +43,8 @@ from ..export import records_to_tsv, records_to_xlsx
 from ..fsutil import is_world_readable, mode_of, safe_filename, secure_dir, secure_file
 from ..extract import extract_cv_from_text
 from ..ingestion.parsers import UnsupportedFormat, extract_text
+from ..normalize import MULTI_SEP
+from ..schemas import NAME_COLUMNS, TIER_COLUMN_PREFIX
 from ..schemas import columns as table_columns
 from ..store import CUSTOM_TYPES, SUPPORTED_SUFFIXES, CandidateStore
 from ..timeutil import now_kst
@@ -190,6 +193,11 @@ input[type=password],input[type=text],select{padding:7px 9px;border:1px solid va
 .p-중복의심{background:#ffe4e6;color:#9f1239}
 .p-대기중{background:#e5e7eb;color:#374151}
 .dup{background:#fff1f2}
+td.edit{cursor:cell}
+td.edit:hover{outline:2px solid var(--accent);outline-offset:-2px}
+td.saved{background:#dcfce7 !important}
+td.err{background:#fee2e2 !important}
+td.edit input,td.edit select{padding:2px 4px;font-size:12.5px;width:100%}
 """
 
 
@@ -221,7 +229,9 @@ def _page(title: str, body: str, nav: bool = True, me: User | None = None) -> by
         f"<!doctype html><html lang='ko'><head><meta charset='utf-8'>"
         f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
         f"<title>{html.escape(title)}</title><style>{_CSS}</style></head>"
-        f"<body>{header}<main>{body}</main></body></html>"
+        f"<body>{header}<main>{body}</main>"
+        + (f"<script>{_INLINE_JS}</script>" if nav else "")
+        + "</body></html>"
     ).encode("utf-8")
 
 
@@ -264,6 +274,114 @@ def _status_table() -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# 표에서 바로 고치기 (칸을 눌러 편집)
+# ---------------------------------------------------------------------------
+#: 칸을 누르면 입력칸으로 바뀌고, Enter/포커스아웃에 /api/cell 로 저장한다.
+#: 상세 화면과 같은 검사·같은 이력을 타므로 규칙이 갈라지지 않는다.
+#: 페이지를 새로 그리지 않아 넓은 표에서 스크롤 위치가 유지된다.
+_INLINE_JS = """
+document.addEventListener('click', function(ev){
+  var td = ev.target.closest && ev.target.closest('td.edit');
+  if(!td || td.querySelector('input,select')) return;
+  openCell(td);
+});
+function openCell(td){
+  var raw = td.dataset.raw || '', kind = td.dataset.kind || 'text', el;
+  if(kind === 'select'){
+    el = document.createElement('select');
+    JSON.parse(td.dataset.opts || '[]').forEach(function(o){
+      var op = document.createElement('option');
+      op.value = o; op.textContent = o || '(빈칸)';
+      if(o === raw) op.selected = true;
+      el.appendChild(op);
+    });
+  } else {
+    el = document.createElement('input');
+    el.type = 'text'; el.value = raw;
+    if(td.dataset.help) el.placeholder = td.dataset.help;
+  }
+  var before = td.textContent, done = false;
+  td.textContent = ''; td.appendChild(el); el.focus();
+  if(el.select) el.select();
+  function cancel(){ if(done) return; done = true; td.textContent = before; }
+  function save(){
+    if(done) return; done = true;
+    var v = el.value;
+    if(v === raw){ td.textContent = before; return; }
+    td.textContent = '저장 중...';
+    var body = new URLSearchParams();
+    body.append('id', td.dataset.id);
+    body.append('항목', td.dataset.col);
+    body.append('새값', v);
+    body.append('이전값', raw);
+    body.append('scope', td.dataset.scope || '기본');
+    fetch('/api/cell', {method:'POST', credentials:'same-origin',
+      headers:{'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'},
+      body: body.toString()})
+     .then(function(r){ return r.json(); })
+     .then(function(d){
+       if(d.ok){
+         td.dataset.raw = d.raw; td.textContent = d.표시; td.title = d.표시;
+         td.classList.add('saved');
+         setTimeout(function(){ td.classList.remove('saved'); }, 1200);
+       } else {
+         td.textContent = before; td.title = d.error;
+         td.classList.add('err'); alert(d.error);
+         setTimeout(function(){ td.classList.remove('err'); }, 4000);
+       }
+     })
+     .catch(function(e){ td.textContent = before; alert('저장 실패: ' + e); });
+  }
+  el.addEventListener('keydown', function(e){
+    if(e.key === 'Enter'){ e.preventDefault(); save(); }
+    else if(e.key === 'Escape'){ e.preventDefault(); cancel(); }
+  });
+  el.addEventListener('blur', save);
+  if(kind === 'select') el.addEventListener('change', save);
+}
+"""
+
+
+def _cell(cid: str, col: str, 표시: str, 원본: str, spec, *,
+          scope: str = "기본", cls: str = "") -> str:
+    """표 안의 편집 가능한 칸 하나.
+
+    보이는 값(표시)과 저장된 값(원본)이 다를 수 있다 — 학교·학회는 명칭 사전을
+    거쳐 대표명으로 보이기 때문이다. 편집은 언제나 원본을 고친다.
+    """
+    opts = json.dumps(list(spec.선택지), ensure_ascii=False) if spec.입력 == "select" else "[]"
+    return (
+        f"<td class='edit{cls}' data-id='{html.escape(cid)}' data-col='{html.escape(col)}'"
+        f" data-raw='{html.escape(원본)}' data-kind='{html.escape(spec.입력)}'"
+        f" data-opts='{html.escape(opts)}' data-scope='{scope}'"
+        f" data-help='{html.escape(spec.도움말)}' title='{html.escape(표시)}'>"
+        f"{html.escape(표시)}</td>"
+    )
+
+
+def _observe_edited(항목: str, 값: str) -> None:
+    """사람이 손으로 넣은 학교·전공 표기도 명칭 사전에 올린다.
+
+    올려두지 않으면 '서울대'와 '서울대학교'를 나중에 묶을 방법이 없다.
+    레코드 값은 건드리지 않는다 — 보여줄 때만 대표명으로 바뀐다.
+    """
+    종류 = NAME_COLUMNS.get(항목)
+    if not 종류:
+        return
+    for part in str(값 or "").split(MULTI_SEP):
+        if part.strip():
+            try:
+                registry.observe(종류, part)
+            except ValueError:
+                pass
+
+
+def _editable(col: str) -> bool:
+    """표에서 직접 고칠 수 있는 열인가."""
+    return col not in READONLY_FIELDS and not col.startswith(TIER_COLUMN_PREFIX)
+
+
 def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "") -> bytes:
     records = store.list_filtered(q, review_only, 년도)
     전체 = store.count()
@@ -292,19 +410,37 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
     )
 
     COLS = table_columns(registry)
-    head = "".join(f"<th>{html.escape(c)}</th>" for c in COLS)
+    사용자열 = store.fields()
+    사용자값맵 = store.custom_map()
+    수정가능 = can(me, "지원자_수정")
+    head = "".join(
+        f"<th>{html.escape(c)}</th>" for c in COLS + [f["이름"] for f in 사용자열]
+    )
     body_rows = []
     for rec in records:
         row = rec.to_row(registry)
+        cid = rec.지원자_ID
         cells = [
-            f"<td><input type='checkbox' name='ids' value='{html.escape(rec.지원자_ID)}'></td>",
-            f"<td><a href='/candidate?id={urllib.parse.quote(rec.지원자_ID)}'>상세</a></td>",
-            f"<td class='muted'>{html.escape(연도맵.get(rec.지원자_ID, ''))}</td>",
+            f"<td><input type='checkbox' name='ids' value='{html.escape(cid)}'></td>",
+            f"<td><a href='/candidate?id={urllib.parse.quote(cid)}'>상세</a></td>",
+            f"<td class='muted'>{html.escape(연도맵.get(cid, ''))}</td>",
         ]
         for c in COLS:
-            v = html.escape(str(row.get(c, "") or ""))
-            cls = " class='flag'" if c == "검토_필요" and v == "Y" else ""
-            cells.append(f"<td{cls} title='{v}'>{v}</td>")
+            표시 = str(row.get(c, "") or "")
+            cls = " flag" if c == "검토_필요" and 표시 == "Y" else ""
+            if 수정가능 and _editable(c):
+                cells.append(_cell(cid, c, 표시, str(getattr(rec, c, "") or ""),
+                                   field_spec(c), cls=cls))
+            else:
+                v = html.escape(표시)
+                cells.append(f"<td class='{cls.strip()}' title='{v}'>{v}</td>")
+        for f in 사용자열:
+            값 = 사용자값맵.get(cid, {}).get(f["이름"], "")
+            if 수정가능:
+                cells.append(_cell(cid, f["이름"], 값, 값, custom_field_spec(f),
+                                   scope="사용자"))
+            else:
+                cells.append(f"<td title='{html.escape(값)}'>{html.escape(값)}</td>")
         body_rows.append("<tr>" + "".join(cells) + "</tr>")
 
     if records:
@@ -325,6 +461,11 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
     else:
         table = "<p class='muted'>아직 등록된 지원자가 없습니다. CV를 업로드하세요.</p>"
 
+    안내 = (
+        "<p class='muted'>표의 칸을 눌러 바로 고칠 수 있습니다. "
+        "Enter 로 저장, Esc 로 취소. 회색 칸(계산·자동 항목)은 고칠 수 없습니다.</p>"
+        if 수정가능 else ""
+    )
     checked = " checked" if review_only else ""
     보관 = "켜짐 (재분석 가능)" if settings.store_cv_text else "꺼짐 (재분석하려면 재업로드 필요)"
 
@@ -356,6 +497,7 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
           </form>
           <p><a class='btn' href='/export.xlsx'>엑셀(.xlsx) 다운로드</a>
              <a class='btn sec' href='/export.tsv'>TSV 보기(복사용)</a></p>
+          {안내}
           {table}
         </div>""",
         me=me,
@@ -787,7 +929,8 @@ def _recruit_page(me: User, sort: str = "", error: str = "") -> bytes:
         ]
 
     표열 = recruit.columns()
-    사용자열이름 = set(store.field_names())
+    사용자열정의 = {f["이름"]: f for f in store.fields()}
+    사용자열이름 = set(사용자열정의)
     사용자값맵 = store.custom_map()
     수정가능 = can(me, "채용현황_수정")
     담당자 = can(me, "지원자_수정")
@@ -873,6 +1016,13 @@ def _recruit_page(me: User, sort: str = "", error: str = "") -> bytes:
             elif col == "최종상태":
                 cls = " class='flag'" if p and p.탈락 else ""
                 cells.append(f"<td{cls}>{v}</td>")
+            elif 담당자 and col in 사용자열이름:
+                값_ = 값(rec, col)
+                cells.append(_cell(rec.지원자_ID, col, 값_, 값_,
+                                   custom_field_spec(사용자열정의[col]), scope="사용자"))
+            elif 담당자 and hasattr(rec, col) and _editable(col):
+                cells.append(_cell(rec.지원자_ID, col, 값(rec, col),
+                                   str(getattr(rec, col, "") or ""), field_spec(col)))
             else:
                 cells.append(f"<td title='{v}'>{v}</td>")
         링크 = f"<td><a href='/candidate?id={urllib.parse.quote(rec.지원자_ID)}'>상세</a></td>"
@@ -891,6 +1041,8 @@ def _recruit_page(me: User, sort: str = "", error: str = "") -> bytes:
         if 보이는과제 is not None
         else "열 제목을 누르면 그 열로 정렬됩니다. 불합격자는 항상 아래로 갑니다."
     )
+    if 담당자:
+        안내 += " 지원자 정보 칸은 눌러서 바로 고칠 수 있습니다."
     열구성 = (
         "<p><a class='btn sec' href='/recruit/columns'>표 열 구성</a></p>"
         if can(me, "열_구성") else ""
@@ -1011,6 +1163,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
+
+    def _json(self, payload: dict, code: int = 200) -> None:
+        self._send(
+            json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            "application/json; charset=utf-8",
+            code=code,
+        )
 
     def _redirect(self, location: str, extra: dict[str, str] | None = None) -> None:
         self.send_response(303)
@@ -1164,6 +1323,10 @@ class Handler(BaseHTTPRequestHandler):
 
         me = self._user()
         if me is None:
+            # 표에서 바로 고치기는 fetch 라 리다이렉트를 받으면 HTML 을 파싱하게 된다.
+            if path.startswith("/api/"):
+                return self._json({"ok": False, "error": "로그인이 풀렸습니다. 새로고침하세요."},
+                                  code=401)
             return self._redirect("/login")
 
         if path == "/upload":
@@ -1383,6 +1546,54 @@ class Handler(BaseHTTPRequestHandler):
                 audit.record(me.아이디, "지원자", cid, 항목="첨부파일 삭제", 이전값=이름)
             return self._redirect(f"/candidate?id={urllib.parse.quote(cid)}")
 
+        if path == "/api/cell":
+            # 표에서 칸 하나만 고친다. 상세 화면의 /candidate/edit 과 같은
+            # 검사·같은 낙관적 잠금·같은 이력을 탄다. 다른 점은 응답이 JSON 이라
+            # 페이지를 새로 그리지 않는다는 것뿐이다.
+            if not can(me, "지원자_수정"):
+                return self._json({"ok": False, "error": "수정 권한이 없습니다."}, code=403)
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            cid = (data.get("id") or [""])[0]
+            항목 = (data.get("항목") or [""])[0]
+            새값 = (data.get("새값") or [""])[0]
+            이전값 = (data.get("이전값") or [""])[0]
+            scope = (data.get("scope") or ["기본"])[0]
+
+            if scope == "사용자":
+                field = store.field(항목)
+                if not field:
+                    return self._json({"ok": False, "error": f"없는 열입니다: {항목}"}, code=404)
+                현재 = store.custom_values(cid).get(항목, "")
+                if 현재 != 이전값:
+                    return self._json({"ok": False, "error": str(
+                        ConflictError(항목, 현재, 이전값))}, code=409)
+                try:
+                    저장값 = validate_custom(field, 새값)
+                except ValidationError as exc:
+                    return self._json({"ok": False, "error": str(exc)}, code=400)
+                이전 = store.set_custom(cid, 항목, 저장값)
+                if 이전 != 저장값:
+                    audit.record(me.아이디, "지원자", cid, 항목=항목,
+                                 이전값=이전, 새값=저장값, 비고="표에서 수정")
+                return self._json({"ok": True, "raw": 저장값, "표시": 저장값})
+
+            rec = store.get(cid)
+            if rec is None:
+                return self._json({"ok": False, "error": "지원자를 찾을 수 없습니다."}, code=404)
+            try:
+                옛값, 저장값 = apply_edit(rec, 항목, 새값, 기대_이전값=이전값)
+            except ConflictError as exc:
+                return self._json({"ok": False, "error": str(exc)}, code=409)
+            except ValidationError as exc:
+                return self._json({"ok": False, "error": str(exc)}, code=400)
+            if 옛값 != 저장값:
+                store.save(rec)
+                _observe_edited(항목, 저장값)
+                audit.record(me.아이디, "지원자", cid, 항목=항목,
+                             이전값=옛값, 새값=저장값, 비고="표에서 수정")
+            표시 = str(rec.to_row(registry).get(항목, "") or "")
+            return self._json({"ok": True, "raw": 저장값, "표시": 표시})
+
         if path == "/candidate/edit":
             if not can(me, "지원자_수정"):
                 return self._deny()
@@ -1401,6 +1612,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._redirect(f"{뒤로}&err={urllib.parse.quote(str(exc))}")
             if 옛값 != 저장값:
                 store.save(rec)
+                _observe_edited(항목, 저장값)
                 audit.record(me.아이디, "지원자", cid, 항목=항목, 이전값=옛값, 새값=저장값)
             return self._redirect(뒤로)
 
