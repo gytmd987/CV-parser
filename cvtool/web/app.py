@@ -38,6 +38,7 @@ from ..store import SUPPORTED_SUFFIXES, CandidateStore
 from ..timeutil import now_kst
 from ..dedup import fingerprint, find_duplicates
 from ..names import GRADED_KINDS, KINDS, NameRegistry, observe_record
+from ..recruit import RECRUIT_COLUMNS, STAGES, STATUSES, RecruitStore
 from .multipart import parse_multipart
 
 DATA_DIR = Path(os.environ.get("CVTOOL_DATA_DIR", Path.home() / ".cvtool"))
@@ -62,6 +63,7 @@ if _old_venues.is_file() and not _names_db.is_file():
     shutil.copy2(_old_venues, _names_db)
 registry = NameRegistry(_names_db)
 auth = AuthStore(DATA_DIR / "admin.db")
+recruit = RecruitStore(DATA_DIR / "recruit.db")
 audit = AuditLog(DATA_DIR / "audit.db")
 
 
@@ -185,7 +187,7 @@ input[type=password],input[type=text],select{padding:7px 9px;border:1px solid va
 def _page(title: str, body: str, nav: bool = True, me: User | None = None) -> bytes:
     미분류 = registry.unclassified_count() if nav else 0
     badge = f' <span class="pill p-미분류">{미분류}</span>' if 미분류 else ""
-    링크 = ["<a href='/'>지원자</a>"]
+    링크 = ["<a href='/'>지원자</a>", "<a href='/recruit'>채용 현황</a>"]
     if can(me, "명칭_관리"):
         링크.append(f"<a href='/names?kind=학회'>명칭 관리{badge}</a>")
     if can(me, "부서과제_관리"):
@@ -324,6 +326,10 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
             <button type='submit'>업로드 후 분석</button>
             <span class='muted'>여러 개를 한 번에 선택할 수 있습니다 (PDF/docx/txt).</span>
           </form>
+          <form method='post' action='/candidate/new' style='margin-top:10px'>
+            <button type='submit' class='sec'>CV 없이 지원자 추가</button>
+            <span class='muted'>다른 지원서로 지원한 경우. 빈 칸을 직접 채웁니다.</span>
+          </form>
           <p class='muted'>원문 텍스트 보관: <b>{보관}</b> · 보관 기간 {settings.retention_months}개월</p>
         </div>
         {_status_table()}
@@ -433,6 +439,34 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "") -> bytes:
     )
     오류 = f"<div class='warn'>{html.escape(error)}</div>" if error else ""
 
+    첨부목록 = "".join(
+        f"<li><a href='/attachment?id={a['id']}'>{html.escape(a['파일명'])}</a>"
+        f" <span class='muted'>{html.escape(a['올린일시'])} · {html.escape(a['올린이'] or '-')}</span>"
+        + (
+            " <form method='post' action='/attachment/delete' style='display:inline'"
+            " onsubmit=\"return confirm('첨부파일을 삭제합니다.')\">"
+            f"<input type='hidden' name='id' value='{a['id']}'>"
+            f"<input type='hidden' name='cid' value='{html.escape(지원자_ID)}'>"
+            "<button class='danger'>삭제</button></form>"
+            if 수정가능 else ""
+        )
+        + "</li>"
+        for a in store.attachments(지원자_ID)
+    ) or "<li class='muted'>첨부파일 없음</li>"
+    올리기 = (
+        "<form method='post' action='/attachment/add' enctype='multipart/form-data'"
+        " style='display:flex;gap:8px;margin-top:10px'>"
+        f"<input type='hidden' name='id' value='{html.escape(지원자_ID)}'>"
+        "<input type='file' name='files' multiple>"
+        "<button type='submit'>첨부 추가</button></form>"
+        if 수정가능 else ""
+    )
+    첨부카드 = (
+        f"<div class='card'><h2>첨부파일</h2><ul>{첨부목록}</ul>{올리기}"
+        "<p class='muted'>CV 원본과 별개로 자기소개서·포트폴리오 등을 붙일 수 있습니다. "
+        "지원자를 삭제하면 함께 지워집니다.</p></div>"
+    )
+
     return _page(
         f"지원자 {rec.한글_이름 or rec.지원자_ID}",
         f"""{오류}
@@ -445,6 +479,7 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "") -> bytes:
         <div class='card'><h2>관리 정보</h2><table>{관리}</table></div>
         <div class='card'><h2>추출 결과 {'(칸을 고치고 저장을 누르세요)' if 수정가능 else ''}</h2>
           <table>{''.join(항목행)}</table></div>
+        {첨부카드}
         <div class='card'><h2>변경 이력</h2><div class='scroll'>
           <table><tr><th>일시</th><th>사용자</th><th>내용</th></tr>{이력행}</table>
         </div></div>""",
@@ -668,6 +703,170 @@ def _history_page(me: User, 대상종류: str = "", limit: int = 300) -> bytes:
     )
 
 
+
+def _recruit_page(me: User, sort: str = "", error: str = "") -> bytes:
+    """채용 현황 관리.
+
+    지원자마다 단계별 상태를 드롭다운으로 바꾼다. 현업은 자기 과제만 보인다.
+    기본 정렬은 불합격을 맨 아래로 내린다.
+    """
+    보이는과제 = auth.visible_project_ids(me)      # None 이면 전부
+    진행맵 = recruit.all()
+    depts = auth.departments()
+    projects = auth.projects()
+    부서명 = {d["id"]: d["이름"] for d in depts}
+    과제명 = {p["id"]: p["이름"] for p in projects}
+
+    records = store.list_all()
+    if 보이는과제 is not None:
+        records = [
+            r for r in records
+            if (진행맵.get(r.지원자_ID) and 진행맵[r.지원자_ID].project_id in 보이는과제)
+        ]
+
+    표열 = recruit.columns()
+    수정가능 = can(me, "채용현황_수정")
+    담당자 = can(me, "지원자_수정")
+
+    def 값(rec, col: str) -> str:
+        p = 진행맵.get(rec.지원자_ID)
+        if col == "부서":
+            return 부서명.get(p.부서_id, "") if p else ""
+        if col == "과제":
+            return 과제명.get(p.project_id, "") if p else ""
+        if col == "최종상태":
+            return p.최종상태 if p else "미시작"
+        if col == "비고":
+            return p.비고 if p else ""
+        if col in STAGES:
+            return (p.단계상태.get(col, "") if p else "")
+        return str(rec.to_row(registry).get(col, "") or "")
+
+    # 정렬: 기본은 불합격 아래로. 열 제목을 누르면 그 열 기준
+    def 정렬키(rec):
+        p = 진행맵.get(rec.지원자_ID)
+        기본 = p.정렬키() if p else (0, 0, 0)
+        if sort:
+            return (기본[0], 값(rec, sort).lower())   # 불합격은 어떤 정렬에서도 아래로
+        return 기본
+    records.sort(key=정렬키)
+
+    부서옵션 = "".join(f"<option value='{d['id']}'>{html.escape(d['이름'])}</option>" for d in depts)
+    과제_by_부서 = {}
+    for pr in projects:
+        과제_by_부서.setdefault(pr["부서_id"], []).append(pr)
+
+    rows = []
+    for rec in records:
+        p = 진행맵.get(rec.지원자_ID)
+        cells = []
+        for col in 표열:
+            v = html.escape(값(rec, col))
+            if col in STAGES and 수정가능:
+                opts = "".join(
+                    f"<option value='{html.escape(st)}'"
+                    f"{' selected' if st == 값(rec, col) else ''}>{html.escape(st) or '-'}</option>"
+                    for st in STATUSES
+                )
+                cells.append(
+                    f"<td><form method='post' action='/recruit/stage' style='display:inline'>"
+                    f"<input type='hidden' name='id' value='{html.escape(rec.지원자_ID)}'>"
+                    f"<input type='hidden' name='단계' value='{html.escape(col)}'>"
+                    f"<select name='상태' onchange='this.form.submit()'>{opts}</select>"
+                    f"</form></td>"
+                )
+            elif col == "부서" and 담당자:
+                현재부서 = p.부서_id if p else None
+                현재과제 = p.project_id if p else None
+                옵션 = "".join(
+                    f"<option value='{d['id']}'{' selected' if d['id'] == 현재부서 else ''}>"
+                    f"{html.escape(d['이름'])}</option>" for d in depts
+                )
+                과제옵션 = "".join(
+                    f"<option value='{pr['id']}'{' selected' if pr['id'] == 현재과제 else ''}>"
+                    f"{html.escape(pr['이름'])}</option>"
+                    for pr in 과제_by_부서.get(현재부서, [])
+                )
+                cells.append(
+                    f"<td><form method='post' action='/recruit/assign' style='display:flex;gap:4px'>"
+                    f"<input type='hidden' name='id' value='{html.escape(rec.지원자_ID)}'>"
+                    f"<select name='dept' onchange='this.form.submit()'>"
+                    f"<option value=''>-</option>{옵션}</select>"
+                    f"<select name='project' onchange='this.form.submit()'>"
+                    f"<option value=''>-</option>{과제옵션}</select></form></td>"
+                )
+            elif col == "과제" and 담당자:
+                continue   # 부서 칸에서 함께 고른다
+            elif col == "비고" and 수정가능:
+                cells.append(
+                    f"<td><form method='post' action='/recruit/note' style='display:flex;gap:4px'>"
+                    f"<input type='hidden' name='id' value='{html.escape(rec.지원자_ID)}'>"
+                    f"<input type='text' name='비고' value='{v}' style='width:160px'>"
+                    f"<button type='submit'>저장</button></form></td>"
+                )
+            elif col == "최종상태":
+                cls = " class='flag'" if p and p.탈락 else ""
+                cells.append(f"<td{cls}>{v}</td>")
+            else:
+                cells.append(f"<td title='{v}'>{v}</td>")
+        링크 = f"<td><a href='/candidate?id={urllib.parse.quote(rec.지원자_ID)}'>상세</a></td>"
+        묶음 = " class='dup'" if p and p.탈락 else ""
+        rows.append(f"<tr{묶음}>{링크}{''.join(cells)}</tr>")
+
+    머리 = "<th></th>" + "".join(
+        f"<th><a href='/recruit?sort={urllib.parse.quote(c)}' style='color:inherit'>"
+        f"{html.escape(c)}</a></th>"
+        for c in 표열
+        if not (c == "과제" and 담당자)
+    )
+    오류 = f"<div class='warn'>{html.escape(error)}</div>" if error else ""
+    안내 = (
+        "배정된 과제의 지원자만 보입니다."
+        if 보이는과제 is not None
+        else "열 제목을 누르면 그 열로 정렬됩니다. 불합격자는 항상 아래로 갑니다."
+    )
+    열구성 = (
+        "<p><a class='btn sec' href='/recruit/columns'>표 열 구성</a></p>"
+        if can(me, "열_구성") else ""
+    )
+    표 = (
+        f"<div class='scroll'><table><tr>{머리}</tr>{''.join(rows)}</table></div>"
+        if rows else "<p class='muted'>표시할 지원자가 없습니다.</p>"
+    )
+    return _page(
+        "채용 현황",
+        f"""{오류}<div class='card'><h2>채용 현황 <span class='muted'>{len(records)}명</span></h2>
+        <p class='muted'>{안내}</p>{열구성}{표}</div>""",
+        me=me,
+    )
+
+
+def _recruit_columns_page(me: User) -> bytes:
+    """관리자가 채용 현황 표에 보일 열과 순서를 정한다."""
+    전체 = list(table_columns(registry)) + list(RECRUIT_COLUMNS)
+    현재 = recruit.columns()
+    항목 = "".join(
+        f"<label style='display:block;padding:3px 0'>"
+        f"<input type='checkbox' name='col' value='{html.escape(c)}'"
+        f"{' checked' if c in 현재 else ''}> {html.escape(c)}</label>"
+        for c in 전체
+    )
+    순서 = ", ".join(현재)
+    return _page(
+        "표 열 구성",
+        f"""<div class='card'><h2>채용 현황 표에 보일 열</h2>
+        <p class='muted'>체크한 열만 보입니다. 순서는 아래 칸에 쉼표로 적은 순서를 따릅니다.</p>
+        <form method='post' action='/recruit/columns'>
+          <div style='columns:3'>{항목}</div>
+          <p>순서(쉼표 구분, 비우면 체크 순서대로):<br>
+          <input type='text' name='order' value='{html.escape(순서)}' style='width:100%'></p>
+          <button type='submit'>저장</button>
+          <a class='btn sec' href='/recruit'>취소</a>
+        </form></div>""",
+        me=me,
+    )
+
+
 # ---------------------------------------------------------------------------
 # HTTP 핸들러
 # ---------------------------------------------------------------------------
@@ -777,6 +976,35 @@ class Handler(BaseHTTPRequestHandler):
                 fpath.read_bytes(), ctype,
                 extra={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"},
             )
+        if path == "/recruit":
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            return self._send(
+                _recruit_page(me, (params.get("sort") or [""])[0],
+                              (params.get("err") or [""])[0])
+            )
+        if path == "/recruit/columns":
+            if not can(me, "열_구성"):
+                return self._deny("표 열 구성은 관리자만 바꿀 수 있습니다.")
+            return self._send(_recruit_columns_page(me))
+        if path == "/attachment":
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                att = store.attachment(int((params.get("id") or ["0"])[0]))
+            except ValueError:
+                att = None
+            if not att:
+                return self._send(_page("없음", "<div class='card'>첨부파일이 없습니다.</div>"),
+                                  code=404)
+            fpath = store.files_dir / att["저장명"]
+            if not fpath.is_file():
+                return self._send(_page("없음", "<div class='card'>파일이 사라졌습니다.</div>"),
+                                  code=404)
+            ctype = CONTENT_TYPES.get(fpath.suffix.lower(), "application/octet-stream")
+            quoted = urllib.parse.quote(att["파일명"])
+            return self._send(
+                fpath.read_bytes(), ctype,
+                extra={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"},
+            )
         if path == "/names":
             if not can(me, "명칭_관리"):
                 return self._deny()
@@ -848,6 +1076,108 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as exc:  # noqa: BLE001
                     _set_status(safe_name, "실패", f"{type(exc).__name__}: {exc}")
             return self._redirect("/")
+
+        if path == "/recruit/stage":
+            if not can(me, "채용현황_수정"):
+                return self._deny()
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            cid = (data.get("id") or [""])[0]
+            단계 = (data.get("단계") or [""])[0]
+            상태 = (data.get("상태") or [""])[0]
+            보이는 = auth.visible_project_ids(me)
+            if 보이는 is not None and recruit.get(cid).project_id not in 보이는:
+                return self._deny("배정된 과제의 지원자만 수정할 수 있습니다.")
+            try:
+                이전 = recruit.set_stage(cid, 단계, 상태, me.아이디)
+            except ValueError as exc:
+                return self._redirect("/recruit?err=" + urllib.parse.quote(str(exc)))
+            if 이전 != 상태:
+                audit.record(me.아이디, "채용현황", cid, 항목=단계, 이전값=이전, 새값=상태)
+            return self._redirect("/recruit")
+
+        if path == "/recruit/assign":
+            if not can(me, "지원자_수정"):
+                return self._deny()
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            cid = (data.get("id") or [""])[0]
+            dept = (data.get("dept") or [""])[0]
+            proj = (data.get("project") or [""])[0]
+            부서_id = int(dept) if dept.isdigit() else None
+            project_id = int(proj) if proj.isdigit() else None
+            # 부서를 바꾸면 그 부서에 속하지 않는 과제는 떨어뜨린다
+            if project_id is not None:
+                소속 = {pr["id"] for pr in auth.projects(부서_id)} if 부서_id else set()
+                if project_id not in 소속:
+                    project_id = None
+            옛부서, 옛과제 = recruit.set_assignment(cid, 부서_id, project_id, me.아이디)
+            if (옛부서, 옛과제) != (부서_id, project_id):
+                audit.record(me.아이디, "채용현황", cid, 항목="부서/과제",
+                             이전값=f"{옛부서}/{옛과제}", 새값=f"{부서_id}/{project_id}")
+            return self._redirect("/recruit")
+
+        if path == "/recruit/note":
+            if not can(me, "채용현황_수정"):
+                return self._deny()
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            cid = (data.get("id") or [""])[0]
+            비고 = (data.get("비고") or [""])[0]
+            보이는 = auth.visible_project_ids(me)
+            if 보이는 is not None and recruit.get(cid).project_id not in 보이는:
+                return self._deny("배정된 과제의 지원자만 수정할 수 있습니다.")
+            이전 = recruit.set_note(cid, 비고, me.아이디)
+            if 이전 != 비고:
+                audit.record(me.아이디, "채용현황", cid, 항목="비고", 이전값=이전, 새값=비고)
+            return self._redirect("/recruit")
+
+        if path == "/recruit/columns":
+            if not can(me, "열_구성"):
+                return self._deny("표 열 구성은 관리자만 바꿀 수 있습니다.")
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            고른것 = data.get("col") or []
+            순서문 = (data.get("order") or [""])[0]
+            if 순서문.strip():
+                원하는 = [c.strip() for c in 순서문.split(",") if c.strip()]
+                최종 = [c for c in 원하는 if c in 고른것] + [c for c in 고른것 if c not in 원하는]
+            else:
+                최종 = 고른것
+            recruit.set_columns(최종)
+            audit.record(me.아이디, "채용현황", "(표 열)", 비고=f"열 구성 변경: {', '.join(최종)}")
+            return self._redirect("/recruit")
+
+        if path == "/candidate/new":
+            if not can(me, "지원자_등록"):
+                return self._deny()
+            rec = store.create_blank()
+            audit.record(me.아이디, "지원자", rec.지원자_ID, 비고="CV 없이 직접 등록")
+            return self._redirect(f"/candidate?id={urllib.parse.quote(rec.지원자_ID)}")
+
+        if path == "/attachment/add":
+            if not can(me, "지원자_수정"):
+                return self._deny()
+            form = parse_multipart(self._read_body(), self.headers.get("Content-Type", ""))
+            cid = (form.fields.get("id") or "").strip()
+            뒤로 = f"/candidate?id={urllib.parse.quote(cid)}"
+            for f in form.files:
+                이름 = safe_filename(f.filename)
+                try:
+                    store.add_attachment(cid, 이름, f.content, me.아이디)
+                    audit.record(me.아이디, "지원자", cid, 항목="첨부파일", 새값=이름)
+                except ValueError as exc:
+                    return self._redirect(f"{뒤로}&err={urllib.parse.quote(str(exc))}")
+            return self._redirect(뒤로)
+
+        if path == "/attachment/delete":
+            if not can(me, "지원자_수정"):
+                return self._deny()
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            cid = (data.get("cid") or [""])[0]
+            try:
+                이름 = store.delete_attachment(int((data.get("id") or ["0"])[0]))
+            except ValueError:
+                이름 = ""
+            if 이름:
+                audit.record(me.아이디, "지원자", cid, 항목="첨부파일 삭제", 이전값=이름)
+            return self._redirect(f"/candidate?id={urllib.parse.quote(cid)}")
 
         if path == "/candidate/edit":
             if not can(me, "지원자_수정"):
@@ -978,6 +1308,8 @@ class Handler(BaseHTTPRequestHandler):
             cid = (data.get("id") or [""])[0]
             if cid:
                 store.delete(cid)
+                recruit.delete(cid)
+                audit.record(me.아이디, "지원자", cid, 비고="지원자 삭제")
             return self._redirect("/")
 
         if path == "/candidates/delete":

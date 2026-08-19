@@ -30,6 +30,15 @@ CREATE TABLE IF NOT EXISTS candidates (
     record_json  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_expiry ON candidates(보관_만료일);
+CREATE TABLE IF NOT EXISTS attachments (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    지원자_ID    TEXT NOT NULL,
+    파일명       TEXT NOT NULL,   -- 올릴 때의 원래 이름
+    저장명       TEXT NOT NULL,   -- 디스크에 저장된 이름
+    올린이       TEXT DEFAULT '',
+    올린일시      TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_attach ON attachments(지원자_ID, id);
 """
 
 # 나중에 추가된 열. 기존 DB 에도 없으면 붙인다.
@@ -42,6 +51,11 @@ _ADDED_COLUMNS = {
 }
 
 SUPPORTED_SUFFIXES = {".pdf", ".docx", ".txt", ".md"}
+
+#: 첨부파일로 받아줄 형식 (CV 형식 + 자주 쓰는 문서·이미지)
+ATTACHMENT_SUFFIXES = SUPPORTED_SUFFIXES | {
+    ".hwp", ".hwpx", ".xlsx", ".pptx", ".png", ".jpg", ".jpeg", ".zip", ".csv",
+}
 
 
 class CandidateStore:
@@ -104,11 +118,14 @@ class CandidateStore:
         return path if path.is_file() else None
 
     def _unlink_files(self, ids: list[str]) -> None:
-        """DB 행을 지우기 전에 원본 파일부터 지운다."""
+        """DB 행을 지우기 전에 원본과 첨부파일부터 지운다."""
         for cid in ids:
             path = self.file_path(cid)
             if path:
                 path.unlink(missing_ok=True)
+            for att in self.attachments(cid):
+                (self.files_dir / att["저장명"]).unlink(missing_ok=True)
+            self._conn.execute("DELETE FROM attachments WHERE 지원자_ID=?", (cid,))
 
     # -- 쓰기 -------------------------------------------------------------
     def save(
@@ -238,12 +255,79 @@ class CandidateStore:
         self._conn.commit()
         return cur.rowcount
 
+    # -- 첨부파일 (지원자별 여러 개) ---------------------------------------
+    def add_attachment(
+        self, 지원자_ID: str, 파일명: str, content: bytes, 올린이: str = ""
+    ) -> int:
+        """CV 원본과 별개로 붙이는 자료. 여러 개 넣을 수 있다."""
+        suffix = Path(파일명).suffix.lower()
+        if suffix not in ATTACHMENT_SUFFIXES:
+            raise ValueError(
+                f"받지 않는 형식입니다: {suffix or '(확장자 없음)'} "
+                f"(허용: {', '.join(sorted(ATTACHMENT_SUFFIXES))})"
+            )
+        cur = self._conn.execute(
+            "INSERT INTO attachments (지원자_ID, 파일명, 저장명, 올린이, 올린일시)"
+            " VALUES (?,?,?,?,?)",
+            (지원자_ID, 파일명, "", 올린이, now_kst().strftime("%Y-%m-%d %H:%M:%S")),
+        )
+        att_id = cur.lastrowid
+        # 저장명도 지원자_ID 기반으로. 파일명에 개인정보가 들어가지 않게 한다.
+        저장명 = f"{지원자_ID}-att{att_id}{suffix}"
+        dest = self.files_dir / 저장명
+        dest.write_bytes(content)
+        secure_file(dest)
+        self._conn.execute(
+            "UPDATE attachments SET 저장명=? WHERE id=?", (저장명, att_id)
+        )
+        self._conn.commit()
+        return att_id
+
+    def attachments(self, 지원자_ID: str) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT * FROM attachments WHERE 지원자_ID=? ORDER BY id", (지원자_ID,)
+        )
+        return [dict(r) for r in rows]
+
+    def attachment(self, att_id: int) -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM attachments WHERE id=?", (att_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def delete_attachment(self, att_id: int) -> str:
+        att = self.attachment(att_id)
+        if not att:
+            return ""
+        (self.files_dir / att["저장명"]).unlink(missing_ok=True)
+        self._conn.execute("DELETE FROM attachments WHERE id=?", (att_id,))
+        self._conn.commit()
+        return att["파일명"]
+
+    def create_blank(self, 지원자_ID: str | None = None) -> CVRecord:
+        """CV 없이 지원자를 만든다.
+
+        다른 지원서로 지원한 경우처럼 CV 파일이 없을 때 쓴다.
+        빈 레코드를 만들어 두면 사람이 채워 넣을 수 있다.
+        """
+        import uuid as _uuid
+
+        cid = 지원자_ID or f"CV-{_uuid.uuid4().hex[:8].upper()}"
+        rec = CVRecord(지원자_ID=cid, 검토_필요="Y", 검토_사유="CV 없이 직접 등록 (내용 확인 필요)")
+        self.save(rec)
+        return rec
+
     def orphan_files(self) -> list[Path]:
         """DB 에 대응하는 행이 없는 파일 (크래시 등으로 남은 것)."""
         known = {
             r["저장_파일명"]
             for r in self._conn.execute("SELECT 저장_파일명 FROM candidates")
             if r["저장_파일명"]
+        }
+        known |= {
+            r["저장명"]
+            for r in self._conn.execute("SELECT 저장명 FROM attachments")
+            if r["저장명"]
         }
         return [f for f in self.files_dir.iterdir() if f.is_file() and f.name not in known]
 
