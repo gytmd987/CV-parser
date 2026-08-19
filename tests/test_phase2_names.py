@@ -56,21 +56,6 @@ def test_kinds_and_subtypes_are_different_axes():
     assert SUBTYPES == ("학회", "저널", "불명")
 
 
-def test_merge_makes_alias_resolve_to_target(reg):
-    a = reg.observe("학교", "포항공대")
-    b = reg.observe("학교", "포항공과대학교")
-    reg.merge(a.id, b.id)
-    reg.classify(b.id, 표시명="POSTECH")
-    assert reg.display("학교", "포항공대") == "POSTECH"
-    assert reg.display("학교", "포항공과대학교") == "POSTECH"
-    assert len(reg.list_all("학교")) == 1
-
-
-def test_merge_rejects_different_kinds(reg):
-    a = reg.observe("학회", "ICML")
-    b = reg.observe("학교", "ICML")
-    with pytest.raises(ValueError):
-        reg.merge(a.id, b.id)
 
 
 def test_unknown_name_falls_back_to_raw(reg):
@@ -187,24 +172,79 @@ def test_session_names_stay_separate_from_main_venue():
         assert normalize(다름, "학회") != 본학회
 
 
-def test_workshop_can_be_merged_into_main_venue(tmp_path):
-    """따로 잡히더라도 담당자가 묶으면 본 학회 등급을 따라간다."""
-    from cvtool.names import NameRegistry
-
-    reg = NameRegistry(tmp_path / "n.db")
-    본 = reg.observe("학회", "ICML")
-    워크샵 = reg.observe("학회", "ICML Workshop on Federated Learning")
-    assert 본.id != 워크샵.id
-
-    reg.classify(본.id, 등급="최우수")
-    reg.merge(워크샵.id, 본.id)
-    assert reg.display("학회", "ICML Workshop on Federated Learning") == "ICML"
-    assert reg.lookup("학회", "ICML Workshop on Federated Learning").등급 == "최우수"
-
 
 # --- '학교' -> '소속' 이름 변경 ------------------------------------------------
-def test_existing_school_rows_migrate_to_affiliation(tmp_path):
-    """이미 분류해 둔 학교 항목이 마이그레이션으로 사라지면 안 된다."""
+
+def test_company_and_school_share_one_dictionary():
+    """지원자의 현재 소속은 학교일 수도 회사일 수도 있다."""
+    from cvtool.schemas import NAME_COLUMNS
+
+    assert NAME_COLUMNS["현재_소속"] == NAME_COLUMNS["박사_학교"] == "소속"
+
+
+# --- 표기마다 한 줄 (합치지 않는다) --------------------------------------------
+def test_every_spelling_gets_its_own_row(reg):
+    """여러 표기를 한 줄로 합치면 잘못 묶인 걸 떼어낼 수 없다."""
+    a = reg.observe("소속", "포항공과대학교(POSTECH)")
+    b = reg.observe("소속", "포항공과대학교")
+    assert a.id != b.id
+    assert {n.원표기 for n in reg.list_all("소속")} == {
+        "포항공과대학교(POSTECH)", "포항공과대학교",
+    }
+
+
+def test_new_spelling_inherits_the_group_name(reg):
+    """묶기 키가 같으면 이미 정해둔 이름을 물려받는다."""
+    나 = reg.observe("학회", "ICML")
+    reg.classify(나.id, 표시명="ICML (Intl. Conf. on ML)")
+    나중 = reg.observe("학회", "Proc. of ICML 2023")
+    assert 나중.표시명 == "ICML (Intl. Conf. on ML)"
+    assert 나중.원표기 == "Proc. of ICML 2023"          # 원문은 그대로
+
+
+def test_wrong_grouping_can_be_pulled_apart(reg):
+    """자동으로 물려받은 이름이 틀렸으면 그 줄만 고치면 된다."""
+    reg.observe("소속", "가나다대학교")
+    잘못 = reg.observe("소속", "가나다 대학교")            # 키가 같아 이름을 물려받음
+    assert 잘못.표시명 == "가나다대학교"
+    reg.classify(잘못.id, 표시명="가나다 주식회사")
+    assert reg.get(잘못.id).표시명 == "가나다 주식회사"
+    assert reg.display("소속", "가나다대학교") == "가나다대학교"   # 옆줄은 그대로
+
+
+def test_classification_follows_the_display_name(reg):
+    """ICML 은 어떻게 적혀 있든 최우수다."""
+    a = reg.observe("학회", "ICML")
+    b = reg.observe("학회", "국제기계학습학회")
+    reg.classify(b.id, 표시명="ICML")                    # 같은 이름으로 부르기로
+    reg.classify(a.id, 등급="최우수", 국내해외="해외")
+    assert reg.get(b.id).등급 == "최우수"
+    assert reg.get(b.id).국내해외 == "해외"
+
+
+def test_siblings_lists_the_other_spellings(reg):
+    a = reg.observe("소속", "서울대학교")
+    b = reg.observe("소속", "SNU")
+    reg.classify(b.id, 표시명="서울대학교")
+    assert [n.원표기 for n in reg.siblings(a.id)] == ["SNU"]
+
+
+def test_forget_removes_one_spelling(reg):
+    a = reg.observe("소속", "오타대학굑")
+    assert reg.forget(a.id) == "오타대학굑"
+    assert reg.get(a.id) is None
+
+
+def test_listed_in_display_name_order(reg):
+    for s in ("힘찬대학교", "가나다대학교", "마루대학교"):
+        reg.observe("소속", s)
+    assert [n.표시명 for n in reg.list_all("소속")] == [
+        "가나다대학교", "마루대학교", "힘찬대학교",
+    ]
+
+
+def test_old_two_layer_db_migrates_to_one_row_per_spelling(tmp_path):
+    """예전 구조(대표명 한 줄 + 별칭표)에서 숨어 있던 표기도 각자 줄로 되살린다."""
     import sqlite3
 
     from cvtool.names import NameRegistry
@@ -219,22 +259,15 @@ def test_existing_school_rows_migrate_to_affiliation(tmp_path):
         "CREATE TABLE name_aliases (종류 TEXT NOT NULL, 별칭키 TEXT NOT NULL,"
         " name_id INTEGER NOT NULL, PRIMARY KEY (종류, 별칭키));"
     )
-    conn.execute(
-        "INSERT INTO names (종류,정규화키,표시명,발견횟수) VALUES ('학교','postech','POSTECH',7)"
-    )
-    conn.execute("INSERT INTO name_aliases VALUES ('학교','포항공대',1)")
-    conn.commit()
-    conn.close()
+    conn.execute("INSERT INTO names (종류,정규화키,표시명,등급,국내해외,발견횟수)"
+                 " VALUES ('학회','icml','ICML','최우수','해외',9)")
+    conn.execute("INSERT INTO name_aliases VALUES ('학회','국제기계학습학회',1)")
+    conn.commit(); conn.close()
 
     reg = NameRegistry(path)
-    남은 = reg.list_all("소속")
-    assert [(n.표시명, n.발견횟수) for n in 남은] == [("POSTECH", 7)]
-    assert reg.display("소속", "포항공대") == "POSTECH"      # 묶어둔 별칭도 살아 있다
-    assert reg.list_all("학교") == 남은                     # 옛 이름으로 물어도 같은 것
-
-
-def test_company_and_school_share_one_dictionary():
-    """지원자의 현재 소속은 학교일 수도 회사일 수도 있다."""
-    from cvtool.schemas import NAME_COLUMNS
-
-    assert NAME_COLUMNS["현재_소속"] == NAME_COLUMNS["박사_학교"] == "소속"
+    표기들 = {n.원표기: n for n in reg.list_all("학회·저널")}
+    assert set(표기들) == {"ICML", "국제기계학습학회"}       # 별칭도 각자 줄이 된다
+    assert all(n.표시명 == "ICML" for n in 표기들.values())
+    assert 표기들["ICML"].등급 == "최우수"                  # 분류는 이름에 붙어 유지
+    assert 표기들["국제기계학습학회"].등급 == "최우수"
+    assert reg.display("학회", "국제기계학습학회") == "ICML"

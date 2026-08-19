@@ -250,13 +250,13 @@ def test_recruit_table_does_not_edit_candidate_fields(web, cid):
 # --- 명칭 관리 화면 ----------------------------------------------------------
 @pytest.fixture
 def names(web):
-    """소속 3건을 넣고 {표시명: id} 를 돌려준다."""
+    """소속 표기 3개를 넣고 {원표기: id} 를 돌려준다."""
     reg = web.module.registry
-    reg._conn.execute("DELETE FROM name_aliases")
     reg._conn.execute("DELETE FROM names WHERE 종류='소속'")
+    reg._conn.execute("DELETE FROM name_classes WHERE 종류='소속'")
     reg._conn.commit()
     made = [reg.observe("소속", n) for n in ("포항공과대학교", "포항공대", "서울대학교")]
-    return {i.표시명: i.id for i in made}
+    return {i.원표기: i.id for i in made}
 
 
 def test_names_page_keeps_navigation(web):
@@ -266,7 +266,7 @@ def test_names_page_keeps_navigation(web):
 
 
 
-def test_merge_column_is_not_clipped(web, names):
+def test_control_column_is_not_clipped(web, names):
     """수정 칸이 max-width 260px 에 잘려서 안 보이던 문제."""
     page = web.get("/names?kind=" + urllib.parse.quote("학교"))
     assert "td.ctl" in page and "<td class='ctl'>" in page
@@ -286,7 +286,7 @@ def test_bulk_save_renames_only_changed_rows(web, names):
     이름들 = {i.표시명 for i in web.module.registry.list_all("소속")}
     assert "SNU" in 이름들 and "포항공대" in 이름들
     이력 = web.module.audit.recent(50, 대상종류="명칭")
-    변경 = [e for e in 이력 if e.항목 == "표시명"]
+    변경 = [e for e in 이력 if e.항목 == "표에 보일 이름"]
     assert len(변경) == 1 and 변경[0].새값 == "SNU"      # 안 바뀐 줄은 이력이 안 남는다
 
 
@@ -330,12 +330,13 @@ def test_old_school_bookmark_still_opens(web):
     assert "소속 " in page
 
 
-def test_company_names_normalize_together(web):
-    """(주) 같은 괄호 표기는 저절로 묶인다."""
+def test_company_names_group_automatically(web):
+    """(주) 같은 괄호 표기는 줄은 따로지만 이름은 같게 붙는다."""
     reg = web.module.registry
     a = reg.observe("소속", "(주)가나다소프트")
     b = reg.observe("소속", "가나다소프트")
-    assert a.id == b.id
+    assert a.id != b.id                         # 표기마다 한 줄
+    assert a.표시명 == b.표시명                   # 이름은 자동으로 같아진다
 
 
 # --- CV 업로드 탭 ------------------------------------------------------------
@@ -468,17 +469,20 @@ def test_column_menu_and_guard_are_shipped(web):
         assert 기능 in page, 기능
 
 
-def test_copy_includes_headers(web):
-    """머리글이 빠지면 엑셀에 붙였을 때 무슨 열인지 알 수 없다."""
+def test_copy_always_includes_headers(web):
+    """머리글이 빠지면 엑셀에 붙였을 때 무슨 열인지 알 수 없다. 옵션 없이 항상 넣는다."""
     page = web.get("/")
-    assert "twithhead" in page                     # 머리글 포함 토글
-    assert "if(withHead !== false) out.push(" in page
+    assert "twithhead" not in page                 # 켜고 끄는 옵션 없음
+    assert "tcopy" not in page                     # '표 복사' 버튼도 없앰
+    assert "머리글은 늘 함께 복사한다" in page
 
 
 # --- 명칭 관리: 원래 표기를 감추지 않는다 ---------------------------------------
-def test_names_page_shows_the_original_spelling(web, names):
+def test_names_page_shows_every_spelling_as_a_row(web, names):
     page = web.get("/names?kind=" + urllib.parse.quote("소속"))
-    assert "<th>원래 표기</th>" in page and "<th>매칭 키</th>" in page
+    assert "<th>CV 에 적힌 표기</th>" in page
+    assert "<th>같은 이름으로 묶인 표기</th>" in page
+    assert "매칭 키" not in page                       # 정규화키는 화면에 안 낸다
     for 원문 in ("포항공과대학교", "포항공대", "서울대학교"):
         assert 원문 in page
 
@@ -487,20 +491,104 @@ def test_renaming_keeps_the_original_visible(web, names):
     nid = names["포항공과대학교"]
     web.post("/names/save", kind="소속", id=nid, **{f"표시명_{nid}": "포항공대"})
     page = web.get("/names?kind=" + urllib.parse.quote("소속"))
-    assert "포항공과대학교" in page          # 고쳐도 원래 표기가 남아 있다
-    assert "이름 겹침" in page               # 같은 이름을 쓰는 줄이 있다고 알려준다
+    assert "포항공과대학교" in page          # 고쳐도 CV 표기 줄은 그대로 남는다
+    assert web.module.registry.get(nid).원표기 == "포항공과대학교"
 
 
-def test_overlapping_names_are_reported_not_merged(web, names):
+def test_siblings_are_listed(web, names):
+    """같은 이름으로 묶인 표기가 무엇인지 보여야 한다."""
+    for 원표기, nid in names.items():
+        if 원표기 != "서울대학교":
+            web.post("/names/save", kind="소속", id=nid, **{f"표시명_{nid}": "포항공대"})
+    page = web.get("/names?kind=" + urllib.parse.quote("소속"))
+    형제 = web.module.registry.siblings(names["포항공대"])
+    assert [n.원표기 for n in 형제] == ["포항공과대학교"]
+    assert "포항공과대학교" in page
+
+
+def test_a_wrong_grouping_can_be_undone(web, names):
+    """잘못 묶였으면 그 줄의 이름만 다시 고치면 된다."""
+    nid = names["포항공과대학교"]
+    web.post("/names/save", kind="소속", id=nid, **{f"표시명_{nid}": "포항공대"})
+    assert web.module.registry.get(nid).표시명 == "포항공대"
+    web.post("/names/save", kind="소속", id=nid, **{f"표시명_{nid}": "포항공과대학교"})
+    assert web.module.registry.get(nid).표시명 == "포항공과대학교"
+
+
+def test_a_spelling_can_be_forgotten(web, names):
+    nid = names["포항공대"]
+    web.post("/names/forget", kind="소속", id=nid)
+    assert web.module.registry.get(nid) is None
+
+
+def test_names_sorted_by_display_name(web, names):
+    """사전이니까 표에 보일 이름 오름차순이 기본이다."""
+    assert [n.표시명 for n in web.module.registry.list_all("소속")] == [
+        "서울대학교", "포항공과대학교", "포항공대",
+    ]
+    page = web.get("/names?kind=" + urllib.parse.quote("소속"))
+    순서 = [page.index(f"name='표시명_{names[원표기]}'")
+           for 원표기 in ("서울대학교", "포항공과대학교", "포항공대")]
+    assert 순서 == sorted(순서)
+
+
+def test_same_name_does_not_merge_rows(web, names):
     fields = {"kind": "소속", "id": list(names.values())}
     for nid in names.values():
         fields[f"표시명_{nid}"] = "포항공대"
-    code, body = web.post("/names/save", **fields)
-    assert "같은 이름을 쓰는 항목" in body
-    assert len(web.module.registry.list_all("소속")) == 3      # 합치지 않는다
+    web.post("/names/save", **fields)
+    남은 = web.module.registry.list_all("소속")
+    assert len(남은) == 3                                   # 줄은 그대로
+    assert {n.원표기 for n in 남은} == {"포항공과대학교", "포항공대", "서울대학교"}
+    assert {n.표시명 for n in 남은} == {"포항공대"}
 
 
 def test_merge_ui_is_gone(web, names):
     page = web.get("/names?kind=" + urllib.parse.quote("소속"))
     assert "mergeform" not in page
     assert "여기로 묶기" not in page
+
+
+# --- 표 항목: 기본 열도 보이고 고칠 수 있다 --------------------------------------
+def test_fields_page_lists_builtin_columns_too(web):
+    page = web.get("/fields")
+    assert "기본 열" in page and "추가한 열" in page
+    for 기본 in ("한글_이름", "박사_학교", "검토_필요"):
+        assert 기본 in page
+
+
+def test_builtin_column_can_be_renamed_and_hidden(web, cid):
+    web.post("/fields/columns", col=["영문_이름", "이름_추정여부"],
+             label_1="English Name", order_1="", label_2="", order_2="", hide_2="on")
+    page = web.get("/")
+    heads = page.split("<tr>")[1] if "<tr>" in page else page
+    assert "English Name" in page
+    assert ">이름_추정여부<" not in page
+
+
+def test_builtin_column_order_changes_the_table(web, cid):
+    web.post("/fields/columns", col=["검토_필요"], label_1="", order_1="1")
+    assert web.module.표열()[0] == "검토_필요"
+
+
+def test_column_settings_are_recorded_in_history(web):
+    web.post("/fields/columns", col=["경력_요약"], label_1="경력", order_1="")
+    이력 = web.module.audit.recent(50, 대상종류="표항목")
+    assert any(e.항목 == "표에 보일 이름" and e.새값 == "경력" for e in 이력)
+
+
+def test_builtin_columns_cannot_be_deleted(web):
+    page = web.get("/fields")
+    첫줄 = page.split("<td>한글_이름</td>", 1)[1].split("</tr>", 1)[0]
+    assert "danger" not in 첫줄            # 기본 열에는 삭제 버튼이 없다
+
+
+def test_field_worker_cannot_change_columns(web):
+    try:
+        web.module.auth.create_user("hyunup", "현업이", "pw1234", "현업", 생성자="admin")
+    except ValueError:
+        pass                                   # 다른 테스트에서 이미 만들었을 수 있다
+    other = web.__class__.new()
+    other.post("/login", userid="hyunup", password="pw1234")
+    code, _ = other.post("/fields/columns", col=["한글_이름"], label_1="이름")
+    assert code == 403

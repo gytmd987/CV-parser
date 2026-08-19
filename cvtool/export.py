@@ -138,20 +138,27 @@ def build_xlsx(rows: Sequence[dict[str, str]], header: Sequence[str] | None = No
     return buf.getvalue()
 
 
-def records_to_xlsx(records: Iterable[CVRecord], registry=None, custom=None) -> bytes:
+def records_to_xlsx(records: Iterable[CVRecord], registry=None, custom=None,
+                    열=None, 라벨=None) -> bytes:
     """registry 를 주면 대표명·등급 열이, custom 을 주면 사용자 정의 열이 붙는다.
 
     custom: {필드명 목록} 과 {지원자_ID: {필드: 값}} 을 담은 (이름들, 값맵) 튜플
+    열:     내보낼 열과 순서 (안 주면 기본 순서 전부)
+    라벨:   {열이름: 머리글} — 화면에서 이름을 바꾼 열은 엑셀에도 그 이름으로
     """
-    cols = columns(registry)
     이름들, 값맵 = custom or ([], {})
-    cols = cols + list(이름들)
+    cols = list(열) if 열 is not None else columns(registry) + list(이름들)
     rows = []
     for r in records:
         row = r.to_row(registry)
         row.update(값맵.get(r.지원자_ID, {}))
         rows.append(row)
-    return build_xlsx(rows, cols)
+    if not 라벨:
+        return build_xlsx(rows, cols)
+    # 머리글만 바꾼다 (값은 내부 열 이름으로 들고 있다)
+    보일이름 = [라벨.get(c, c) for c in cols]
+    바뀐행 = [{라벨.get(c, c): row.get(c, "") for c in cols} for row in rows]
+    return build_xlsx(바뀐행, 보일이름)
 
 
 def records_to_tsv(records: Iterable[CVRecord], registry=None, custom=None) -> str:

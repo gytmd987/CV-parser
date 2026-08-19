@@ -218,11 +218,10 @@ input.dirty,select.dirty{background:#fef3c7;border-color:#fcd34d}
 .tbar input.tfilter{width:220px}
 th.sortable{cursor:pointer;user-select:none}
 th.sortable:hover{background:#dbeafe}
-th.sortable::before{content:'\25BE';font-size:9px;color:#94a3b8;float:right;margin-left:4px}
-th[data-dir=asc]::after{content:' \25B2';font-size:10px}
-th[data-dir=desc]::after{content:' \25BC';font-size:10px}
+th[data-dir=asc]::after{content:' ↑';font-size:11px;color:var(--accent)}
+th[data-dir=desc]::after{content:' ↓';font-size:11px;color:var(--accent)}
 th.filtered{background:#dbeafe}
-th.filtered::before{content:'\25BE';color:var(--accent)}
+th.filtered::after{content:' (추림)';font-size:10px;color:var(--accent)}
 #colmenu{position:absolute;z-index:100;background:#fff;border:1px solid var(--line);
  border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.14);padding:6px;min-width:230px;
  max-width:320px;font-size:13px}
@@ -458,13 +457,12 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
         for y in 연도목록
     )
 
-    COLS = table_columns(registry)
-    사용자열 = store.fields()
+    COLS = 표열()
+    사용자열정의 = {f["이름"]: f for f in store.fields()}
     사용자값맵 = store.custom_map()
     수정가능 = can(me, "지원자_수정")
-    head = "".join(
-        f"<th>{html.escape(c)}</th>" for c in COLS + [f["이름"] for f in 사용자열]
-    )
+    이름표 = 라벨(COLS)
+    head = "".join(f"<th>{html.escape(이름표[c])}</th>" for c in COLS)
     body_rows = []
     for rec in records:
         row = rec.to_row(registry)
@@ -475,6 +473,14 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
             f"<td class='muted'>{html.escape(연도맵.get(cid, ''))}</td>",
         ]
         for c in COLS:
+            if c in 사용자열정의:
+                값 = 사용자값맵.get(cid, {}).get(c, "")
+                if 수정가능:
+                    cells.append(_cell(cid, c, 값, 값,
+                                       custom_field_spec(사용자열정의[c]), scope="사용자"))
+                else:
+                    cells.append(f"<td title='{html.escape(값)}'>{html.escape(값)}</td>")
+                continue
             표시 = str(row.get(c, "") or "")
             cls = " flag" if c == "검토_필요" and 표시 == "Y" else ""
             if 수정가능 and _editable(c):
@@ -483,13 +489,6 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
             else:
                 v = html.escape(표시)
                 cells.append(f"<td class='{cls.strip()}' title='{v}'>{v}</td>")
-        for f in 사용자열:
-            값 = 사용자값맵.get(cid, {}).get(f["이름"], "")
-            if 수정가능:
-                cells.append(_cell(cid, f["이름"], 값, 값, custom_field_spec(f),
-                                   scope="사용자"))
-            else:
-                cells.append(f"<td title='{html.escape(값)}'>{html.escape(값)}</td>")
         body_rows.append("<tr>" + "".join(cells) + "</tr>")
 
     if records:
@@ -544,7 +543,7 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
 
 
 # ---------------------------------------------------------------------------
-# 표 공통 기능 — 정렬 · 거르기 · 엑셀처럼 범위 복사 · 엑셀 내려받기
+# 표 공통 기능 — 정렬 · 찾기 · 엑셀처럼 범위 복사 · 엑셀 내려받기
 # ---------------------------------------------------------------------------
 #: 페이지마다 따로 만들지 않는다. `.scroll` 안의 표를 찾아 한 번에 붙인다.
 #: 범위 복사는 숨은 textarea 에 TSV 를 넣고 선택해 두는 방식이다.
@@ -578,9 +577,9 @@ function keepCols(tb){
   return keep.length ? keep : headCells(tb).map(function(_, i){ return i; });
 }
 
-function tableTSV(tb, withHead){
+function tableTSV(tb){
   var heads = headCells(tb), keep = keepCols(tb), out = [];
-  if(withHead !== false) out.push(keep.map(function(i){ return headText(heads[i]); }).join('\t'));
+  out.push(keep.map(function(i){ return headText(heads[i]); }).join('\t'));
   bodyRows(tb).forEach(function(tr){
     if(tr.classList.contains('hide')) return;
     out.push(keep.map(function(i){ return cellText(tr.cells[i]); }).join('\t'));
@@ -613,7 +612,7 @@ function toast(msg){
   window.__toastT = setTimeout(function(){ el.className = ''; }, 2200);
 }
 
-// --- 거르기 (표 전체 검색 + 열별 값 선택) ----------------------------------
+// --- 찾기 (표 전체 검색 + 열별 값 추리기) ------------------------------------
 function applyFilters(tb){
   var q = (tb.__q || '').trim().toLowerCase();
   var f = tb.__filters || {};
@@ -686,7 +685,7 @@ function openColMenu(tb, idx, th){
     + "<button type='button' data-act='desc'>▼ 내림차순 정렬</button>"
     + "<button type='button' data-act='nosort'>정렬 해제</button>"
     + "<div class='cm-sep'></div>"
-    + "<div class='cm-title'>값으로 거르기</div>"
+    + "<div class='cm-title'>값으로 추리기</div>"
     + "<input type='text' class='cm-q' placeholder='값 찾기'>"
     + "<label class='cm-row cm-allrow'><input type='checkbox' class='cm-all'> <b>전체</b></label>"
     + "<div class='cm-list'>"
@@ -699,7 +698,7 @@ function openColMenu(tb, idx, th){
       }).join('')
     + "</div>"
     + "<div class='cm-btns'><button type='button' data-act='apply'>적용</button>"
-    + "<button type='button' class='sec' data-act='clear'>이 열 거르기 해제</button></div>"
+    + "<button type='button' class='sec' data-act='clear'>이 열 조건 해제</button></div>"
     + "<div class='cm-sep'></div>"
     + "<button type='button' data-act='copycol'>이 열만 복사</button>";
   document.body.appendChild(m);
@@ -762,10 +761,9 @@ function addToolbar(tb){
   var bar = document.createElement('div');
   bar.className = 'tbar';
   bar.innerHTML =
-    "<input type='text' placeholder='표에서 거르기' class='tfilter'>"
+    "<input type='text' placeholder='표에서 찾기' class='tfilter'>"
     + "<span class='muted tcount'></span><span style='flex:1'></span>"
-    + "<label class='muted'><input type='checkbox' class='twithhead' checked> 머리글 포함</label>"
-    + "<button type='button' class='sec tcopy'>표 복사</button>"
+    + "<span class='muted'>칸을 끌어서 고르고 Ctrl+C</span>"
     + "<button type='button' class='sec txlsx'>엑셀 내려받기</button>";
   box.parentNode.insertBefore(bar, box);
   tb.__bar = bar;
@@ -774,16 +772,12 @@ function addToolbar(tb){
     tb.__q = e.target.value;
     applyFilters(tb);
   });
-  bar.querySelector('.tcopy').addEventListener('click', function(){
-    copyText(tableTSV(tb, tb.__bar.querySelector('.twithhead').checked));
-    toast('표를 복사했습니다. 엑셀에 붙여넣으세요.');
-  });
   bar.querySelector('.txlsx').addEventListener('click', function(){
     var form = document.createElement('form');
     form.method = 'post'; form.action = '/table.xlsx';
     form.innerHTML = "<input type='hidden' name='name'><input type='hidden' name='tsv'>";
     form.elements.name.value = tb.dataset.name || document.title;
-    form.elements.tsv.value = tableTSV(tb, true);
+    form.elements.tsv.value = tableTSV(tb);
     document.body.appendChild(form);
     window.__leaving = true;
     form.submit();
@@ -796,7 +790,7 @@ function sortable(tb){
     if(th.querySelector('input')) return;              // 전체선택 칸은 빼고
     if(!headText(th)) return;
     th.classList.add('sortable');
-    th.title = '눌러서 정렬·거르기';
+    th.title = '눌러서 정렬·추리기';
     th.addEventListener('click', function(ev){
       if(ev.target.tagName === 'A') return;
       openColMenu(tb, idx, th);
@@ -818,9 +812,8 @@ function rangeSelect(tb){
     var c1 = Math.min(a.c, b.c), c2 = Math.max(a.c, b.c);
     var heads = headCells(tb), lines = [], cols = [];
     for(var c = c1; c <= c2; c++) cols.push(c);
-    if(tb.__bar && tb.__bar.querySelector('.twithhead').checked){
-      lines.push(cols.map(function(c){ return heads[c] ? headText(heads[c]) : ''; }).join('\t'));
-    }
+    // 머리글은 늘 함께 복사한다. 없으면 엑셀에서 무슨 열인지 알 수 없다.
+    lines.push(cols.map(function(c){ return heads[c] ? headText(heads[c]) : ''; }).join('\t'));
     bodyRows(tb).forEach(function(tr){
       if(tr.rowIndex < r1 || tr.rowIndex > r2 || tr.classList.contains('hide')) return;
       lines.push(cols.map(function(c){
@@ -923,6 +916,15 @@ def _tsv_to_xlsx(tsv: str) -> bytes:
     return build_xlsx(rows, header)
 
 
+def 표열(registry_=None) -> list[str]:
+    """지원자 표에 실제로 나갈 열 (숨김·순서 설정 반영)."""
+    return store.arrange(list(table_columns(registry_ or registry)) + store.field_names())
+
+
+def 라벨(열들: list[str]) -> dict[str, str]:
+    return store.labels(열들)
+
+
 def _busy_count() -> int:
     with _status_lock:
         return sum(1 for s in _status.values() if s["state"] in ("대기중", "처리중"))
@@ -994,19 +996,20 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "") -> bytes:
         도움 = f" placeholder='{html.escape(spec.도움말)}'" if spec.도움말 else ""
         return f"<input type='text' name='새값' value='{html.escape(값)}' style='width:260px'{도움}>"
 
+    이름표 = 라벨(list(table_columns(registry)))
     항목행 = []
     for c in table_columns(registry):
         값 = str(row.get(c, "") or "")
         보기 = html.escape(값) or "<span class='muted'>-</span>"
         if not 수정가능 or c in READONLY_FIELDS or c.startswith("1저자_해외논문_"):
             항목행.append(
-                f"<tr><th style='width:170px'>{html.escape(c)}</th>"
+                f"<tr><th style='width:170px'>{html.escape(이름표[c])}</th>"
                 f"<td style='white-space:normal;max-width:none'>{보기}</td></tr>"
             )
             continue
         원본값 = str(getattr(rec, c, "") or "")
         항목행.append(
-            f"<tr><th style='width:170px'>{html.escape(c)}</th>"
+            f"<tr><th style='width:170px'>{html.escape(이름표[c])}</th>"
             f"<td style='white-space:normal;max-width:none'>"
             f"<form method='post' action='/candidate/edit' style='display:flex;gap:6px'>"
             f"<input type='hidden' name='id' value='{html.escape(지원자_ID)}'>"
@@ -1375,21 +1378,23 @@ def _names_page(종류: str, me: User | None = None,
                 error: str = "", msg: str = "") -> bytes:
     """소속·학회·저널·전공을 같은 화면에서 관리한다.
 
-    **원래 표기는 절대 감추지 않는다.** 대표명을 고치고 나면 CV 에 뭐라고 적혀
-    있었는지 알 길이 없어져서, 같은 이름이 여러 줄 보일 때 어느 게 뭔지 구분할 수
-    없었다. 그래서 `원래 표기` 와 `매칭 키` 를 항상 함께 보여준다.
+    **CV 에 적힌 표기마다 한 줄**이다. 여러 표기를 한 줄로 합쳐 대표명만 남기면,
+    잘못 분류한 걸 나중에 알아채도 무엇이 잘못 들어갔는지 볼 수도 떼어낼 수도
+    없었다. 지금은 그 줄의 이름만 고치면 된다.
 
-    이름이 겹쳐도 **합치지 않는다.** 서로 다른 표기를 같은 이름으로 부르기로 한
-    것일 수도 있으므로 표시만 하고 판단은 사람이 한다.
+    등급·국내해외·유형·IF 는 표기가 아니라 **이름**에 붙는다. 같은 이름을 쓰는
+    표기들은 저절로 같은 분류를 쓴다.
     """
     종류 = canonical_kind(종류)
     if 종류 not in KINDS:
         종류 = "학회·저널"
-    items = registry.list_all(종류)
+    items = registry.list_all(종류)          # 표시명 오름차순이 기본
     등급목록 = registry.tier_names()
     등급종류 = 종류 in GRADED_KINDS
-    겹침 = registry.same_display_groups(종류)
-    겹치는id = {i for ids in 겹침.values() for i in ids}
+
+    무리: dict[str, list] = {}
+    for i in items:
+        무리.setdefault(i.표시명, []).append(i)
 
     탭 = " ".join(
         f"<a class='btn {'' if k == 종류 else 'sec'}' href='/names?kind={urllib.parse.quote(k)}'>"
@@ -1418,17 +1423,15 @@ def _names_page(종류: str, me: User | None = None,
             "</div>"
         )
 
+    이름목록 = registry.display_names(종류)
+    이름옵션 = "".join(f"<option value='{html.escape(n)}'>" for n in 이름목록)
+
     rows = []
     for i in items:
-        별칭 = registry.aliases_of(i.id)
-        키표시 = html.escape(i.정규화키)
-        if 별칭:
-            키표시 += ("<br><span class='muted'>+ "
-                     + html.escape(", ".join(별칭)) + "</span>")
-        겹침표시 = (
-            f" <span class='pill p-겹침' title='같은 이름을 쓰는 항목이"
-            f" {len(겹침.get(i.표시명, []))}개 있습니다'>이름 겹침</span>"
-            if i.id in 겹치는id else ""
+        형제 = [x.원표기 for x in 무리.get(i.표시명, []) if x.id != i.id]
+        형제칸 = (
+            "<span class='muted'>" + html.escape(", ".join(형제)) + "</span>"
+            if 형제 else "<span class='muted'>-</span>"
         )
         등급칸 = ""
         if 등급종류:
@@ -1454,10 +1457,10 @@ def _names_page(종류: str, me: User | None = None,
                 f" data-orig='{html.escape(i.국내해외)}' onchange='markDirty(this)'>{해외opt}"
                 f"</select></td>"
                 f"<td class='ctl'><input type='text' form='saveform' name='IF_{i.id}'"
-                f" value='{html.escape(i.IF)}' style='width:70px' placeholder='예: 12.5'"
+                f" value='{html.escape(i.IF)}' style='width:64px' placeholder='예: 12.5'"
                 f" data-orig='{html.escape(i.IF)}' oninput='markDirty(this)'>"
                 f" <a href='{html.escape(i.google_url())}' target='_blank' rel='noopener'"
-                f" title='구글에서 &quot;{html.escape(i.표시명)} impact factor&quot; 검색'>IF 찾기</a>"
+                f" title='구글에서 &quot;{html.escape(i.표시명)} impact factor&quot; 검색'>찾기</a>"
                 f"</td>"
             )
         미분류표시 = (
@@ -1466,16 +1469,21 @@ def _names_page(종류: str, me: User | None = None,
         )
         rows.append(
             f"<tr>"
-            f"<td style='white-space:normal'><b>{html.escape(i.원표기 or i.정규화키)}</b>"
-            f"{미분류표시}{겹침표시}</td>"
-            f"<td class='muted' style='white-space:normal'>{키표시}</td>"
+            f"<td style='white-space:normal'>{html.escape(i.원표기)}{미분류표시}</td>"
             f"<td>{i.발견횟수}</td>"
             f"<td class='ctl'>"
             f"<input type='hidden' form='saveform' name='id' value='{i.id}'>"
-            f"<input type='text' form='saveform' name='표시명_{i.id}'"
-            f" value='{html.escape(i.표시명)}' style='width:230px'"
+            f"<input type='text' form='saveform' name='표시명_{i.id}' list='이름목록'"
+            f" value='{html.escape(i.표시명)}' style='width:220px'"
             f" data-orig='{html.escape(i.표시명)}' oninput='markDirty(this)'></td>"
-            f"{등급칸}</tr>"
+            f"<td style='white-space:normal'>{형제칸}</td>"
+            f"{등급칸}"
+            f"<td><form method='post' action='/names/forget'"
+            f" onsubmit=\"return confirm('이 표기를 사전에서 지웁니다. "
+            f"다시 CV 에 나오면 새로 등록됩니다.')\">"
+            f"<input type='hidden' name='kind' value='{html.escape(종류)}'>"
+            f"<input type='hidden' name='id' value='{i.id}'>"
+            f"<button class='danger'>지움</button></form></td></tr>"
         )
 
     저장바 = (
@@ -1487,47 +1495,43 @@ def _names_page(종류: str, me: User | None = None,
         if items else ""
     )
 
-    겹침안내 = ""
-    if 겹침:
-        목록 = ", ".join(
-            f"<b>{html.escape(이름)}</b> {len(ids)}건" for 이름, ids in sorted(겹침.items())
-        )
-        겹침안내 = (
-            f"<div class='warn'>같은 이름을 쓰는 항목이 있습니다 — {목록}. "
-            "표기가 실제로 같은 대상이면 그대로 두면 됩니다(표에는 같은 이름으로 나옵니다). "
-            "잘못 고친 것이면 <b>원래 표기</b>를 보고 이름을 되돌리세요.</div>"
-        )
-
     등급머리 = (
         "<th class='ctl'>학회/저널</th><th class='ctl'>등급</th>"
         "<th class='ctl'>국내/해외</th><th class='ctl'>Impact Factor</th>"
         if 등급종류 else ""
     )
     표 = (
-        "<table><tr><th>원래 표기</th><th>매칭 키</th><th style='width:60px'>발견</th>"
-        f"<th class='ctl'>표에 보일 이름</th>{등급머리}</tr>"
-        f"{''.join(rows)}</table>"
+        "<table><tr><th>CV 에 적힌 표기</th><th style='width:56px'>발견</th>"
+        f"<th class='ctl'>표에 보일 이름</th><th>같은 이름으로 묶인 표기</th>"
+        f"{등급머리}<th></th></tr>{''.join(rows)}</table>"
         if rows
         else "<p class='muted'>아직 등록된 항목이 없습니다. CV를 업로드하면 자동으로 등록됩니다.</p>"
     )
     알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
     오류 = f"<div class='warn'>{html.escape(error)}</div>" if error else ""
     설명 = (
-        "같은 학교·회사를 다르게 적은 표기(예: 포항공대 / POSTECH / 포항공과대학교)에"
+        "학교·회사가 CV 마다 다르게 적혀 있습니다(포항공대 / POSTECH / 포항공과대학교)."
         if 종류 == "소속"
-        else "같은 대상을 다르게 적은 표기(예: ICML / Proc. of ICML 2023)에"
+        else "같은 곳이 CV 마다 다르게 적혀 있습니다(ICML / Proc. of ICML 2023)."
+    )
+    분류설명 = (
+        " 등급·국내해외·유형·IF 는 <b>이름에 붙습니다</b> — 같은 이름을 쓰는 표기는"
+        " 자동으로 같은 분류가 됩니다."
+        if 등급종류 else ""
     )
     return _page(
         f"{종류} 관리",
-        f"""{알림}{오류}{겹침안내}<div class='card'><h2>명칭 관리</h2><p>{탭}</p>
-        <p class='muted'>{설명} <b>표에 보일 이름</b>을 정하세요.
-        고치면 이미 등록된 지원자 표에도 바로 반영됩니다.
-        <b>원래 표기는 그대로 남습니다</b> — 이름을 고쳐도 CV 에 뭐라고 적혀 있었는지
-        계속 볼 수 있습니다.</p></div>
+        f"""{알림}{오류}<div class='card'><h2>명칭 관리</h2><p>{탭}</p>
+        <p class='muted'>{설명}
+        <b>CV 에 적힌 표기마다 한 줄</b>이고, 각 줄의 <b>표에 보일 이름</b>만 고칩니다.
+        같은 곳이면 같은 이름을 적으세요 — 지원자 표에는 그 이름으로 함께 나옵니다.
+        잘못 묶였으면 그 줄의 이름만 다시 고치면 됩니다.{분류설명}</p></div>
         {등급열}
-        <div class='card'><h2>{html.escape(종류)} {len(items)}건</h2>
+        <div class='card'><h2>{html.escape(종류)} <span class='muted'>표기 {len(items)}개 ·
+        이름 {len(무리)}개</span></h2>
         {저장바}
-        <div class='scroll'>{표}</div></div>""",
+        <div class='scroll'>{표}</div>
+        <datalist id='이름목록'>{이름옵션}</datalist></div>""",
         me=me,
     )
 
@@ -1900,27 +1904,73 @@ def _recruit_columns_page(me: User) -> bytes:
 
 
 
-def _fields_page(me: User, error: str = "") -> bytes:
-    """관리자가 표에 열을 추가한다.
+def _fields_page(me: User, error: str = "", msg: str = "") -> bytes:
+    """표에 나갈 열을 관리한다 — **기본 열과 추가한 열을 한 자리에서.**
 
-    값은 사람이 채운다. LLM 이 자동으로 채우지 않는다.
+    예전에는 추가한 열만 보였다. 기본 열도 이름이 마음에 안 들거나 안 쓰는 게
+    있어서, 같은 화면에서 보이는 이름·숨김·순서를 정할 수 있어야 한다.
+
+    다만 기본 열의 **입력 형식은 바꾸지 않는다.** 형식 검사와 추출 스키마가
+    그 열에 걸려 있어서, 여기서 바꾸면 이미 들어 있는 값과 어긋난다.
     """
-    fields = store.fields()
+    기본열 = list(table_columns(registry))
+    사용자열 = {f["이름"]: f for f in store.fields()}
+    cfg = store.column_config()
     유형옵션 = "".join(f"<option>{t}</option>" for t in CUSTOM_TYPES)
-    rows = "".join(
-        f"<tr><td>{html.escape(f['이름'])}</td><td>{html.escape(f['유형'])}</td>"
-        f"<td>{html.escape(f['선택지'] or '-')}</td>"
-        f"<td class='muted'>{html.escape(f['만든일시'])} ({html.escape(f['만든이'] or '-')})</td>"
-        "<td><form method='post' action='/fields/delete' style='display:inline'"
-        " onsubmit=\"return confirm('이 열과 여기 들어있던 모든 값이 지워집니다.')\">"
-        f"<input type='hidden' name='name' value='{html.escape(f['이름'])}'>"
-        "<button class='danger'>삭제</button></form></td></tr>"
-        for f in fields
-    ) or "<tr><td colspan='5' class='muted'>추가한 열이 없습니다.</td></tr>"
+
+    def 설명(col: str) -> str:
+        if col in 사용자열:
+            f = 사용자열[col]
+            선택지 = f["선택지"] or ""
+            return (f"{f['유형']}" + (f" · {html.escape(선택지)}" if 선택지 else "")
+                    + f"<br><span class='muted'>{html.escape(f['만든일시'])}"
+                    + (f" ({html.escape(f['만든이'])})" if f["만든이"] else "") + "</span>")
+        if col in CHOICE_FIELDS:
+            return "선택 · " + html.escape(", ".join(v or "(빈칸)" for v in CHOICE_FIELDS[col]))
+        if col in REGISTRY_FIELDS:
+            return "명칭 사전 " + html.escape(NAME_COLUMNS[col])
+        if col.startswith(TIER_COLUMN_PREFIX):
+            return "<span class='muted'>계산 결과 (논문 목록에서 셈)</span>"
+        spec = field_spec(col)
+        return html.escape(spec.도움말 or "텍스트")
+
+    rows = []
+    for i, col in enumerate(기본열 + list(사용자열), start=1):
+        c = cfg.get(col, {})
+        추가열 = col in 사용자열
+        rows.append(
+            f"<tr>"
+            f"<td>{html.escape(col)}</td>"
+            f"<td><span class='pill {'p-완료' if 추가열 else 'p-대기중'}'>"
+            f"{'추가한 열' if 추가열 else '기본 열'}</span></td>"
+            f"<td style='white-space:normal'>{설명(col)}</td>"
+            f"<td class='ctl'><input type='hidden' form='colform' name='col'"
+            f" value='{html.escape(col)}'>"
+            f"<input type='text' form='colform' name='label_{i}'"
+            f" value='{html.escape(c.get('표시이름') or '')}'"
+            f" placeholder='{html.escape(col)}' style='width:170px'"
+            f" data-orig='{html.escape(c.get('표시이름') or '')}' oninput='markDirty(this)'></td>"
+            f"<td class='ctl'><input type='number' form='colform' name='order_{i}'"
+            f" value='{c.get('순서') or ''}' placeholder='-' style='width:70px' min='0'"
+            f" data-orig='{c.get('순서') or ''}' oninput='markDirty(this)'></td>"
+            f"<td><label><input type='checkbox' form='colform' name='hide_{i}'"
+            f"{' checked' if c.get('숨김') else ''} onchange='markDirty(this)'"
+            f" data-orig=''> 숨김</label></td>"
+            f"<td>" + (
+                "<form method='post' action='/fields/delete' style='display:inline'"
+                " onsubmit=\"return confirm('이 열과 여기 들어있던 모든 값이 지워집니다.')\">"
+                f"<input type='hidden' name='name' value='{html.escape(col)}'>"
+                "<button class='danger'>삭제</button></form>" if 추가열
+                else "<span class='muted'>-</span>"
+            ) + "</td></tr>"
+        )
+
+    알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
     오류 = f"<p class='flag'>{html.escape(error)}</p>" if error else ""
     return _page(
-        "표 항목 추가",
-        "<div class='card'><h2>표에 열 추가</h2>" + 오류
+        "표 항목",
+        알림
+        + "<div class='card'><h2>열 추가</h2>" + 오류
         + "<form method='post' action='/fields/add' style='display:flex;gap:8px;flex-wrap:wrap'>"
         "<input type='text' name='name' placeholder='열 이름' required>"
         f"<select name='type'>{유형옵션}</select>"
@@ -1928,11 +1978,21 @@ def _fields_page(me: User, error: str = "") -> bytes:
         " style='width:280px'>"
         "<button type='submit'>추가</button></form>"
         "<p class='muted'>유형에 따라 입력칸이 달라지고 형식이 강제됩니다. "
-        "<b>값은 사람이 채웁니다</b> — LLM 이 자동으로 채우지 않습니다. "
-        "추가한 열은 지원자 상세·엑셀·채용 현황 표 구성에서 쓸 수 있습니다.</p></div>"
-        f"<div class='card'><h2>추가된 열 {len(fields)}개</h2><div class='scroll'><table>"
-        "<tr><th>이름</th><th>유형</th><th>선택지</th><th>만든 사람</th><th></th></tr>"
-        + rows + "</table></div></div>",
+        "<b>값은 사람이 채웁니다</b> — LLM 이 자동으로 채우지 않습니다.</p></div>"
+
+        + "<div class='card'><h2>표에 나갈 열 "
+        f"<span class='muted'>기본 {len(기본열)}개 · 추가 {len(사용자열)}개</span></h2>"
+        "<form method='post' action='/fields/columns' id='colform' class='mergebar'>"
+        "<button type='submit'>고친 내용 저장</button>"
+        "<span class='muted'>보이는 이름·순서·숨김을 고치고 <b>한 번만</b> 누르세요. "
+        "순서는 작은 번호가 앞이고, 비우면 원래 자리입니다.</span></form>"
+        "<div class='scroll'><table data-name='표 항목'>"
+        "<tr><th>열 이름</th><th>구분</th><th>입력 형식</th><th class='ctl'>표에 보일 이름</th>"
+        "<th class='ctl'>순서</th><th>숨김</th><th></th></tr>"
+        + "".join(rows) + "</table></div>"
+        "<p class='muted'>기본 열의 <b>입력 형식은 바꾸지 않습니다</b> — 형식 검사와 "
+        "추출 스키마가 걸려 있어서 여기서 바꾸면 이미 들어 있는 값과 어긋납니다. "
+        "안 쓰는 열은 <b>숨김</b>으로 두세요.</p></div>",
         me=me,
     )
 
@@ -2077,7 +2137,8 @@ class Handler(BaseHTTPRequestHandler):
             if not can(me, "열_구성"):
                 return self._deny("표 항목 추가는 관리자만 할 수 있습니다.")
             params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            return self._send(_fields_page(me, (params.get("err") or [""])[0]))
+            return self._send(_fields_page(me, (params.get("err") or [""])[0],
+                                           (params.get("msg") or [""])[0]))
         if path == "/recruit/columns":
             if not can(me, "열_구성"):
                 return self._deny("표 열 구성은 관리자만 바꿀 수 있습니다.")
@@ -2114,8 +2175,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/favicon.ico":
             return self._send(b"", "image/x-icon", code=204)
         if path == "/export.xlsx":
+            열 = 표열()
             data = records_to_xlsx(store.list_all(), registry,
-                                   (store.field_names(), store.custom_map()))
+                                   (store.field_names(), store.custom_map()),
+                                   열=열, 라벨=라벨(열))
             stamp = now_kst().strftime("%Y%m%d_%H%M")
             return self._send(
                 data,
@@ -2286,6 +2349,47 @@ class Handler(BaseHTTPRequestHandler):
                 return self._redirect("/fields?err=" + urllib.parse.quote(str(exc)))
             audit.record(me.아이디, "표항목", 이름, 비고="열 추가")
             return self._redirect("/fields")
+
+        if path == "/fields/columns":
+            if not can(me, "열_구성"):
+                return self._deny("표 열 설정은 관리자만 바꿀 수 있습니다.")
+            data = urllib.parse.parse_qs(
+                self._read_body().decode("utf-8", "replace"), keep_blank_values=True
+            )
+            열들 = data.get("col") or []
+            이전 = store.column_config()
+            바뀐것: list[str] = []
+            for i, col in enumerate(열들, start=1):
+                새라벨 = (data.get(f"label_{i}") or [""])[0].strip()
+                순서값 = (data.get(f"order_{i}") or [""])[0].strip()
+                숨김 = f"hide_{i}" in data
+                옛 = 이전.get(col, {"표시이름": "", "숨김": False, "순서": 0})
+                try:
+                    새순서 = int(순서값) if 순서값 else 0
+                except ValueError:
+                    새순서 = 옛["순서"]
+                if (새라벨, 숨김, 새순서) == (옛["표시이름"], 옛["숨김"], 옛["순서"]):
+                    continue
+                store.set_column(col, 표시이름=새라벨, 숨김=숨김, 순서=새순서)
+                조각 = []
+                if 새라벨 != 옛["표시이름"]:
+                    조각.append(f"이름 {새라벨 or '(원래대로)'}")
+                    audit.record(me.아이디, "표항목", col, 항목="표에 보일 이름",
+                                 이전값=옛["표시이름"], 새값=새라벨)
+                if 숨김 != 옛["숨김"]:
+                    조각.append("숨김" if 숨김 else "다시 보임")
+                    audit.record(me.아이디, "표항목", col, 항목="숨김",
+                                 이전값="Y" if 옛["숨김"] else "", 새값="Y" if 숨김 else "")
+                if 새순서 != 옛["순서"]:
+                    조각.append(f"순서 {새순서 or '원래대로'}")
+                    audit.record(me.아이디, "표항목", col, 항목="순서",
+                                 이전값=str(옛["순서"] or ""), 새값=str(새순서 or ""))
+                바뀐것.append(f"{col}({', '.join(조각)})")
+            if not 바뀐것:
+                return self._redirect("/fields?msg=" + urllib.parse.quote("바뀐 내용이 없습니다."))
+            보임 = ", ".join(바뀐것[:5]) + (" 외" if len(바뀐것) > 5 else "")
+            return self._redirect("/fields?msg=" + urllib.parse.quote(
+                f"{len(바뀐것)}건 저장했습니다 — {보임}"))
 
         if path == "/fields/delete":
             if not can(me, "열_구성"):
@@ -2636,7 +2740,7 @@ class Handler(BaseHTTPRequestHandler):
             data = urllib.parse.parse_qs(
                 self._read_body().decode("utf-8", "replace"), keep_blank_values=True
             )
-            kind = canonical_kind((data.get("kind") or ["학회"])[0])
+            kind = canonical_kind((data.get("kind") or ["학회·저널"])[0])
             뒤로 = f"/names?kind={urllib.parse.quote(kind)}"
 
             # 화면에 있던 줄 전부가 들어온다. 실제로 값이 달라진 것만 저장한다.
@@ -2655,8 +2759,6 @@ class Handler(BaseHTTPRequestHandler):
                     등급=(data.get(f"등급_{nid}") or [None])[0],
                     국내해외=(data.get(f"국내해외_{nid}") or [None])[0],
                     유형=(data.get(f"유형_{nid}") or [None])[0],
-                    # IF 는 지울 수 있어야 해서 빈 문자열도 그대로 넘긴다
-                    # IF 는 빈칸으로 지울 수 있어야 해서 보내온 경우엔 공백도 그대로
                     IF=(data.get(f"IF_{nid}") or [""])[0] if f"IF_{nid}" in data else None,
                 )
                 이후 = registry.get(nid)
@@ -2665,7 +2767,7 @@ class Handler(BaseHTTPRequestHandler):
                 변경 = [
                     (항목, 옛, 새)
                     for 항목, 옛, 새 in (
-                        ("표시명", 이전.표시명, 이후.표시명),
+                        ("표에 보일 이름", 이전.표시명, 이후.표시명),
                         ("학회/저널", 이전.유형, 이후.유형),
                         ("등급", 이전.등급, 이후.등급),
                         ("국내해외", 이전.국내해외, 이후.국내해외),
@@ -2674,25 +2776,36 @@ class Handler(BaseHTTPRequestHandler):
                     if 옛 != 새
                 ]
                 for 항목, 옛, 새 in 변경:
-                    audit.record(me.아이디, "명칭", f"{kind}:{이후.표시명}",
+                    audit.record(me.아이디, "명칭", f"{kind}:{이후.원표기}",
                                  항목=항목, 이전값=옛, 새값=새)
                 if 변경:
-                    이름변경 = [v for v in 변경 if v[0] == "표시명"]
+                    이름변경 = [v for v in 변경 if v[0] == "표에 보일 이름"]
                     머리 = (f"{이전.표시명} → {이후.표시명}" if 이름변경 else 이후.표시명)
-                    나머지 = [f"{항목} {새}" for 항목, _, 새 in 변경 if 항목 != "표시명"]
-                    바뀐것.append(머리 + (f" ({', '.join(나머지)})" if 나머지 else ""))
+                    나머지 = [f"{항목} {새}" for 항목, _, 새 in 변경 if 항목 != "표에 보일 이름"]
+                    바뀐것.append(f"{이후.원표기}: " + 머리
+                                + (f" ({', '.join(나머지)})" if 나머지 else ""))
 
             if not 바뀐것:
                 return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote("바뀐 내용이 없습니다."))
-            조각 = [f"{len(바뀐것)}건 저장했습니다 — "
-                  + ", ".join(바뀐것[:5]) + (" 외" if len(바뀐것) > 5 else "")]
-            # 합치지 않는다. 같은 이름을 쓰게 된 항목이 있으면 알려만 준다.
-            겹침 = registry.same_display_groups(kind)
-            if 겹침:
-                조각.append("같은 이름을 쓰는 항목: "
-                          + ", ".join(f"{이름}({len(ids)}건)"
-                                      for 이름, ids in sorted(겹침.items())))
-            return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(" / ".join(조각)))
+            보임 = ", ".join(바뀐것[:5]) + (" 외" if len(바뀐것) > 5 else "")
+            return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(
+                f"{len(바뀐것)}건 저장했습니다 — {보임}"))
+
+        if path == "/names/forget":
+            if not can(me, "명칭_관리"):
+                return self._deny()
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            kind = canonical_kind((data.get("kind") or ["학회·저널"])[0])
+            뒤로 = f"/names?kind={urllib.parse.quote(kind)}"
+            try:
+                지운표기 = registry.forget(int((data.get("id") or ["0"])[0]))
+            except (ValueError, TypeError):
+                지운표기 = ""
+            if not 지운표기:
+                return self._redirect(뒤로)
+            audit.record(me.아이디, "명칭", f"{kind}:{지운표기}", 비고="표기 삭제")
+            return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(
+                f"'{지운표기}' 표기를 사전에서 지웠습니다."))
 
         if path == "/names/tiers":
             if not can(me, "열_구성"):

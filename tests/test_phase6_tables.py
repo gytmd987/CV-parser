@@ -100,51 +100,8 @@ def test_google_link_prefills_the_search(reg):
     assert "Nature+Communications" in url and "impact+factor" in url
 
 
-def test_merge_keeps_the_side_that_has_information(reg):
-    a = reg.observe("학회", "ICML")
-    b = reg.observe("학회", "Intl Conf on Machine Learning")
-    reg.classify(b.id, 등급="최우수", IF="1.0", 유형="저널")
-    reg.merge(b.id, a.id)              # 정보가 있는 쪽을 별칭으로 넣어도
-    남은 = reg.get(a.id)
-    assert (남은.등급, 남은.IF) == ("최우수", "1.0")
-    assert 남은.유형 == "학회"          # 대표가 이미 알고 있던 값은 지키다
-
 
 # --- 중복 정리 ----------------------------------------------------------------
-def test_duplicate_rows_are_merged_on_open(tmp_path):
-    """학회/저널이 따로 관리되던 시절 같은 이름이 양쪽에 하나씩 생겼다."""
-    path = tmp_path / "n.db"
-    conn = sqlite3.connect(str(path))
-    conn.executescript(
-        "CREATE TABLE names (id INTEGER PRIMARY KEY AUTOINCREMENT, 종류 TEXT NOT NULL,"
-        " 정규화키 TEXT NOT NULL, 표시명 TEXT NOT NULL, 등급 TEXT DEFAULT '미분류',"
-        " 국내해외 TEXT DEFAULT '불명', 발견횟수 INTEGER DEFAULT 0,"
-        " 최초등록 TEXT DEFAULT '', UNIQUE(종류, 정규화키));"
-        "CREATE TABLE name_aliases (종류 TEXT NOT NULL, 별칭키 TEXT NOT NULL,"
-        " name_id INTEGER NOT NULL, PRIMARY KEY (종류, 별칭키));"
-    )
-    conn.execute("INSERT INTO names (종류,정규화키,표시명,등급,발견횟수)"
-                 " VALUES ('학회','natcomm','Nat. Comm.','미분류',2)")
-    conn.execute("INSERT INTO names (종류,정규화키,표시명,등급,국내해외,발견횟수)"
-                 " VALUES ('저널','natcomm','Nature Communications','최우수','해외',5)")
-    conn.commit()
-    conn.close()
-
-    reg = NameRegistry(path)
-    남은 = reg.list_all("학회·저널")
-    assert len(남은) == 1
-    n = 남은[0]
-    assert n.표시명 == "Nature Communications"     # 많이 나온 쪽이 대표
-    assert n.발견횟수 == 7                          # 횟수는 합친다
-    assert (n.등급, n.국내해외) == ("최우수", "해외")   # 분류해 둔 값이 살아남는다
-
-
-def test_no_duplicates_left_anywhere(reg):
-    for n in ("ICML", "ICML 2023", "Proc. of ICML"):
-        reg.observe("학회", n)
-    reg.observe("저널", "ICML")
-    키들 = [(i.종류, i.정규화키) for i in reg.list_all()]
-    assert len(키들) == len(set(키들))
 
 
 # --- 삭제하면 파일이 남지 않는다 ------------------------------------------------
@@ -212,12 +169,6 @@ def test_same_display_groups_reports_the_overlap(reg):
     assert sorted(겹침["포항공대"]) == sorted([a.id, b.id])
 
 
-def test_overlap_check_ignores_case_and_spaces(reg):
-    a = reg.observe("학회", "ICML")
-    b = reg.observe("학회", "Intl Conf Machine Learning")
-    reg.classify(b.id, 표시명=" icml ")
-    assert len(reg.same_display_groups("학회·저널")) == 1
-
 
 def test_old_db_gets_an_original_spelling_column(tmp_path):
     """원표기 열이 없던 DB 도 열려야 하고, 되살릴 수 있는 만큼 되살린다."""
@@ -240,3 +191,61 @@ def test_old_db_gets_an_original_spelling_column(tmp_path):
     원표기 = {n.표시명: n.원표기 for n in reg.list_all("소속")}
     assert 원표기["서울대학교"] == "서울대학교"      # 안 고친 줄은 그대로
     assert 원표기["포항공대"] == "postech"          # 고친 줄은 키가 유일한 흔적
+
+
+# --- 표 열 설정 (기본 열 + 추가 열) ---------------------------------------------
+@pytest.fixture
+def store(tmp_path):
+    return CandidateStore(tmp_path / "c.db")
+
+
+def test_column_label_defaults_to_the_column_name(store):
+    assert store.label("한글_이름") == "한글_이름"
+
+
+def test_column_can_be_renamed_for_display(store):
+    store.set_column("영문_이름", 표시이름="English Name")
+    assert store.label("영문_이름") == "English Name"
+    assert store.labels(["영문_이름", "한글_이름"]) == {
+        "영문_이름": "English Name", "한글_이름": "한글_이름",
+    }
+
+
+def test_hidden_column_drops_out_of_the_table(store):
+    cols = ["A", "B", "C"]
+    store.set_column("B", 숨김=True)
+    assert store.arrange(cols) == ["A", "C"]
+
+
+def test_order_moves_one_column_without_shuffling_the_rest(store):
+    cols = ["A", "B", "C", "D"]
+    store.set_column("D", 순서=1)
+    assert store.arrange(cols) == ["D", "A", "B", "C"]
+
+
+def test_untouched_columns_keep_their_original_order(store):
+    cols = ["A", "B", "C"]
+    assert store.arrange(cols) == cols
+
+
+def test_column_settings_survive_a_reopen(tmp_path):
+    path = tmp_path / "c.db"
+    s1 = CandidateStore(path)
+    s1.set_column("한글_이름", 표시이름="이름", 순서=2)
+    s2 = CandidateStore(path)
+    assert s2.label("한글_이름") == "이름"
+    assert s2.column_config()["한글_이름"]["순서"] == 2
+
+
+def test_renamed_column_goes_into_the_excel_header():
+    import io
+    import re
+    import zipfile
+
+    from cvtool.export import records_to_xlsx
+
+    data = records_to_xlsx([CVRecord(지원자_ID="CV-1", 한글_이름="홍길동")],
+                           열=["한글_이름", "영문_이름"],
+                           라벨={"한글_이름": "이름", "영문_이름": "Name"})
+    sheet = zipfile.ZipFile(io.BytesIO(data)).read("xl/worksheets/sheet1.xml").decode()
+    assert re.findall(r"<t[^>]*>([^<]*)</t>", sheet) == ["이름", "Name", "홍길동"]

@@ -47,6 +47,12 @@ CREATE TABLE IF NOT EXISTS custom_fields (
     만든이       TEXT DEFAULT '',
     만든일시      TEXT DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS column_config (
+    열이름        TEXT PRIMARY KEY,   -- 기본 열·추가 열 공통
+    표시이름      TEXT DEFAULT '',    -- 비면 열이름 그대로
+    숨김         INTEGER DEFAULT 0,
+    순서         INTEGER DEFAULT 0    -- 0 이면 원래 순서
+);
 CREATE TABLE IF NOT EXISTS custom_values (
     지원자_ID    TEXT NOT NULL,
     필드명       TEXT NOT NULL,
@@ -371,6 +377,58 @@ class CandidateStore:
              now_kst().strftime("%Y-%m-%d %H:%M:%S")),
         )
         self._conn.commit()
+
+    # -- 열 설정 (기본 열 + 추가 열 공통) -----------------------------------
+    def column_config(self) -> dict[str, dict]:
+        """{열이름: {표시이름, 숨김, 순서}}. 설정한 열만 들어 있다."""
+        return {
+            r["열이름"]: {"표시이름": r["표시이름"] or "", "숨김": bool(r["숨김"]),
+                        "순서": r["순서"] or 0}
+            for r in self._conn.execute("SELECT * FROM column_config")
+        }
+
+    def set_column(self, 열이름: str, *, 표시이름: str | None = None,
+                   숨김: bool | None = None, 순서: int | None = None) -> None:
+        """기본 열이든 추가 열이든 보이는 이름·숨김·순서를 정한다."""
+        현재 = self.column_config().get(
+            열이름, {"표시이름": "", "숨김": False, "순서": 0}
+        )
+        새것 = {
+            "표시이름": 현재["표시이름"] if 표시이름 is None else 표시이름.strip(),
+            "숨김": 현재["숨김"] if 숨김 is None else bool(숨김),
+            "순서": 현재["순서"] if 순서 is None else int(순서 or 0),
+        }
+        self._conn.execute(
+            "INSERT INTO column_config (열이름, 표시이름, 숨김, 순서) VALUES (?,?,?,?)"
+            " ON CONFLICT(열이름) DO UPDATE SET 표시이름=excluded.표시이름,"
+            " 숨김=excluded.숨김, 순서=excluded.순서",
+            (열이름, 새것["표시이름"], 1 if 새것["숨김"] else 0, 새것["순서"]),
+        )
+        self._conn.commit()
+
+    def arrange(self, 열들: list[str]) -> list[str]:
+        """설정한 순서·숨김을 적용한 열 목록.
+
+        순서를 안 정한 열은 원래 자리를 지킨다. 그래야 열 하나에만 번호를
+        매겨도 나머지가 뒤죽박죽되지 않는다.
+        """
+        cfg = self.column_config()
+        보이는 = [c for c in 열들 if not cfg.get(c, {}).get("숨김")]
+        번호 = {c: cfg[c]["순서"] for c in 보이는 if cfg.get(c, {}).get("순서")}
+        if not 번호:
+            return 보이는
+        return sorted(
+            보이는,
+            key=lambda c: (번호.get(c, 보이는.index(c) + 1000), 보이는.index(c)),
+        )
+
+    def label(self, 열이름: str) -> str:
+        """표에 보일 이름. 안 정했으면 열 이름 그대로."""
+        return self.column_config().get(열이름, {}).get("표시이름") or 열이름
+
+    def labels(self, 열들: list[str]) -> dict[str, str]:
+        cfg = self.column_config()
+        return {c: (cfg.get(c, {}).get("표시이름") or c) for c in 열들}
 
     def fields(self) -> list[dict]:
         return [dict(r) for r in self._conn.execute(
