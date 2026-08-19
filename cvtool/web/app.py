@@ -58,7 +58,7 @@ from ..names import (
     canonical_kind,
     observe_record,
 )
-from ..mailing import MailStore, Template, render
+from ..mailing import MailStore, Template, html_to_text, render
 from ..clients import mail as mailapi
 from ..recruit import RECRUIT_COLUMNS, STAGES, STATUSES, RecruitStore
 from .multipart import parse_multipart
@@ -87,7 +87,7 @@ registry = NameRegistry(_names_db)
 auth = AuthStore(DATA_DIR / "admin.db")
 recruit = RecruitStore(DATA_DIR / "recruit.db")
 audit = AuditLog(DATA_DIR / "audit.db")
-mailing = MailStore(DATA_DIR / "mail.db")
+mailing = MailStore(DATA_DIR / "mail.db", DATA_DIR / "mail_files")
 
 
 def bootstrap_admin() -> str | None:
@@ -246,6 +246,41 @@ th.filtered::after{content:' (추림)';font-size:10px;color:var(--accent)}
 #colmenu .cm-row.hide{display:none}
 #colmenu .cm-allrow{padding-left:8px}
 td.sel{background:#bfdbfe !important;outline:1px solid #2563eb;outline-offset:-1px}
+.rt{border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#fff}
+.rt-bar{display:flex;flex-wrap:wrap;gap:3px;align-items:center;padding:6px;
+ background:#f3f4f6;border-bottom:1px solid var(--line)}
+.rt-bar button{background:#fff;color:var(--txt);border:1px solid var(--line);
+ padding:4px 8px;font-size:13px;min-width:30px}
+.rt-bar button:hover{background:#eff6ff;border-color:var(--accent)}
+.rt-bar button.rt-var{background:var(--accent);color:#fff;border-color:var(--accent)}
+.rt-bar select{padding:4px 6px;font-size:13px}
+.rt-bar label{display:inline-flex;align-items:center;gap:3px;font-size:12px;
+ color:var(--muted);border:1px solid var(--line);border-radius:6px;padding:2px 6px;
+ background:#fff;cursor:pointer}
+.rt-bar label.btnlike:hover{background:#eff6ff}
+.rt-bar input[type=color]{width:26px;height:22px;padding:0;border:0;background:none;
+ cursor:pointer}
+.rt-body{min-height:320px;max-height:60vh;overflow:auto;padding:14px 16px;
+ font:14px/1.7 "맑은 고딕",system-ui,sans-serif;outline:none}
+.rt-body:focus{box-shadow:inset 0 0 0 2px #bfdbfe}
+.rt-body table{width:auto}
+.rt-body img{max-width:100%}
+#varmenu{position:absolute;z-index:120;background:#fff;border:1px solid var(--line);
+ border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.16);padding:6px;width:280px;
+ font-size:13px}
+#varmenu .vm-head{padding:4px 8px;color:var(--muted)}
+#varmenu .vm-q{width:100%;margin:4px 0;padding:6px 8px;font-size:13px}
+#varmenu .vm-list{max-height:300px;overflow:auto}
+#varmenu .vm-group{font-weight:700;color:var(--accent);padding:8px 8px 3px;
+ border-top:1px solid var(--line);margin-top:4px}
+#varmenu .vm-group:first-child{border-top:0;margin-top:0}
+#varmenu .vm-item{display:block;width:100%;text-align:left;background:none;
+ color:var(--txt);padding:5px 8px;border-radius:6px;font-size:13px}
+#varmenu .vm-item:hover{background:#eff6ff}
+#varmenu .hide{display:none}
+.mailbody{border:1px solid var(--line);border-radius:8px;padding:14px 16px;
+ background:#fff;max-height:420px;overflow:auto}
+.mailbody img{max-width:100%}
 #toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#1b1f24;
  color:#fff;padding:10px 16px;border-radius:8px;opacity:0;pointer-events:none;
  transition:opacity .15s;z-index:99}
@@ -929,19 +964,159 @@ def 라벨(열들: list[str]) -> dict[str, str]:
     return store.labels(열들)
 
 
-#: 메일 템플릿 화면 — 자리표시자를 눌러 본문에 넣는다
-_MAIL_JS = """
-function insertVar(el){
-  var ta = document.querySelector('textarea[name=body]');
-  if(!ta) return;
-  var v = el.textContent;
-  var s = ta.selectionStart, e = ta.selectionEnd;
-  ta.value = ta.value.slice(0, s) + v + ta.value.slice(e);
-  ta.focus();
-  ta.selectionStart = ta.selectionEnd = s + v.length;
-}
-"""
+#: 메일 본문 편집기 — 표준 라이브러리만 쓰는 환경이라 외부 에디터를 못 쓴다.
+#: contenteditable + execCommand 는 낡았지만 **파일 하나 없이 어디서나 돈다**.
+#: 폐쇄망에서 CDN 을 못 받는 것보다 이쪽이 낫다.
+_MAIL_JS = r"""
+var RT = {editor: null, subject: null, last: null, range: null};
 
+function rtInit(){
+  RT.editor = document.getElementById('rtbody');
+  RT.subject = document.querySelector('input[name=subject]');
+  if(!RT.editor) return;
+  RT.last = RT.editor;
+  // focus 는 넣지 않는다 — rtRestore() 안의 focus() 가 되돌리려던 위치를 덮어쓴다
+  ['keyup','mouseup','input'].forEach(function(ev){
+    RT.editor.addEventListener(ev, function(){ RT.last = RT.editor; rtSaveRange(); });
+  });
+  if(RT.subject) RT.subject.addEventListener('focus', function(){ RT.last = RT.subject; });
+  // 도구 단추를 눌러도 커서를 잃지 않게 한다
+  document.querySelectorAll('.rt-bar button, .rt-bar select, .rt-bar label')
+    .forEach(function(el){
+      el.addEventListener('mousedown', function(e){
+        if(el.tagName === 'BUTTON') e.preventDefault();
+      });
+    });
+  var form = RT.editor.closest('form');
+  if(form) form.addEventListener('submit', function(){
+    document.getElementById('bodyfield').value = RT.editor.innerHTML;
+  });
+  RT.editor.addEventListener('input', function(){ markDirty(document.getElementById('bodyfield')); });
+}
+
+function rtSaveRange(){
+  var s = window.getSelection();
+  if(s.rangeCount && RT.editor.contains(s.anchorNode)) RT.range = s.getRangeAt(0);
+}
+function rtRestore(){
+  var r = RT.range;               // focus() 가 저장된 위치를 건드릴 수 있어 먼저 붙든다
+  RT.editor.focus();
+  if(r){
+    var s = window.getSelection();
+    s.removeAllRanges();
+    s.addRange(r);
+  }
+}
+function rtCmd(cmd, val){
+  rtRestore();
+  document.execCommand(cmd, false, val || null);
+  rtSaveRange();
+}
+function rtInsert(html){
+  rtRestore();
+  document.execCommand('insertHTML', false, html);
+  rtSaveRange();
+}
+function rtLink(){
+  var url = prompt('링크 주소를 넣으세요', 'https://');
+  if(url) rtCmd('createLink', url);
+}
+function rtTable(){
+  var 행 = parseInt(prompt('줄 수', '3'), 10);
+  var 열 = parseInt(prompt('칸 수', '3'), 10);
+  if(!행 || !열 || 행 < 1 || 열 < 1) return;
+  var s = "<table style='border-collapse:collapse;width:100%'>";
+  for(var r = 0; r < 행; r++){
+    s += '<tr>';
+    for(var c = 0; c < 열; c++){
+      s += "<td style='border:1px solid #999;padding:6px'>&nbsp;</td>";
+    }
+    s += '</tr>';
+  }
+  s += '</table><p><br></p>';
+  rtInsert(s);
+}
+function rtImage(input){
+  var f = input.files && input.files[0];
+  input.value = '';
+  if(!f) return;
+  if(f.size > 1024 * 1024){
+    alert('그림이 너무 큽니다 (' + Math.round(f.size / 1024) + 'KB).\n'
+      + '본문에 넣는 그림은 1MB 까지만 됩니다. 큰 파일은 첨부로 붙이세요.');
+    return;
+  }
+  var fr = new FileReader();
+  fr.onload = function(){
+    rtInsert("<img src='" + fr.result + "' style='max-width:100%'>");
+  };
+  fr.readAsDataURL(f);
+}
+
+// --- 자리표시자 고르기 --------------------------------------------------------
+function rtVars(btn){
+  var old = document.getElementById('varmenu');
+  if(old){ old.remove(); return; }
+  var 묶음 = window.자리표시자 || [];
+  var m = document.createElement('div');
+  m.id = 'varmenu';
+  m.innerHTML =
+    "<div class='vm-head'>넣을 자리에 커서를 두고 고르세요</div>"
+    + "<input type='text' class='vm-q' placeholder='이름으로 찾기'>"
+    + "<div class='vm-list'>"
+    + 묶음.map(function(g){
+        return "<div class='vm-group'>" + g[0] + "</div>"
+          + g[1].map(function(v){
+              return "<button type='button' class='vm-item' data-v='" + v + "'>"
+                + v + "</button>";
+            }).join('');
+      }).join('')
+    + "</div>";
+  document.body.appendChild(m);
+  var r = btn.getBoundingClientRect();
+  m.style.left = Math.min(r.left, window.innerWidth - 300) + 'px';
+  m.style.top = (r.bottom + window.scrollY + 4) + 'px';
+  var q = m.querySelector('.vm-q');
+  q.focus();
+  q.addEventListener('input', function(){
+    var 찾기 = q.value.trim().toLowerCase();
+    m.querySelectorAll('.vm-item').forEach(function(b){
+      b.classList.toggle('hide', 찾기 && b.dataset.v.toLowerCase().indexOf(찾기) < 0);
+    });
+    m.querySelectorAll('.vm-group').forEach(function(g){
+      var 보임 = false, el = g.nextElementSibling;
+      while(el && el.classList.contains('vm-item')){
+        if(!el.classList.contains('hide')) 보임 = true;
+        el = el.nextElementSibling;
+      }
+      g.classList.toggle('hide', !보임);
+    });
+  });
+  m.addEventListener('mousedown', function(ev){
+    if(ev.target.classList.contains('vm-item')) ev.preventDefault();
+  });
+  m.addEventListener('click', function(ev){
+    if(!ev.target.classList.contains('vm-item')) return;
+    var v = '{{' + ev.target.dataset.v + '}}';
+    if(RT.last === RT.subject && RT.subject){
+      var s = RT.subject.selectionStart, e = RT.subject.selectionEnd;
+      RT.subject.value = RT.subject.value.slice(0, s) + v + RT.subject.value.slice(e);
+      RT.subject.focus();
+      RT.subject.selectionStart = RT.subject.selectionEnd = s + v.length;
+      markDirty(RT.subject);
+    } else {
+      rtInsert(v);
+      markDirty(document.getElementById('bodyfield'));
+    }
+    m.remove();
+  });
+}
+document.addEventListener('click', function(ev){
+  var m = document.getElementById('varmenu');
+  if(m && !m.contains(ev.target) && !(ev.target.closest && ev.target.closest('.rt-var')))
+    m.remove();
+});
+document.addEventListener('DOMContentLoaded', rtInit);
+"""
 
 def _busy_count() -> int:
     with _status_lock:
@@ -1596,11 +1771,6 @@ def _mail_vars(rec, 진행맵=None) -> dict[str, str]:
     return 값
 
 
-def _mail_var_names() -> list[str]:
-    return ["이름", *table_columns(registry), *store.field_names(),
-            "부서", "과제", "최종상태"]
-
-
 def _mail_page(me: User, error: str = "", msg: str = "") -> bytes:
     """메일 템플릿 목록 + 새 템플릿."""
     templates = mailing.templates()
@@ -1624,10 +1794,12 @@ def _mail_page(me: User, error: str = "", msg: str = "") -> bytes:
         f"<tr><td><a href='/mail/template?id={t.id}'>{html.escape(t.이름)}</a></td>"
         f"<td>{탈락배지 if t.탈락메일 else ''}</td>"
         f"<td style='white-space:normal'>{html.escape(t.제목)}</td>"
+        f"<td class='muted'>{html.escape(t.참조)}</td>"
+        f"<td class='muted'>{len(mailing.attachments(t.id)) or ''}</td>"
         f"<td class='muted'>{html.escape(t.수정일시)}</td>"
         f"<td><a class='btn' href='/mail/send?id={t.id}'>보내기</a></td></tr>"
         for t in templates
-    ) or "<tr><td colspan='5' class='muted'>아직 만든 템플릿이 없습니다.</td></tr>"
+    ) or "<tr><td colspan='7' class='muted'>아직 만든 템플릿이 없습니다.</td></tr>"
 
     알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
     오류 = f"<p class='flag'>{html.escape(error)}</p>" if error else ""
@@ -1640,34 +1812,117 @@ def _mail_page(me: User, error: str = "", msg: str = "") -> bytes:
         " required style='width:320px'></p>"
         "<p><label><input type='checkbox' name='reject' value='1'> "
         "<b>탈락 메일</b> — 이걸 보낸 지원자에게는 이후 어떤 메일도 보내지 않습니다</label></p>"
-        "<button type='submit'>만들기</button></form></div>"
+        "<button type='submit'>만들기</button>"
+        "<span class='muted'> 만든 뒤 편집 화면에서 제목·본문을 꾸미고 첨부를 붙입니다.</span>"
+        "</form></div>"
         f"<div class='card'><h2>템플릿 {len(templates)}개</h2><div class='scroll'>"
         "<table data-name='메일 템플릿'><tr><th>이름</th><th>구분</th><th>제목</th>"
-        "<th>수정</th><th></th></tr>" + rows + "</table></div>"
+        "<th>참조</th><th>첨부</th><th>수정</th><th></th></tr>" + rows + "</table></div>"
         "<p><a class='btn sec' href='/mail/log'>발송 이력</a></p></div>",
         me=me,
     )
 
 
+def _mail_var_groups() -> list[tuple[str, list[str]]]:
+    """자리표시자를 사람이 찾기 쉬운 묶음으로 나눈다."""
+    모든열 = list(table_columns(registry))
+    기본 = ["이름", "한글_이름", "영문_이름", "생년월일", "전화번호", "이메일"]
+    학력 = [c for c in 모든열 if c.startswith(("현재_", "박사_", "석사_", "학사_"))]
+    연구 = [c for c in 모든열
+           if c.startswith("1저자_") or c in ("연구분야_키워드", "경력_요약")]
+    쓴것 = set(기본) | set(학력) | set(연구)
+    나머지 = [c for c in 모든열 if c not in 쓴것]
+    묶음 = [
+        ("지원자", [c for c in 기본 if c == "이름" or c in 모든열]),
+        ("현재·학력", 학력),
+        ("연구·경력", 연구),
+        ("채용", ["부서", "과제", "최종상태"]),
+    ]
+    if 나머지:
+        묶음.append(("그 밖의 열", 나머지))
+    if store.field_names():
+        묶음.append(("추가한 열", store.field_names()))
+    return [(이름, 항목) for 이름, 항목 in 묶음 if 항목]
+
+
+def _mail_var_names() -> list[str]:
+    return [v for _, 항목 in _mail_var_groups() for v in 항목]
+
+
 def _mail_template_page(tid: int, me: User, error: str = "", msg: str = "") -> bytes:
-    """메일 쓰듯이 제목·본문을 작성한다."""
+    """메일 쓰듯이 꾸며서 작성한다 (글꼴·색·표·그림)."""
     tpl = mailing.template(tid)
     if tpl is None:
         return _page("없음", "<div class='card'>템플릿을 찾을 수 없습니다.</div>", me=me)
-    변수 = _mail_var_names()
-    변수칩 = " ".join(
-        f"<code class='varchip' onclick='insertVar(this)'>{{{{{html.escape(v)}}}}}</code>"
-        for v in 변수
-    )
-    쓴것 = tpl.placeholders()
-    모르는것 = [v for v in 쓴것 if v not in 변수]
+
+    묶음 = _mail_var_groups()
+    변수 = set(_mail_var_names())
+    모르는것 = [v for v in tpl.placeholders() if v not in 변수]
     경고 = (
         f"<div class='warn'>모르는 자리표시자가 있습니다: "
-        f"<b>{html.escape(', '.join(모르는것))}</b> — 이대로 보내면 그 자리는 빈칸이 됩니다.</div>"
+        f"<b>{html.escape(', '.join(모르는것))}</b> — 이대로 보내면 그 자리는 빈칸이 되고,"
+        f" 해당 지원자는 발송 대상에서 빠집니다.</div>"
         if 모르는것 else ""
     )
+
+    글꼴 = ["맑은 고딕", "굴림", "바탕", "돋움", "Arial", "Times New Roman", "Courier New"]
+    글꼴옵션 = "".join(f"<option value=\'{f}\'>{f}</option>" for f in 글꼴)
+    크기옵션 = "".join(
+        f"<option value='{v}'>{이름}</option>"
+        for v, 이름 in (("1", "아주 작게"), ("2", "작게"), ("3", "보통"),
+                      ("4", "크게"), ("5", "더 크게"), ("6", "아주 크게"))
+    )
+
+    def 단추(cmd: str, 표시: str, 도움말: str) -> str:
+        return (f"<button type='button' title='{도움말}'"
+                f" onclick=\"rtCmd('{cmd}')\">{표시}</button>")
+
+    도구 = (
+        f"<select title='글꼴' onchange=\"rtCmd('fontName', this.value)\">"
+        f"<option value=''>글꼴</option>{글꼴옵션}</select>"
+        f"<select title='크기' onchange=\"rtCmd('fontSize', this.value)\">"
+        f"<option value=''>크기</option>{크기옵션}</select>"
+        + 단추("bold", "<b>가</b>", "굵게")
+        + 단추("italic", "<i>가</i>", "기울임")
+        + 단추("underline", "<u>가</u>", "밑줄")
+        + 단추("strikeThrough", "<s>가</s>", "취소선")
+        + "<label title='글자색'>글자<input type='color' value='#1b1f24'"
+          " onchange=\"rtCmd('foreColor', this.value)\"></label>"
+        + "<label title='배경색'>배경<input type='color' value='#ffff00'"
+          " onchange=\"rtCmd('hiliteColor', this.value)\"></label>"
+        + 단추("justifyLeft", "≡", "왼쪽")
+        + 단추("justifyCenter", "☰", "가운데")
+        + 단추("justifyRight", "≣", "오른쪽")
+        + 단추("insertUnorderedList", "•", "글머리 기호")
+        + 단추("insertOrderedList", "1.", "번호 매기기")
+        + "<button type='button' title='링크' onclick='rtLink()'>링크</button>"
+        + "<button type='button' title='표 넣기' onclick='rtTable()'>표</button>"
+        + "<label title='그림 넣기' class='btnlike'>그림"
+          "<input type='file' accept='image/*' style='display:none'"
+          " onchange='rtImage(this)'></label>"
+        + 단추("removeFormat", "지우기", "꾸미기 지우기")
+        + "<span style='flex:1'></span>"
+        + "<button type='button' class='rt-var' onclick='rtVars(this)'>"
+          "＋ 자리표시자</button>"
+    )
+
+    첨부 = mailing.attachments(tpl.id)
+    첨부행 = "".join(
+        f"<tr><td><a href='/mail/attachment?id={a['id']}'>{html.escape(a['파일명'])}</a></td>"
+        f"<td class='muted'>{a['크기'] // 1024 or 1}KB</td>"
+        f"<td class='muted'>{html.escape(a['올린일시'])}</td>"
+        f"<td><form method='post' action='/mail/attachment/delete'"
+        f" onsubmit=\"return confirm('이 첨부를 뺍니다.')\">"
+        f"<input type='hidden' name='id' value='{a['id']}'>"
+        f"<input type='hidden' name='template' value='{tpl.id}'>"
+        f"<button class='danger'>빼기</button></form></td></tr>"
+        for a in 첨부
+    ) or "<tr><td colspan='4' class='muted'>붙인 파일이 없습니다.</td></tr>"
+
     알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
     오류 = f"<p class='flag'>{html.escape(error)}</p>" if error else ""
+    변수JSON = json.dumps([[이름, 항목] for 이름, 항목 in 묶음], ensure_ascii=False)
+
     return _page(
         f"{tpl.이름} 템플릿",
         알림 + 경고
@@ -1675,13 +1930,21 @@ def _mail_template_page(tid: int, me: User, error: str = "", msg: str = "") -> b
         + "<form method='post' action='/mail/template/save'>"
         f"<input type='hidden' name='id' value='{tpl.id}'>"
         "<p><label>템플릿 이름<br><input type='text' name='name'"
-        f" value='{html.escape(tpl.이름)}' required style='width:360px'></label></p>"
+        f" value='{html.escape(tpl.이름)}' required style='width:360px'"
+        f" data-orig='{html.escape(tpl.이름)}' oninput='markDirty(this)'></label></p>"
+        "<p><label>참조 (CC)<br><input type='text' name='cc'"
+        f" value='{html.escape(tpl.참조)}' style='width:100%'"
+        " placeholder='team@회사.com, hr@회사.com — 쉼표나 세미콜론으로 구분'"
+        f" data-orig='{html.escape(tpl.참조)}' oninput='markDirty(this)'></label>"
+        "<br><span class='muted'>이 템플릿으로 보내는 모든 메일에 함께 들어갑니다.</span></p>"
         "<p><label>제목<br><input type='text' name='subject'"
         f" value='{html.escape(tpl.제목)}' style='width:100%'"
-        " placeholder='예: [{{부서}}] 서류 전형 결과 안내'></label></p>"
-        "<p><label>본문<br><textarea name='body' rows='16' style='width:100%'"
-        " placeholder='안녕하세요 {{이름}}님,'>"
-        f"{html.escape(tpl.본문)}</textarea></label></p>"
+        " placeholder='예: [{{부서}}] 서류 전형 결과 안내'"
+        f" data-orig='{html.escape(tpl.제목)}' oninput='markDirty(this)'></label></p>"
+        "<p>본문</p>"
+        f"<div class='rt'><div class='rt-bar'>{도구}</div>"
+        f"<div class='rt-body' id='rtbody' contenteditable='true'>{tpl.본문}</div></div>"
+        f"<input type='hidden' name='body' id='bodyfield' data-orig=''>"
         "<p><label><input type='checkbox' name='reject' value='1'"
         f"{' checked' if tpl.탈락메일 else ''}> <b>탈락 메일</b> — 이걸 받은 지원자에게는"
         " 이후 어떤 메일도 나가지 않습니다</label></p>"
@@ -1694,11 +1957,20 @@ def _mail_template_page(tid: int, me: User, error: str = "", msg: str = "") -> b
         "<button class='danger'>템플릿 삭제</button>"
         "<span class='muted'> 발송 기록은 남습니다 — 누구에게 뭘 보냈는지는 기록입니다.</span>"
         "</form></div>"
-        "<div class='card'><h2>쓸 수 있는 자리표시자</h2>"
-        "<p class='muted'>누르면 본문 끝에 붙습니다. 지원자마다 값이 채워집니다. "
-        "값이 빈 지원자는 발송 대상에서 자동으로 빠집니다.</p>"
-        f"<p style='line-height:2.2'>{변수칩}</p></div>"
-        f"<script>{_MAIL_JS}</script>",
+
+        + "<div class='card'><h2>첨부파일</h2>"
+        "<form method='post' action='/mail/attachment/add' enctype='multipart/form-data'>"
+        f"<input type='hidden' name='template' value='{tpl.id}'>"
+        "<input type='file' name='files' multiple>"
+        "<button type='submit'>붙이기</button>"
+        "<span class='muted'> 이 템플릿으로 보내는 모든 메일에 함께 갑니다. "
+        "한 개 10MB 까지.</span></form>"
+        "<div class='scroll' style='margin-top:10px'><table data-name='첨부파일'>"
+        "<tr><th>파일</th><th>크기</th><th>붙인 일시</th><th></th></tr>"
+        + 첨부행 + "</table></div>"
+        "<p class='muted'>본문에 넣는 그림은 <b>그림</b> 단추를 쓰세요(1MB 까지). "
+        "큰 파일은 여기에 붙입니다.</p></div>"
+        f"<script>window.자리표시자 = {변수JSON};{_MAIL_JS}</script>",
         me=me,
     )
 
@@ -1719,6 +1991,7 @@ def _mail_send_page(tid: int, me: User, error: str = "", msg: str = "") -> bytes
 
     rows = []
     보낼수있음 = 0
+    첫번째 = 미리본문 = ""
     for rec in records:
         cid = rec.지원자_ID
         값 = _mail_vars(rec, 진행맵)
@@ -1731,20 +2004,42 @@ def _mail_send_page(tid: int, me: User, error: str = "", msg: str = "") -> bytes
             막힘 = "이메일 주소가 없습니다"
         if not 막힘 and 빈칸:
             막힘 = f"값이 빈 자리표시자: {', '.join(빈칸)}"
-        보낼수있음 += 0 if 막힘 else 1
+        if not 막힘:
+            보낼수있음 += 1
+            첫번째 = 첫번째 or 본문
+        미리본문 = 미리본문 or 본문        # 아무도 못 보내도 본문은 보여준다
         체크 = (
             f"<input type='checkbox' form='sendform' name='ids' value='{html.escape(cid)}'>"
             if not 막힘 else ""
         )
+        미리 = html_to_text(본문) if tpl.html else 본문
         rows.append(
             f"<tr{' class=dup' if 막힘 else ''}><td>{체크}</td>"
             f"<td>{html.escape(값.get('한글_이름') or 값.get('영문_이름') or cid)}</td>"
             f"<td>{html.escape(받는사람)}</td>"
             f"<td style='white-space:normal'>{html.escape(제목)}</td>"
-            f"<td style='white-space:normal' class='muted'>{html.escape(본문[:120])}"
-            f"{'…' if len(본문) > 120 else ''}</td>"
+            f"<td style='white-space:normal' class='muted'>{html.escape(미리[:120])}"
+            f"{'…' if len(미리) > 120 else ''}</td>"
             f"<td class='flag' style='white-space:normal'>{html.escape(막힘)}</td></tr>"
         )
+
+    첨부 = mailing.attachments(tpl.id)
+    딸림 = []
+    if tpl.cc():
+        딸림.append("참조 <b>" + html.escape(", ".join(tpl.cc())) + "</b>")
+    if 첨부:
+        딸림.append("첨부 <b>"
+                  + html.escape(", ".join(a["파일명"] for a in 첨부)) + "</b>")
+    딸림칸 = f"<p class='muted'>{' · '.join(딸림)}</p>" if 딸림 else ""
+
+    본문미리 = 첫번째 or 미리본문
+    미리보기 = (
+        "<div class='card'><h2>본문 미리보기 "
+        + ("<span class='muted'>보낼 수 있는 첫 번째 지원자 기준</span>" if 첫번째
+           else "<span class='muted'>첫 지원자 기준 — 지금은 보낼 수 있는 사람이 없습니다</span>")
+        + f"</h2><div class='mailbody'>{본문미리}</div></div>"
+        if 본문미리 and tpl.html else ""
+    )
 
     알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
     오류 = f"<div class='warn'>{html.escape(error)}</div>" if error else ""
@@ -1772,7 +2067,8 @@ def _mail_send_page(tid: int, me: User, error: str = "", msg: str = "") -> bytes
         알림 + 오류 + 연습 + 탈락표시
         + f"<div class='card'><h2>{html.escape(tpl.이름)} "
         f"<span class='muted'>{html.escape(tpl.제목)}</span></h2>"
-        f"<p><a class='btn sec' href='/mail/template?id={tpl.id}'>템플릿 고치기</a> "
+        + 딸림칸
+        + f"<p><a class='btn sec' href='/mail/template?id={tpl.id}'>템플릿 고치기</a> "
         "<a class='btn sec' href='/mail'>목록</a></p>"
         + 보내기
         + "<div class='scroll'><table data-name='메일 발송 대상'>"
@@ -1782,7 +2078,8 @@ def _mail_send_page(tid: int, me: User, error: str = "", msg: str = "") -> bytes
         "if(!c.closest('tr').classList.contains('hide'))c.checked=this.checked\"></th>"
         "<th>지원자</th><th>받는 주소</th><th>제목</th><th>본문 미리보기</th>"
         "<th>보낼 수 없는 이유</th></tr>"
-        + "".join(rows) + "</table></div></div>",
+        + "".join(rows) + "</table></div></div>"
+        + 미리보기,
         me=me,
     )
 
@@ -2437,6 +2734,29 @@ class Handler(BaseHTTPRequestHandler):
                 return self._redirect("/mail")
             return self._send(_mail_send_page(tid, me, (params.get("err") or [""])[0],
                                               (params.get("msg") or [""])[0]))
+        if path == "/mail/attachment":
+            if not can(me, "메일_템플릿"):
+                return self._deny()
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                att = mailing.attachment(int((params.get("id") or ["0"])[0]))
+            except (ValueError, TypeError):
+                att = None
+            if not att:
+                return self._send(_page("없음", "<div class='card'>첨부를 찾을 수 없습니다.</div>"),
+                                  code=404)
+            path_ = mailing.files_dir / att["저장명"]
+            if not path_.is_file():
+                return self._send(_page("없음", "<div class='card'>파일이 없습니다.</div>"),
+                                  code=404)
+            이름 = urllib.parse.quote(att["파일명"])
+            return self._send(
+                path_.read_bytes(),
+                CONTENT_TYPES.get(Path(att["저장명"]).suffix.lower(),
+                                  "application/octet-stream"),
+                extra={"Content-Disposition":
+                       f"attachment; filename=\"file\"; filename*=UTF-8''{이름}"},
+            )
         if path == "/mail/log":
             if not can(me, "메일_템플릿"):
                 return self._deny()
@@ -2648,7 +2968,8 @@ class Handler(BaseHTTPRequestHandler):
             이름 = (data.get("name") or [""])[0]
             탈락 = bool(data.get("reject"))
             try:
-                tid = mailing.add_template(이름, 탈락메일=탈락, 만든이=me.아이디)
+                tid = mailing.add_template(이름, 탈락메일=탈락, 만든이=me.아이디,
+                                           본문형식="HTML")
             except ValueError as exc:
                 return self._redirect("/mail?err=" + urllib.parse.quote(str(exc)))
             audit.record(me.아이디, "메일", 이름,
@@ -2675,6 +2996,7 @@ class Handler(BaseHTTPRequestHandler):
                     제목=(data.get("subject") or [""])[0],
                     본문=(data.get("body") or [""])[0],
                     탈락메일=bool(data.get("reject")),
+                    참조=(data.get("cc") or [""])[0],
                 )
             except ValueError as exc:
                 return self._redirect(f"/mail/template?id={tid}&err="
@@ -2683,6 +3005,7 @@ class Handler(BaseHTTPRequestHandler):
                 (항목, 옛값, 새값)
                 for 항목, 옛값, 새값 in (
                     ("이름", 옛.이름, 새것.이름),
+                    ("참조", 옛.참조, 새것.참조),
                     ("제목", 옛.제목, 새것.제목),
                     ("본문", 옛.본문, 새것.본문),
                     ("탈락메일", "Y" if 옛.탈락메일 else "", "Y" if 새것.탈락메일 else ""),
@@ -2713,6 +3036,49 @@ class Handler(BaseHTTPRequestHandler):
             return self._redirect("/mail?msg=" + urllib.parse.quote(
                 f"'{이름}' 템플릿을 지웠습니다." if 이름 else "지울 템플릿이 없습니다."))
 
+        if path == "/mail/attachment/add":
+            if not can(me, "메일_템플릿"):
+                return self._deny()
+            form = parse_multipart(self._read_body(), self.headers.get("Content-Type", ""))
+            try:
+                tid = int(form.fields.get("template", "0"))
+            except (ValueError, TypeError):
+                return self._redirect("/mail")
+            뒤로 = f"/mail/template?id={tid}"
+            if mailing.template(tid) is None:
+                return self._redirect("/mail")
+            붙임, 실패 = [], ""
+            for f in form.files:
+                if not f.filename:
+                    continue
+                try:
+                    mailing.add_attachment(tid, f.filename, f.content, 올린이=me.아이디)
+                    붙임.append(f.filename)
+                except ValueError as exc:
+                    실패 = 실패 or str(exc)
+            for 이름 in 붙임:
+                audit.record(me.아이디, "메일", str(tid), 항목="첨부 추가", 새값=이름)
+            if 실패:
+                return self._redirect(f"{뒤로}&err=" + urllib.parse.quote(실패))
+            if not 붙임:
+                return self._redirect(f"{뒤로}&err="
+                                      + urllib.parse.quote("붙일 파일을 고르세요."))
+            return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(
+                f"{len(붙임)}개 붙였습니다: {', '.join(붙임)}"))
+
+        if path == "/mail/attachment/delete":
+            if not can(me, "메일_템플릿"):
+                return self._deny()
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            try:
+                tid = int((data.get("template") or ["0"])[0])
+                이름 = mailing.delete_attachment(int((data.get("id") or ["0"])[0]))
+            except (ValueError, TypeError):
+                return self._redirect("/mail")
+            if 이름:
+                audit.record(me.아이디, "메일", str(tid), 항목="첨부 삭제", 이전값=이름)
+            return self._redirect(f"/mail/template?id={tid}")
+
         if path == "/mail/send":
             if not can(me, "메일_발송"):
                 return self._deny()
@@ -2732,6 +3098,9 @@ class Handler(BaseHTTPRequestHandler):
 
             진행맵 = recruit.all()
             보이는 = auth.visible_project_ids(me)
+            참조 = tpl.cc()
+            첨부파일 = mailing.attachment_bytes(tpl.id)
+            첨부이름 = ", ".join(이름 for 이름, _ in 첨부파일)
             성공, 실패, 건너뜀 = 0, 0, 0
             첫오류 = ""
             for cid in ids:
@@ -2755,17 +3124,20 @@ class Handler(BaseHTTPRequestHandler):
                     건너뜀 += 1
                     continue
                 try:
-                    결과 = mailapi.send(받는사람, 제목, 본문)
+                    결과 = mailapi.send(받는사람, 제목, 본문, html=tpl.html,
+                                      참조=참조, 첨부=첨부파일)
                 except mailapi.MailError as exc:
                     실패 += 1
                     첫오류 = 첫오류 or str(exc)
                     mailing.record(cid, tpl, 받는사람, 제목, 본문, "실패",
-                                   오류=str(exc), 보낸이=me.아이디)
+                                   오류=str(exc), 보낸이=me.아이디,
+                                   참조=", ".join(참조), 첨부=첨부이름)
                     continue
                 상태 = "성공" if 결과.보냄 else "발송안함"
                 성공 += 1
                 mailing.record(cid, tpl, 받는사람, 제목, 본문, 상태,
-                               오류="" if 결과.보냄 else 결과.응답, 보낸이=me.아이디)
+                               오류="" if 결과.보냄 else 결과.응답, 보낸이=me.아이디,
+                               참조=", ".join(참조), 첨부=첨부이름)
                 audit.record(me.아이디, "메일", cid, 항목=tpl.이름,
                              새값=상태, 비고=f"{받는사람} 로 발송")
 

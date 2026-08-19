@@ -16,10 +16,11 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..config import settings
 
@@ -49,11 +50,15 @@ def build_url(base: str, user_id: str) -> str:
     return f"{base}{구분}userId={user_id}"
 
 
-def build_payload(받는사람: str, 제목: str, 본문: str, *, html: bool = False) -> dict:
+def build_payload(받는사람: str, 제목: str, 본문: str, *, html: bool = False,
+                  참조: list[str] | None = None,
+                  첨부: list[tuple[str, bytes]] | None = None) -> dict:
     """요청 본문에 담을 JSON.
 
-    ⚠️ 필드 이름은 사내 API 명세에 맞춰야 한다. 명세를 받으면 이 함수만 고치면
-    된다 — 나머지 코드는 이 모양을 모른다.
+    ⚠️ 필드 이름은 사내 API 명세에 맞춰야 한다. 명세를 받으면 **이 함수만**
+    고치면 된다 — 나머지 코드는 이 모양을 모른다.
+
+    첨부는 base64 문자열로 싣는다(JSON 한 덩어리로 보내야 하므로).
     """
     payload = {
         "systemId": settings.mail_api_system_id,
@@ -65,6 +70,13 @@ def build_payload(받는사람: str, 제목: str, 본문: str, *, html: bool = F
     }
     if settings.mail_sender:
         payload["sender"] = settings.mail_sender
+    if 참조:
+        payload["cc"] = list(참조)
+    if 첨부:
+        payload["attachments"] = [
+            {"fileName": 이름, "content": base64.b64encode(내용).decode("ascii")}
+            for 이름, 내용 in 첨부
+        ]
     return payload
 
 
@@ -80,12 +92,14 @@ def missing_settings() -> list[str]:
 
 
 def send(받는사람: str, 제목: str, 본문: str, *, html: bool = False,
+         참조: list[str] | None = None, 첨부: list[tuple[str, bytes]] | None = None,
          dry_run: bool | None = None) -> SendResult:
     """메일 한 통. 실패하면 MailError."""
     if not (받는사람 or "").strip():
         raise MailError("받는 사람 주소가 없습니다.")
 
-    payload = build_payload(받는사람.strip(), 제목, 본문, html=html)
+    payload = build_payload(받는사람.strip(), 제목, 본문, html=html,
+                            참조=참조, 첨부=첨부)
     body = json.dumps(payload, ensure_ascii=False)
     url = build_url(settings.mail_api_url, settings.mail_api_user_id)
 

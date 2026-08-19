@@ -193,3 +193,139 @@ def test_history_is_per_applicant(ms, 템플릿):
     ms.record("CV-2", 템플릿, "b@b.com", "제목", "본문", "성공")
     assert [r["지원자_ID"] for r in ms.history("CV-1")] == ["CV-1"]
     assert ms.count() == 2
+
+
+# --- 참조(CC) ------------------------------------------------------------------
+def test_cc_saved_on_the_template(ms):
+    tid = ms.add_template("안내", 참조="hr@corp.com; team@corp.com")
+    assert ms.template(tid).cc() == ["hr@corp.com", "team@corp.com"]
+
+
+def test_cc_accepts_commas_semicolons_and_newlines():
+    from cvtool.mailing import split_addresses
+
+    assert split_addresses("a@x.com, b@x.com;c@x.com\nd@x.com") == [
+        "a@x.com", "b@x.com", "c@x.com", "d@x.com",
+    ]
+    assert split_addresses("  ") == []
+
+
+def test_cc_goes_into_the_payload():
+    p = mailapi.build_payload("a@b.com", "제목", "본문", 참조=["c@x.com"])
+    assert p["cc"] == ["c@x.com"]
+
+
+def test_no_cc_field_when_empty():
+    assert "cc" not in mailapi.build_payload("a@b.com", "제목", "본문")
+
+
+def test_cc_is_recorded_in_the_log(ms):
+    tid = ms.add_template("안내", 참조="hr@corp.com")
+    tpl = ms.template(tid)
+    ms.record("CV-1", tpl, "a@b.com", "제목", "본문", "성공", 참조="hr@corp.com")
+    assert ms.history("CV-1")[0]["참조"] == "hr@corp.com"
+
+
+# --- 첨부파일 -------------------------------------------------------------------
+def test_attachment_saved_under_the_template(ms, 템플릿):
+    ms.add_attachment(템플릿.id, "안내문.pdf", b"%PDF-1.4", 올린이="admin")
+    붙은것 = ms.attachments(템플릿.id)
+    assert [a["파일명"] for a in 붙은것] == ["안내문.pdf"]
+    assert 붙은것[0]["저장명"].startswith(f"MT{템플릿.id}-")   # 이름은 템플릿 기준
+    assert ms.attachment_bytes(템플릿.id) == [("안내문.pdf", b"%PDF-1.4")]
+
+
+def test_attachment_file_is_owner_only(ms, 템플릿):
+    from cvtool.fsutil import is_world_readable
+
+    ms.add_attachment(템플릿.id, "안내문.pdf", b"%PDF")
+    저장명 = ms.attachments(템플릿.id)[0]["저장명"]
+    assert not is_world_readable(ms.files_dir / 저장명)
+
+
+def test_executable_attachments_are_refused(ms, 템플릿):
+    with pytest.raises(ValueError):
+        ms.add_attachment(템플릿.id, "evil.exe", b"MZ")
+
+
+def test_huge_attachment_is_refused(ms, 템플릿):
+    from cvtool.mailing import MAX_ATTACHMENT_BYTES
+
+    with pytest.raises(ValueError):
+        ms.add_attachment(템플릿.id, "big.pdf", b"x" * (MAX_ATTACHMENT_BYTES + 1))
+
+
+def test_deleting_an_attachment_removes_the_file(ms, 템플릿):
+    ms.add_attachment(템플릿.id, "안내문.pdf", b"%PDF")
+    저장명 = ms.attachments(템플릿.id)[0]["저장명"]
+    ms.delete_attachment(ms.attachments(템플릿.id)[0]["id"])
+    assert ms.attachments(템플릿.id) == []
+    assert not (ms.files_dir / 저장명).exists()
+
+
+def test_deleting_a_template_removes_its_attachments(ms, 템플릿):
+    ms.add_attachment(템플릿.id, "안내문.pdf", b"%PDF")
+    저장명 = ms.attachments(템플릿.id)[0]["저장명"]
+    ms.delete_template(템플릿.id)
+    assert not (ms.files_dir / 저장명).exists()
+
+
+def test_attachments_are_base64_in_the_payload():
+    import base64
+
+    p = mailapi.build_payload("a@b.com", "제목", "본문", 첨부=[("a.pdf", b"%PDF-1.4")])
+    assert p["attachments"][0]["fileName"] == "a.pdf"
+    assert base64.b64decode(p["attachments"][0]["content"]) == b"%PDF-1.4"
+
+
+# --- 꾸민 본문 -----------------------------------------------------------------
+def test_new_templates_are_html(ms):
+    tid = ms.add_template("안내")
+    assert ms.template(tid).html is True
+
+
+def test_html_flag_reaches_the_payload():
+    p = mailapi.build_payload("a@b.com", "제목", "<b>본문</b>", html=True)
+    assert p["contentType"] == "HTML"
+    assert mailapi.build_payload("a@b.com", "제목", "본문")["contentType"] == "TEXT"
+
+
+def test_placeholders_are_found_inside_markup(ms):
+    tid = ms.add_template("안내", "제목", "<p>안녕하세요 <b>{{이름}}</b>님</p>")
+    assert ms.template(tid).placeholders() == ["이름"]
+
+
+def test_render_keeps_the_markup():
+    글, _ = render("<p>안녕하세요 <b>{{이름}}</b>님</p>", {"이름": "홍길동"})
+    assert 글 == "<p>안녕하세요 <b>홍길동</b>님</p>"
+
+
+def test_html_to_text_for_previews():
+    from cvtool.mailing import html_to_text
+
+    assert html_to_text("<p>안녕<br>하세요</p><p>반갑습니다</p>") == "안녕\n하세요\n\n반갑습니다"
+    assert html_to_text("<b>가</b>&nbsp;나") == "가 나"
+
+
+def test_old_text_templates_keep_working(tmp_path):
+    """본문형식 열이 없던 DB 는 TEXT 로 열려야 한다 (HTML 로 잘못 보내면 안 됨)."""
+    import sqlite3
+
+    path = tmp_path / "m.db"
+    conn = sqlite3.connect(str(path))
+    conn.executescript(
+        "CREATE TABLE templates (id INTEGER PRIMARY KEY AUTOINCREMENT, 이름 TEXT NOT NULL"
+        " UNIQUE, 제목 TEXT DEFAULT '', 본문 TEXT DEFAULT '', 탈락메일 INTEGER DEFAULT 0,"
+        " 만든이 TEXT DEFAULT '', 만든일시 TEXT DEFAULT '', 수정일시 TEXT DEFAULT '');"
+        "CREATE TABLE sent (id INTEGER PRIMARY KEY AUTOINCREMENT, 지원자_ID TEXT NOT NULL,"
+        " template_id INTEGER NOT NULL, 템플릿이름 TEXT DEFAULT '', 받는사람 TEXT DEFAULT '',"
+        " 제목 TEXT DEFAULT '', 본문 TEXT DEFAULT '', 상태 TEXT DEFAULT '성공',"
+        " 탈락메일 INTEGER DEFAULT 0, 오류 TEXT DEFAULT '', 보낸이 TEXT DEFAULT '',"
+        " 보낸일시 TEXT DEFAULT '');"
+    )
+    conn.execute("INSERT INTO templates (이름, 제목, 본문) VALUES ('옛것','제목','본문')")
+    conn.commit(); conn.close()
+
+    ms = MailStore(path)
+    옛것 = ms.template_by_name("옛것")
+    assert 옛것.html is False and 옛것.참조 == ""
