@@ -1975,7 +1975,49 @@ def _mail_template_page(tid: int, me: User, error: str = "", msg: str = "") -> b
     )
 
 
-def _mail_send_page(tid: int, me: User, error: str = "", msg: str = "") -> bytes:
+def _mail_request_preview(tpl) -> str:
+    """실제로 API 에 보낼 URL 과 본문을 그대로 보여준다.
+
+    '정말 나가는 게 맞나' 를 눈으로 확인할 유일한 방법이라, 토큰만 가리고
+    나머지는 손대지 않는다.
+    """
+    결과 = mailapi.send("보낼주소@example.com", tpl.제목 or "(제목)",
+                      tpl.본문 or "(본문)", html=tpl.html, 참조=tpl.cc(),
+                      첨부=mailing.attachment_bytes(tpl.id), dry_run=True)
+    본문 = 결과.본문
+    if len(본문) > 4000:
+        본문 = 본문[:4000] + " … (첨부가 커서 줄임)"
+    토큰 = settings.mail_api_token
+    가린토큰 = (토큰[:3] + "…" + str(len(토큰)) + "자") if 토큰 else "(비어 있음)"
+    설정 = "".join(
+        f"<tr><th>{이름}</th><td>{html.escape(값)}</td></tr>"
+        for 이름, 값 in (
+            ("MAIL_API_URL", settings.mail_api_url or "(비어 있음)"),
+            ("MAIL_API_TOKEN", 가린토큰),
+            ("MAIL_API_SYSTEM_ID", settings.mail_api_system_id or "(비어 있음)"),
+            ("MAIL_API_USER_ID", settings.mail_api_user_id or "(비어 있음)"),
+            ("MAIL_SENDER", settings.mail_sender or "(안 씀)"),
+            ("MAIL_DRY_RUN", "1 (보내지 않음)" if settings.mail_dry_run else "0 (실제로 보냄)"),
+        )
+    )
+    return (
+        "<div class='card'><h2>보낼 요청 내용</h2>"
+        "<p class='muted'>사내 API 명세와 이 내용을 맞춰 보세요. 필드 이름이나 인증 방식이"
+        " 다르면 <code>cvtool/clients/mail.py</code> 의 <code>build_payload()</code> 만"
+        " 고치면 됩니다.</p>"
+        f"<table style='margin-bottom:12px'>{설정}</table>"
+        "<p><b>POST</b> <code>" + html.escape(결과.요청URL or "(URL 이 비어 있음)") + "</code></p>"
+        "<p><b>헤더</b> <code>Content-Type: application/json; charset=utf-8</code><br>"
+        "<code>Authorization: Bearer &lt;MAIL_API_TOKEN&gt;</code></p>"
+        "<p><b>본문</b> (JSON 을 문자열로 직렬화해 그대로 보냅니다)</p>"
+        f"<pre style='white-space:pre-wrap;word-break:break-all;background:#f6f7f9;"
+        f"border:1px solid var(--line);border-radius:6px;padding:12px;font-size:12px'>"
+        f"{html.escape(본문)}</pre></div>"
+    )
+
+
+def _mail_send_page(tid: int, me: User, error: str = "", msg: str = "",
+                    peek: bool = False) -> bytes:
     """지원자를 고르고 미리보기한 뒤 보낸다."""
     tpl = mailing.template(tid)
     if tpl is None:
@@ -2062,9 +2104,25 @@ def _mail_send_page(tid: int, me: User, error: str = "", msg: str = "") -> bytes
         "빨간 줄은 보낼 수 없는 이유가 적혀 있습니다.</span></form>"
         if can(me, "메일_발송") else ""
     )
+    시험 = (
+        "<div class='card'><h2>시험 발송</h2>"
+        "<form method='post' action='/mail/test' style='display:flex;gap:8px;flex-wrap:wrap'>"
+        f"<input type='hidden' name='id' value='{tpl.id}'>"
+        "<input type='text' name='to' placeholder='내 주소를 넣으세요' required"
+        " style='width:280px'>"
+        "<button type='submit'>이 주소로 한 통 보내보기</button></form>"
+        "<p class='muted'>지원자에게는 가지 않고 <b>발송 기록도 남지 않습니다.</b> "
+        "설정이 맞는지 먼저 이걸로 확인하세요. "
+        + ("지금은 연습 모드라 실제로 나가지 않고 요청 내용만 보여줍니다."
+           if settings.mail_dry_run else
+           "<b>지금은 실제로 나갑니다 (MAIL_DRY_RUN=0).</b>")
+        + f" <a href='/mail/send?id={tpl.id}&peek=1'>보낼 요청 내용 보기</a></p></div>"
+        if can(me, "메일_발송") else ""
+    )
+    점검 = _mail_request_preview(tpl) if peek else ""
     return _page(
         f"{tpl.이름} 보내기",
-        알림 + 오류 + 연습 + 탈락표시
+        알림 + 오류 + 연습 + 탈락표시 + 시험 + 점검
         + f"<div class='card'><h2>{html.escape(tpl.이름)} "
         f"<span class='muted'>{html.escape(tpl.제목)}</span></h2>"
         + 딸림칸
@@ -2733,7 +2791,8 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 return self._redirect("/mail")
             return self._send(_mail_send_page(tid, me, (params.get("err") or [""])[0],
-                                              (params.get("msg") or [""])[0]))
+                                              (params.get("msg") or [""])[0],
+                                              peek=bool(params.get("peek"))))
         if path == "/mail/attachment":
             if not can(me, "메일_템플릿"):
                 return self._deny()
@@ -3036,6 +3095,53 @@ class Handler(BaseHTTPRequestHandler):
             return self._redirect("/mail?msg=" + urllib.parse.quote(
                 f"'{이름}' 템플릿을 지웠습니다." if 이름 else "지울 템플릿이 없습니다."))
 
+        if path == "/mail/test":
+            if not can(me, "메일_발송"):
+                return self._deny()
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            try:
+                tid = int((data.get("id") or ["0"])[0])
+            except (ValueError, TypeError):
+                return self._redirect("/mail")
+            tpl = mailing.template(tid)
+            if tpl is None:
+                return self._redirect("/mail")
+            주소 = (data.get("to") or [""])[0].strip()
+            뒤로 = f"/mail/send?id={tid}"
+            if not 주소:
+                return self._redirect(뒤로 + "&err=" + urllib.parse.quote(
+                    "시험 발송할 주소를 넣으세요."))
+
+            # 실제 지원자 한 명의 값으로 채운다 (없으면 보기용 값)
+            진행맵 = recruit.all()
+            records = store.list_all()
+            값 = _mail_vars(records[0], 진행맵) if records else {}
+            값 = {k: (v or f"(예시){k}") for k, v in 값.items()}
+            for 변수 in _mail_var_names():
+                값.setdefault(변수, f"(예시){변수}")
+            제목, _ = render(tpl.제목, 값)
+            본문, _ = render(tpl.본문, 값)
+            try:
+                결과 = mailapi.send(주소, f"[시험] {제목}", 본문, html=tpl.html,
+                                  참조=tpl.cc(),
+                                  첨부=mailing.attachment_bytes(tpl.id))
+            except mailapi.MailError as exc:
+                audit.record(me.아이디, "메일", tpl.이름,
+                             비고=f"시험 발송 실패 ({주소})")
+                return self._redirect(뒤로 + "&err=" + urllib.parse.quote(str(exc)))
+            # 시험 발송은 **지원자 발송 기록에 남기지 않는다.**
+            # 남기면 그 지원자에게 진짜로 못 보내게 된다.
+            audit.record(me.아이디, "메일", tpl.이름,
+                         비고=f"시험 발송 {'성공' if 결과.보냄 else '(연습 모드)'} → {주소}")
+            if 결과.보냄:
+                알림 = (f"{주소} 로 보냈습니다. API 응답 HTTP {결과.상태코드}: "
+                      f"{결과.응답[:200] or '(본문 없음)'}")
+            else:
+                알림 = ("연습 모드(MAIL_DRY_RUN=1)라 보내지 않았습니다. "
+                      "아래 '보낼 요청 내용' 에서 형식을 확인하세요.")
+            return self._redirect(뒤로 + "&msg=" + urllib.parse.quote(알림)
+                                  + "&peek=1")
+
         if path == "/mail/attachment/add":
             if not can(me, "메일_템플릿"):
                 return self._deny()
@@ -3135,8 +3241,12 @@ class Handler(BaseHTTPRequestHandler):
                     continue
                 상태 = "성공" if 결과.보냄 else "발송안함"
                 성공 += 1
+                # API 응답을 그대로 남긴다. HTTP 200 이어도 본문에 실패가 적혀 오는
+                # API 가 있어서, 사람이 눈으로 확인할 수 있어야 한다.
+                메모 = (f"HTTP {결과.상태코드} {결과.응답[:300]}".strip()
+                      if 결과.보냄 else 결과.응답)
                 mailing.record(cid, tpl, 받는사람, 제목, 본문, 상태,
-                               오류="" if 결과.보냄 else 결과.응답, 보낸이=me.아이디,
+                               오류=메모, 보낸이=me.아이디,
                                참조=", ".join(참조), 첨부=첨부이름)
                 audit.record(me.아이디, "메일", cid, 항목=tpl.이름,
                              새값=상태, 비고=f"{받는사람} 로 발송")

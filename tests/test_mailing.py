@@ -329,3 +329,77 @@ def test_old_text_templates_keep_working(tmp_path):
     ms = MailStore(path)
     옛것 = ms.template_by_name("옛것")
     assert 옛것.html is False and 옛것.참조 == ""
+
+
+# --- 진짜로 나가는지 (가짜 API 를 띄워서 확인) ---------------------------------
+@pytest.fixture
+def 가짜API():
+    """받은 요청을 그대로 담아두는 최소 서버."""
+    import json as _json
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    받은것: list[dict] = []
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length") or 0)
+            받은것.append({
+                "path": self.path,
+                "auth": self.headers.get("Authorization"),
+                "ctype": self.headers.get("Content-Type"),
+                "body": self.rfile.read(n).decode("utf-8"),
+            })
+            out = _json.dumps({"resultCode": "SUCCESS"}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{srv.server_address[1]}/api/send", 받은것
+    srv.shutdown()
+
+
+def test_dry_run_off_actually_posts(monkeypatch, 가짜API):
+    url, 받은것 = 가짜API
+    _설정(monkeypatch, mail_api_url=url, mail_api_token="tok-123",
+        mail_api_system_id="CVTOOL", mail_api_user_id="hong12", mail_dry_run=False)
+
+    결과 = mailapi.send("a@b.com", "제목", "<b>본문</b>", html=True,
+                      참조=["hr@corp.com"], 첨부=[("안내문.pdf", b"%PDF")])
+
+    assert 결과.보냄 is True and 결과.상태코드 == 200
+    assert "SUCCESS" in 결과.응답
+    assert len(받은것) == 1
+    요청 = 받은것[0]
+    assert 요청["path"] == "/api/send?userId=hong12"      # URL 에 직접 붙는다
+    assert 요청["auth"] == "Bearer tok-123"
+    assert 요청["ctype"].startswith("application/json")
+    보낸본문 = json.loads(요청["body"])
+    assert 보낸본문["receiver"] == "a@b.com"
+    assert 보낸본문["contentType"] == "HTML"
+    assert 보낸본문["cc"] == ["hr@corp.com"]
+    assert 보낸본문["attachments"][0]["fileName"] == "안내문.pdf"
+
+
+def test_dry_run_on_sends_nothing_even_with_a_live_api(monkeypatch, 가짜API):
+    url, 받은것 = 가짜API
+    _설정(monkeypatch, mail_api_url=url, mail_api_token="tok",
+        mail_api_system_id="S", mail_api_user_id="u", mail_dry_run=True)
+    결과 = mailapi.send("a@b.com", "제목", "본문")
+    assert 결과.보냄 is False
+    assert 받은것 == []                      # 서버가 살아 있어도 안 보낸다
+
+
+def test_api_error_becomes_a_readable_message(monkeypatch):
+    _설정(monkeypatch, mail_api_url="http://127.0.0.1:1/none", mail_api_token="t",
+        mail_api_system_id="S", mail_api_user_id="u", mail_dry_run=False)
+    with pytest.raises(mailapi.MailError) as exc:
+        mailapi.send("a@b.com", "제목", "본문")
+    assert "연결하지 못했습니다" in str(exc.value)
