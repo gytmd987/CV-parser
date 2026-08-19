@@ -185,3 +185,11 @@ def test_dry_run_is_on_by_default():
 def _설정(monkeypatch, **값들):
     monkeypatch.setattr(mailapi, "settings",
                         dataclasses.replace(config_mod.settings, **값들))
+
+
+# --- 화면 --------------------------------------------------------------------
+def test_history_is_per_applicant(ms, 템플릿):
+    ms.record("CV-1", 템플릿, "a@b.com", "제목", "본문", "성공")
+    ms.record("CV-2", 템플릿, "b@b.com", "제목", "본문", "성공")
+    assert [r["지원자_ID"] for r in ms.history("CV-1")] == ["CV-1"]
+    assert ms.count() == 2

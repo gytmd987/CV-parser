@@ -1092,6 +1092,25 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "") -> bytes:
     if 중복:
         관리 += f"<tr><th>중복 후보</th><td class='flag' style='white-space:normal'>{html.escape(중복)}</td></tr>"
 
+    메일기록 = mailing.history(지원자_ID)
+    메일행 = "".join(
+        f"<tr><td>{html.escape(m['보낸일시'])}</td>"
+        f"<td>{html.escape(m['템플릿이름'])}</td>"
+        f"<td>{html.escape(m['받는사람'])}</td>"
+        f"<td>{html.escape(m['상태'])}</td>"
+        f"<td class='muted' style='white-space:normal'>{html.escape(m['오류'] or '')}</td></tr>"
+        for m in 메일기록
+    )
+    메일카드 = (
+        "<div class='card'><h2>보낸 메일</h2>"
+        + ("<div class='warn'>탈락 메일을 보낸 지원자입니다. "
+           "이후 어떤 메일도 보낼 수 없습니다.</div>"
+           if mailing.rejected(지원자_ID) else "")
+        + "<div class='scroll'><table data-name='보낸 메일'>"
+        "<tr><th>보낸 일시</th><th>템플릿</th><th>받는 주소</th><th>상태</th><th>메모</th></tr>"
+        + 메일행 + "</table></div></div>"
+    ) if 메일기록 else ""
+
     이력 = audit.for_target("지원자", 지원자_ID)
     이력행 = "".join(
         f"<tr><td>{html.escape(e.일시)}</td><td>{html.escape(e.사용자)}</td>"
@@ -1161,6 +1180,7 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "") -> bytes:
           <table>{''.join(항목행)}</table></div>
         {사용자카드}
         {첨부카드}
+        {메일카드}
         <div class='card'><h2>변경 이력</h2><div class='scroll'>
           <table><tr><th>일시</th><th>사용자</th><th>내용</th></tr>{이력행}</table>
         </div></div>""",
