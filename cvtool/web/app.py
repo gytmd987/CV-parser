@@ -58,6 +58,8 @@ from ..names import (
     canonical_kind,
     observe_record,
 )
+from ..mailing import MailStore, Template, render
+from ..clients import mail as mailapi
 from ..recruit import RECRUIT_COLUMNS, STAGES, STATUSES, RecruitStore
 from .multipart import parse_multipart
 
@@ -85,6 +87,7 @@ registry = NameRegistry(_names_db)
 auth = AuthStore(DATA_DIR / "admin.db")
 recruit = RecruitStore(DATA_DIR / "recruit.db")
 audit = AuditLog(DATA_DIR / "audit.db")
+mailing = MailStore(DATA_DIR / "mail.db")
 
 
 def bootstrap_admin() -> str | None:
@@ -258,6 +261,8 @@ def _page(title: str, body: str, nav: bool = True, me: User | None = None) -> by
     링크 = ["<a href='/'>지원자</a>", "<a href='/recruit'>채용 현황</a>"]
     if can(me, "지원자_등록"):
         링크.append("<a href='/upload'>CV 업로드</a>")
+    if can(me, "메일_템플릿"):
+        링크.append("<a href='/mail'>메일</a>")
     if can(me, "명칭_관리"):
         링크.append(
             "<a href='/names?kind=" + urllib.parse.quote("학회·저널")
@@ -763,7 +768,6 @@ function addToolbar(tb){
   bar.innerHTML =
     "<input type='text' placeholder='표에서 찾기' class='tfilter'>"
     + "<span class='muted tcount'></span><span style='flex:1'></span>"
-    + "<span class='muted'>칸을 끌어서 고르고 Ctrl+C</span>"
     + "<button type='button' class='sec txlsx'>엑셀 내려받기</button>";
   box.parentNode.insertBefore(bar, box);
   tb.__bar = bar;
@@ -923,6 +927,20 @@ def 표열(registry_=None) -> list[str]:
 
 def 라벨(열들: list[str]) -> dict[str, str]:
     return store.labels(열들)
+
+
+#: 메일 템플릿 화면 — 자리표시자를 눌러 본문에 넣는다
+_MAIL_JS = """
+function insertVar(el){
+  var ta = document.querySelector('textarea[name=body]');
+  if(!ta) return;
+  var v = el.textContent;
+  var s = ta.selectionStart, e = ta.selectionEnd;
+  ta.value = ta.value.slice(0, s) + v + ta.value.slice(e);
+  ta.focus();
+  ta.selectionStart = ta.selectionEnd = s + v.length;
+}
+"""
 
 
 def _busy_count() -> int:
@@ -1536,6 +1554,246 @@ def _names_page(종류: str, me: User | None = None,
     )
 
 
+def _mail_vars(rec, 진행맵=None) -> dict[str, str]:
+    """이 지원자에게 쓸 수 있는 자리표시자 값.
+
+    표에 보이는 값과 같은 것을 쓴다(명칭 사전을 거친 대표명). 화면에서 본 것과
+    메일에 나가는 것이 달라지면 안 된다.
+    """
+    값 = {k: str(v or "") for k, v in rec.to_row(registry).items()}
+    값.update(store.custom_values(rec.지원자_ID))
+    p = (진행맵 or {}).get(rec.지원자_ID)
+    if p is not None:
+        부서명 = {d["id"]: d["이름"] for d in auth.departments()}
+        과제명 = {pr["id"]: pr["이름"] for pr in auth.projects()}
+        값["부서"] = 부서명.get(p.부서_id, "")
+        값["과제"] = 과제명.get(p.project_id, "")
+        값["최종상태"] = p.최종상태
+    값.setdefault("부서", "")
+    값.setdefault("과제", "")
+    값.setdefault("최종상태", "")
+    값["이름"] = 값.get("한글_이름") or 값.get("영문_이름", "")
+    return 값
+
+
+def _mail_var_names() -> list[str]:
+    return ["이름", *table_columns(registry), *store.field_names(),
+            "부서", "과제", "최종상태"]
+
+
+def _mail_page(me: User, error: str = "", msg: str = "") -> bytes:
+    """메일 템플릿 목록 + 새 템플릿."""
+    templates = mailing.templates()
+    설정경고 = ""
+    빠진것 = mailapi.missing_settings()
+    if settings.mail_dry_run:
+        설정경고 = (
+            "<div class='warn'><b>연습 모드입니다 (MAIL_DRY_RUN=1).</b> "
+            "발송을 눌러도 실제로 나가지 않고 기록만 남습니다. "
+            "설정을 확인한 뒤 <code>.env</code> 에서 <code>MAIL_DRY_RUN=0</code> 으로 "
+            "바꾸세요.</div>"
+        )
+    elif 빠진것:
+        설정경고 = (
+            f"<div class='warn'>메일 설정이 비어 있어 보낼 수 없습니다: "
+            f"<b>{html.escape(', '.join(빠진것))}</b> — <code>.env</code> 를 확인하세요.</div>"
+        )
+
+    탈락배지 = "<span class='pill p-미분류'>탈락 메일</span>"
+    rows = "".join(
+        f"<tr><td><a href='/mail/template?id={t.id}'>{html.escape(t.이름)}</a></td>"
+        f"<td>{탈락배지 if t.탈락메일 else ''}</td>"
+        f"<td style='white-space:normal'>{html.escape(t.제목)}</td>"
+        f"<td class='muted'>{html.escape(t.수정일시)}</td>"
+        f"<td><a class='btn' href='/mail/send?id={t.id}'>보내기</a></td></tr>"
+        for t in templates
+    ) or "<tr><td colspan='5' class='muted'>아직 만든 템플릿이 없습니다.</td></tr>"
+
+    알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
+    오류 = f"<p class='flag'>{html.escape(error)}</p>" if error else ""
+    return _page(
+        "메일",
+        알림 + 설정경고
+        + "<div class='card'><h2>템플릿 만들기</h2>" + 오류
+        + "<form method='post' action='/mail/template/add'>"
+        "<p><input type='text' name='name' placeholder='템플릿 이름 (예: 서류합격 안내)'"
+        " required style='width:320px'></p>"
+        "<p><label><input type='checkbox' name='reject' value='1'> "
+        "<b>탈락 메일</b> — 이걸 보낸 지원자에게는 이후 어떤 메일도 보내지 않습니다</label></p>"
+        "<button type='submit'>만들기</button></form></div>"
+        f"<div class='card'><h2>템플릿 {len(templates)}개</h2><div class='scroll'>"
+        "<table data-name='메일 템플릿'><tr><th>이름</th><th>구분</th><th>제목</th>"
+        "<th>수정</th><th></th></tr>" + rows + "</table></div>"
+        "<p><a class='btn sec' href='/mail/log'>발송 이력</a></p></div>",
+        me=me,
+    )
+
+
+def _mail_template_page(tid: int, me: User, error: str = "", msg: str = "") -> bytes:
+    """메일 쓰듯이 제목·본문을 작성한다."""
+    tpl = mailing.template(tid)
+    if tpl is None:
+        return _page("없음", "<div class='card'>템플릿을 찾을 수 없습니다.</div>", me=me)
+    변수 = _mail_var_names()
+    변수칩 = " ".join(
+        f"<code class='varchip' onclick='insertVar(this)'>{{{{{html.escape(v)}}}}}</code>"
+        for v in 변수
+    )
+    쓴것 = tpl.placeholders()
+    모르는것 = [v for v in 쓴것 if v not in 변수]
+    경고 = (
+        f"<div class='warn'>모르는 자리표시자가 있습니다: "
+        f"<b>{html.escape(', '.join(모르는것))}</b> — 이대로 보내면 그 자리는 빈칸이 됩니다.</div>"
+        if 모르는것 else ""
+    )
+    알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
+    오류 = f"<p class='flag'>{html.escape(error)}</p>" if error else ""
+    return _page(
+        f"{tpl.이름} 템플릿",
+        알림 + 경고
+        + "<div class='card'><h2>템플릿 편집</h2>" + 오류
+        + "<form method='post' action='/mail/template/save'>"
+        f"<input type='hidden' name='id' value='{tpl.id}'>"
+        "<p><label>템플릿 이름<br><input type='text' name='name'"
+        f" value='{html.escape(tpl.이름)}' required style='width:360px'></label></p>"
+        "<p><label>제목<br><input type='text' name='subject'"
+        f" value='{html.escape(tpl.제목)}' style='width:100%'"
+        " placeholder='예: [{{부서}}] 서류 전형 결과 안내'></label></p>"
+        "<p><label>본문<br><textarea name='body' rows='16' style='width:100%'"
+        " placeholder='안녕하세요 {{이름}}님,'>"
+        f"{html.escape(tpl.본문)}</textarea></label></p>"
+        "<p><label><input type='checkbox' name='reject' value='1'"
+        f"{' checked' if tpl.탈락메일 else ''}> <b>탈락 메일</b> — 이걸 받은 지원자에게는"
+        " 이후 어떤 메일도 나가지 않습니다</label></p>"
+        "<p><button type='submit'>저장</button> "
+        f"<a class='btn sec' href='/mail/send?id={tpl.id}'>보내기</a> "
+        "<a class='btn sec' href='/mail'>목록</a></p></form>"
+        "<form method='post' action='/mail/template/delete' style='margin-top:10px'"
+        " onsubmit=\"return confirm('이 템플릿을 지웁니다. 이미 보낸 기록은 남습니다.')\">"
+        f"<input type='hidden' name='id' value='{tpl.id}'>"
+        "<button class='danger'>템플릿 삭제</button>"
+        "<span class='muted'> 발송 기록은 남습니다 — 누구에게 뭘 보냈는지는 기록입니다.</span>"
+        "</form></div>"
+        "<div class='card'><h2>쓸 수 있는 자리표시자</h2>"
+        "<p class='muted'>누르면 본문 끝에 붙습니다. 지원자마다 값이 채워집니다. "
+        "값이 빈 지원자는 발송 대상에서 자동으로 빠집니다.</p>"
+        f"<p style='line-height:2.2'>{변수칩}</p></div>"
+        f"<script>{_MAIL_JS}</script>",
+        me=me,
+    )
+
+
+def _mail_send_page(tid: int, me: User, error: str = "", msg: str = "") -> bytes:
+    """지원자를 고르고 미리보기한 뒤 보낸다."""
+    tpl = mailing.template(tid)
+    if tpl is None:
+        return _page("없음", "<div class='card'>템플릿을 찾을 수 없습니다.</div>", me=me)
+
+    진행맵 = recruit.all()
+    보이는과제 = auth.visible_project_ids(me)
+    records = store.list_all()
+    if 보이는과제 is not None:
+        records = [r for r in records
+                   if 진행맵.get(r.지원자_ID)
+                   and 진행맵[r.지원자_ID].project_id in 보이는과제]
+
+    rows = []
+    보낼수있음 = 0
+    for rec in records:
+        cid = rec.지원자_ID
+        값 = _mail_vars(rec, 진행맵)
+        받는사람 = (값.get("이메일") or "").split(MULTI_SEP)[0].strip()
+        제목, 빈1 = render(tpl.제목, 값)
+        본문, 빈2 = render(tpl.본문, 값)
+        빈칸 = list(dict.fromkeys(빈1 + 빈2))
+        막힘 = mailing.blocked_reason(cid, tpl)
+        if not 막힘 and not 받는사람:
+            막힘 = "이메일 주소가 없습니다"
+        if not 막힘 and 빈칸:
+            막힘 = f"값이 빈 자리표시자: {', '.join(빈칸)}"
+        보낼수있음 += 0 if 막힘 else 1
+        체크 = (
+            f"<input type='checkbox' form='sendform' name='ids' value='{html.escape(cid)}'>"
+            if not 막힘 else ""
+        )
+        rows.append(
+            f"<tr{' class=dup' if 막힘 else ''}><td>{체크}</td>"
+            f"<td>{html.escape(값.get('한글_이름') or 값.get('영문_이름') or cid)}</td>"
+            f"<td>{html.escape(받는사람)}</td>"
+            f"<td style='white-space:normal'>{html.escape(제목)}</td>"
+            f"<td style='white-space:normal' class='muted'>{html.escape(본문[:120])}"
+            f"{'…' if len(본문) > 120 else ''}</td>"
+            f"<td class='flag' style='white-space:normal'>{html.escape(막힘)}</td></tr>"
+        )
+
+    알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
+    오류 = f"<div class='warn'>{html.escape(error)}</div>" if error else ""
+    연습 = (
+        "<div class='warn'><b>연습 모드 (MAIL_DRY_RUN=1)</b> — 실제로 나가지 않고 "
+        "기록만 남습니다. 기록이 남으면 '이미 보냄' 으로 처리되니 주의하세요.</div>"
+        if settings.mail_dry_run else ""
+    )
+    탈락표시 = (
+        "<div class='warn'><b>이 템플릿은 탈락 메일입니다.</b> 보내고 나면 그 지원자에게는 "
+        "이후 어떤 메일도 보낼 수 없습니다.</div>" if tpl.탈락메일 else ""
+    )
+    보내기 = (
+        "<form method='post' action='/mail/send' id='sendform' class='mergebar'"
+        " onsubmit=\"return confirm('선택한 지원자에게 메일을 보냅니다. "
+        "되돌릴 수 없습니다. 진행할까요?')\">"
+        f"<input type='hidden' name='id' value='{tpl.id}'>"
+        "<button type='submit'>선택한 지원자에게 보내기</button>"
+        f"<span class='muted'>보낼 수 있는 지원자 {보낼수있음}명. "
+        "빨간 줄은 보낼 수 없는 이유가 적혀 있습니다.</span></form>"
+        if can(me, "메일_발송") else ""
+    )
+    return _page(
+        f"{tpl.이름} 보내기",
+        알림 + 오류 + 연습 + 탈락표시
+        + f"<div class='card'><h2>{html.escape(tpl.이름)} "
+        f"<span class='muted'>{html.escape(tpl.제목)}</span></h2>"
+        f"<p><a class='btn sec' href='/mail/template?id={tpl.id}'>템플릿 고치기</a> "
+        "<a class='btn sec' href='/mail'>목록</a></p>"
+        + 보내기
+        + "<div class='scroll'><table data-name='메일 발송 대상'>"
+        "<tr><th style='width:34px'><input type='checkbox' title='전체 선택'"
+        " onclick=\"for(const c of this.closest('table')"
+        ".querySelectorAll('input[name=ids]'))"
+        "if(!c.closest('tr').classList.contains('hide'))c.checked=this.checked\"></th>"
+        "<th>지원자</th><th>받는 주소</th><th>제목</th><th>본문 미리보기</th>"
+        "<th>보낼 수 없는 이유</th></tr>"
+        + "".join(rows) + "</table></div></div>",
+        me=me,
+    )
+
+
+def _mail_log_page(me: User) -> bytes:
+    기록 = mailing.history(limit=500)
+    탈락배지 = " <span class='pill p-미분류'>탈락</span>"
+    이름맵 = {r.지원자_ID: (r.한글_이름 or r.영문_이름 or r.지원자_ID)
+             for r in store.list_all()}
+    rows = "".join(
+        f"<tr><td>{html.escape(r['보낸일시'])}</td>"
+        f"<td>{html.escape(이름맵.get(r['지원자_ID'], r['지원자_ID']))}</td>"
+        f"<td>{html.escape(r['받는사람'])}</td>"
+        f"<td>{html.escape(r['템플릿이름'])}"
+        f"{탈락배지 if r['탈락메일'] else ''}</td>"
+        f"<td>{html.escape(r['상태'])}</td>"
+        f"<td style='white-space:normal' class='muted'>{html.escape(r['오류'] or '')}</td>"
+        f"<td class='muted'>{html.escape(r['보낸이'])}</td></tr>"
+        for r in 기록
+    ) or "<tr><td colspan='7' class='muted'>보낸 메일이 없습니다.</td></tr>"
+    return _page(
+        "메일 발송 이력",
+        f"<div class='card'><h2>발송 이력 <span class='muted'>총 {mailing.count()}건</span></h2>"
+        "<p><a class='btn sec' href='/mail'>템플릿 목록</a></p>"
+        "<div class='scroll'><table data-name='메일 발송 이력'>"
+        "<tr><th>보낸 일시</th><th>지원자</th><th>받는 주소</th><th>템플릿</th>"
+        "<th>상태</th><th>메모</th><th>보낸 사람</th></tr>" + rows + "</table></div></div>",
+        me=me,
+    )
+
+
 def _users_page(me: User, error: str = "") -> bytes:
     """계정 관리. 관리자는 전원, 채용담당자는 현업만 추가할 수 있다."""
     users = auth.list_users()
@@ -2133,6 +2391,36 @@ class Handler(BaseHTTPRequestHandler):
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 extra={"Content-Disposition": f'attachment; filename="recruit_{stamp}.xlsx"'},
             )
+        if path == "/mail":
+            if not can(me, "메일_템플릿"):
+                return self._deny()
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            return self._send(_mail_page(me, (params.get("err") or [""])[0],
+                                         (params.get("msg") or [""])[0]))
+        if path == "/mail/template":
+            if not can(me, "메일_템플릿"):
+                return self._deny()
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                tid = int((params.get("id") or ["0"])[0])
+            except ValueError:
+                return self._redirect("/mail")
+            return self._send(_mail_template_page(tid, me, (params.get("err") or [""])[0],
+                                                  (params.get("msg") or [""])[0]))
+        if path == "/mail/send":
+            if not can(me, "메일_템플릿"):
+                return self._deny()
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                tid = int((params.get("id") or ["0"])[0])
+            except ValueError:
+                return self._redirect("/mail")
+            return self._send(_mail_send_page(tid, me, (params.get("err") or [""])[0],
+                                              (params.get("msg") or [""])[0]))
+        if path == "/mail/log":
+            if not can(me, "메일_템플릿"):
+                return self._deny()
+            return self._send(_mail_log_page(me))
         if path == "/fields":
             if not can(me, "열_구성"):
                 return self._deny("표 항목 추가는 관리자만 할 수 있습니다.")
@@ -2332,6 +2620,141 @@ class Handler(BaseHTTPRequestHandler):
             보임 = ", ".join(바뀐것[:5]) + (" 외" if len(바뀐것) > 5 else "")
             return self._redirect("/recruit?msg=" + urllib.parse.quote(
                 f"{len(바뀐것)}건 저장했습니다 — {보임}"))
+
+        if path == "/mail/template/add":
+            if not can(me, "메일_템플릿"):
+                return self._deny()
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            이름 = (data.get("name") or [""])[0]
+            탈락 = bool(data.get("reject"))
+            try:
+                tid = mailing.add_template(이름, 탈락메일=탈락, 만든이=me.아이디)
+            except ValueError as exc:
+                return self._redirect("/mail?err=" + urllib.parse.quote(str(exc)))
+            audit.record(me.아이디, "메일", 이름,
+                         비고="템플릿 추가" + (" (탈락 메일)" if 탈락 else ""))
+            return self._redirect(f"/mail/template?id={tid}")
+
+        if path == "/mail/template/save":
+            if not can(me, "메일_템플릿"):
+                return self._deny()
+            data = urllib.parse.parse_qs(
+                self._read_body().decode("utf-8", "replace"), keep_blank_values=True
+            )
+            try:
+                tid = int((data.get("id") or ["0"])[0])
+            except ValueError:
+                return self._redirect("/mail")
+            옛 = mailing.template(tid)
+            if 옛 is None:
+                return self._redirect("/mail")
+            try:
+                새것 = mailing.update_template(
+                    tid,
+                    이름=(data.get("name") or [None])[0],
+                    제목=(data.get("subject") or [""])[0],
+                    본문=(data.get("body") or [""])[0],
+                    탈락메일=bool(data.get("reject")),
+                )
+            except ValueError as exc:
+                return self._redirect(f"/mail/template?id={tid}&err="
+                                      + urllib.parse.quote(str(exc)))
+            변경 = [
+                (항목, 옛값, 새값)
+                for 항목, 옛값, 새값 in (
+                    ("이름", 옛.이름, 새것.이름),
+                    ("제목", 옛.제목, 새것.제목),
+                    ("본문", 옛.본문, 새것.본문),
+                    ("탈락메일", "Y" if 옛.탈락메일 else "", "Y" if 새것.탈락메일 else ""),
+                )
+                if 옛값 != 새값
+            ]
+            for 항목, 옛값, 새값 in 변경:
+                # 본문 전체를 이력에 남기면 읽기 어려워서 바뀐 사실만 남긴다
+                if 항목 == "본문":
+                    audit.record(me.아이디, "메일", 새것.이름, 항목="본문", 비고="본문 수정")
+                else:
+                    audit.record(me.아이디, "메일", 새것.이름, 항목=항목,
+                                 이전값=옛값, 새값=새값)
+            메시지 = "저장했습니다." if 변경 else "바뀐 내용이 없습니다."
+            return self._redirect(f"/mail/template?id={tid}&msg="
+                                  + urllib.parse.quote(메시지))
+
+        if path == "/mail/template/delete":
+            if not can(me, "메일_템플릿"):
+                return self._deny()
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            try:
+                이름 = mailing.delete_template(int((data.get("id") or ["0"])[0]))
+            except ValueError:
+                이름 = ""
+            if 이름:
+                audit.record(me.아이디, "메일", 이름, 비고="템플릿 삭제 (발송 기록은 유지)")
+            return self._redirect("/mail?msg=" + urllib.parse.quote(
+                f"'{이름}' 템플릿을 지웠습니다." if 이름 else "지울 템플릿이 없습니다."))
+
+        if path == "/mail/send":
+            if not can(me, "메일_발송"):
+                return self._deny()
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            try:
+                tid = int((data.get("id") or ["0"])[0])
+            except ValueError:
+                return self._redirect("/mail")
+            tpl = mailing.template(tid)
+            if tpl is None:
+                return self._redirect("/mail")
+            뒤로 = f"/mail/send?id={tid}"
+            ids = data.get("ids") or []
+            if not ids:
+                return self._redirect(뒤로 + "&err=" + urllib.parse.quote(
+                    "보낼 지원자를 하나 이상 고르세요."))
+
+            진행맵 = recruit.all()
+            보이는 = auth.visible_project_ids(me)
+            성공, 실패, 건너뜀 = 0, 0, 0
+            첫오류 = ""
+            for cid in ids:
+                rec = store.get(cid)
+                if rec is None:
+                    건너뜀 += 1
+                    continue
+                if 보이는 is not None and recruit.get(cid).project_id not in 보이는:
+                    건너뜀 += 1
+                    continue
+                # 화면을 그린 뒤에 상황이 바뀌었을 수 있다. 보내기 직전에 다시 본다.
+                막힘 = mailing.blocked_reason(cid, tpl)
+                if 막힘:
+                    건너뜀 += 1
+                    continue
+                값 = _mail_vars(rec, 진행맵)
+                받는사람 = (값.get("이메일") or "").split(MULTI_SEP)[0].strip()
+                제목, 빈1 = render(tpl.제목, 값)
+                본문, 빈2 = render(tpl.본문, 값)
+                if not 받는사람 or 빈1 or 빈2:
+                    건너뜀 += 1
+                    continue
+                try:
+                    결과 = mailapi.send(받는사람, 제목, 본문)
+                except mailapi.MailError as exc:
+                    실패 += 1
+                    첫오류 = 첫오류 or str(exc)
+                    mailing.record(cid, tpl, 받는사람, 제목, 본문, "실패",
+                                   오류=str(exc), 보낸이=me.아이디)
+                    continue
+                상태 = "성공" if 결과.보냄 else "발송안함"
+                성공 += 1
+                mailing.record(cid, tpl, 받는사람, 제목, 본문, 상태,
+                               오류="" if 결과.보냄 else 결과.응답, 보낸이=me.아이디)
+                audit.record(me.아이디, "메일", cid, 항목=tpl.이름,
+                             새값=상태, 비고=f"{받는사람} 로 발송")
+
+            조각 = [f"{성공}명에게 보냈습니다"]
+            if 실패:
+                조각.append(f"{실패}명 실패 ({첫오류[:80]})")
+            if 건너뜀:
+                조각.append(f"{건너뜀}명은 보낼 수 없어 건너뛰었습니다")
+            return self._redirect(뒤로 + "&msg=" + urllib.parse.quote(" / ".join(조각)))
 
         if path == "/fields/add":
             if not can(me, "열_구성"):

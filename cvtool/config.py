@@ -63,6 +63,18 @@ class Settings:
     # 켜면 재업로드 없이 재분석할 수 있지만 CV 전문이 DB 에 남는다.
     store_cv_text: bool = _env("CVTOOL_STORE_CV_TEXT", "0").lower() in ("1", "true", "yes")
 
+    # --- 사내 메일 API ---
+    # 토큰·ID 는 코드에 두지 않는다. .env 로만 넣는다.
+    mail_api_url: str = _env("MAIL_API_URL", _env("CVTOOL_MAIL_API_URL", ""))
+    mail_api_token: str = _env("MAIL_API_TOKEN", "")
+    mail_api_system_id: str = _env("MAIL_API_SYSTEM_ID", "")
+    mail_api_user_id: str = _env("MAIL_API_USER_ID", "")
+    mail_sender: str = _env("MAIL_SENDER", "")
+    mail_timeout: float = float(_env("MAIL_API_TIMEOUT", "30"))
+    # 실제로 보내지 않고 기록만 한다. **기본이 켜짐** — 설정을 맞추기 전에
+    # 지원자에게 메일이 나가는 일이 없어야 한다. 확인 뒤 0 으로 끄세요.
+    mail_dry_run: bool = _env("MAIL_DRY_RUN", "1").lower() not in ("0", "false", "no", "")
+
     # --- 시간대 (서버 시계는 UTC, 표시는 항상 KST) ---
     timezone: str = _env("CVTOOL_TZ", "Asia/Seoul")
 
