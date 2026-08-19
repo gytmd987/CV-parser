@@ -169,3 +169,66 @@ def test_delete_does_not_touch_other_candidates(tmp_path):
                    저장_파일명=store.store_file(cid, "a.pdf", b"x"))
     store.delete("CV-1")
     assert [f.name for f in store.files_dir.iterdir()] == ["CV-2.pdf"]
+
+
+# --- 대표명이 같아진 항목 정리 -------------------------------------------------
+def test_same_display_name_rows_are_merged(reg):
+    """'포항공과대학교'와 'POSTECH'을 각각 '포항공대'로 고치면 표에 같은 이름이 셋 남는다."""
+    a = reg.observe("소속", "포항공과대학교")
+    reg.observe("소속", "포항공과대학교")          # 발견 2회
+    b = reg.observe("소속", "POSTECH")
+    reg.observe("소속", "포항공대")
+    reg.classify(a.id, 표시명="포항공대")
+    reg.classify(b.id, 표시명="포항공대")
+
+    assert len([n for n in reg.list_all("소속") if n.표시명 == "포항공대"]) == 3
+    assert reg.merge_same_display("소속") == [("포항공대", 3)]
+
+    남은 = reg.list_all("소속")
+    assert [n.표시명 for n in 남은] == ["포항공대"]
+    assert 남은[0].발견횟수 == 4                    # 갈라져 있던 횟수를 합친다
+    # 합쳐진 표기들도 계속 이 항목으로 해석돼야 한다
+    for 표기 in ("포항공과대학교", "POSTECH", "포항공대"):
+        assert reg.display("소속", 표기) == "포항공대"
+
+
+def test_display_merge_ignores_case_and_spaces(reg):
+    a = reg.observe("학회", "ICML")
+    b = reg.observe("학회", "Intl Conf Machine Learning")
+    reg.classify(b.id, 표시명=" icml ")
+    reg.merge_same_display("학회·저널")
+    assert len(reg.list_all("학회·저널")) == 1
+
+
+def test_merge_keeps_the_most_seen_row(reg):
+    a = reg.observe("소속", "가나다소프트웨어")
+    for _ in range(4):
+        reg.observe("소속", "가나다소프트웨어")     # 발견 5회
+    b = reg.observe("소속", "가나다 소프트")
+    reg.classify(b.id, 표시명="가나다소프트웨어")
+    reg.merge_same_display("소속")
+    남은 = reg.list_all("소속")
+    assert len(남은) == 1 and 남은[0].id == a.id and 남은[0].발견횟수 == 6
+
+
+def test_duplicates_repaired_when_the_file_is_opened(tmp_path):
+    """이미 중복이 생겨버린 DB 도 열기만 하면 정리돼야 한다."""
+    path = tmp_path / "n.db"
+    reg = NameRegistry(path)
+    a = reg.observe("소속", "포항공과대학교")
+    b = reg.observe("소속", "POSTECH")
+    # 마이그레이션 로직을 거치지 않고 직접 같은 이름으로 만들어 둔다
+    reg._conn.execute("UPDATE names SET 표시명='포항공대' WHERE id IN (?,?)", (a.id, b.id))
+    reg._conn.commit()
+    reg.close()
+
+    다시 = NameRegistry(path)
+    assert [n.표시명 for n in 다시.list_all("소속")] == ["포항공대"]
+    assert 다시.display("소속", "POSTECH") == "포항공대"
+
+
+def test_merge_same_display_leaves_distinct_names_alone(reg):
+    reg.observe("소속", "서울대학교")
+    reg.observe("소속", "연세대학교")
+    assert reg.merge_same_display("소속") == []
+    assert len(reg.list_all("소속")) == 2

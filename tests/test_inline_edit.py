@@ -473,3 +473,55 @@ def test_table_xlsx_survives_duplicate_headers(web):
 def test_tsv_view_is_gone(web):
     page = web.get("/")
     assert "export.tsv" not in page
+
+
+# --- 이름 바꾸기 / 브랜드 / 표 도구 --------------------------------------------
+def test_save_merges_rows_that_became_the_same_name(web, names):
+    """서로 다른 항목을 같은 이름으로 고치면 그건 같은 대상이라는 뜻이다."""
+    fields = {"kind": "소속", "id": list(names.values())}
+    for nid in names.values():
+        fields[f"표시명_{nid}"] = "포항공대"
+    code, body = web.post("/names/save", **fields)
+    assert "합쳤습니다" in body
+    남은 = web.module.registry.list_all("소속")
+    assert [n.표시명 for n in 남은] == ["포항공대"]
+
+
+def test_merge_is_recorded_when_names_collide(web, names):
+    fields = {"kind": "소속", "id": list(names.values())}
+    for nid in names.values():
+        fields[f"표시명_{nid}"] = "한곳"
+    web.post("/names/save", **fields)
+    이력 = web.module.audit.recent(50, 대상종류="명칭")
+    assert any(e.항목 == "같은 이름 합치기" for e in 이력)
+
+
+def test_system_is_named_for_applicants_not_cv_analysis(web):
+    page = web.get("/")
+    assert ">지원자 관리<" in page
+    assert "CV 분석" not in page
+
+
+def test_dashboard_has_no_upload_button(web):
+    """업로드는 탭 하나로 충분하다."""
+    page = web.get("/")
+    assert "main" in page
+    본문 = page.split("<main>", 1)[1]
+    assert "href='/upload'" not in 본문
+
+
+def test_upload_tab_still_in_the_menu(web):
+    assert "href='/upload'" in web.get("/").split("<main>", 1)[0]
+
+
+def test_column_menu_and_guard_are_shipped(web):
+    page = web.get("/")
+    for 기능 in ("openColMenu", "applyFilters", "sortBy", "dirtyGuard", "beforeunload"):
+        assert 기능 in page, 기능
+
+
+def test_copy_includes_headers(web):
+    """머리글이 빠지면 엑셀에 붙였을 때 무슨 열인지 알 수 없다."""
+    page = web.get("/")
+    assert "twithhead" in page                     # 머리글 포함 토글
+    assert "if(withHead !== false) out.push(" in page

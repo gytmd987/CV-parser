@@ -1,4 +1,4 @@
-"""사내 CV 분석 웹 앱 (표준 라이브러리 http.server).
+"""사내 지원자 관리 웹 앱 (표준 라이브러리 http.server).
 
 폐쇄망이라 FastAPI/uvicorn 이 없을 수 있어 표준 라이브러리만 쓴다.
 
@@ -217,8 +217,31 @@ input.dirty,select.dirty{background:#fef3c7;border-color:#fcd34d}
 .tbar input.tfilter{width:220px}
 th.sortable{cursor:pointer;user-select:none}
 th.sortable:hover{background:#dbeafe}
+th.sortable::before{content:'\25BE';font-size:9px;color:#94a3b8;float:right;margin-left:4px}
 th[data-dir=asc]::after{content:' \25B2';font-size:10px}
 th[data-dir=desc]::after{content:' \25BC';font-size:10px}
+th.filtered{background:#dbeafe}
+th.filtered::before{content:'\25BE';color:var(--accent)}
+#colmenu{position:absolute;z-index:100;background:#fff;border:1px solid var(--line);
+ border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.14);padding:6px;min-width:230px;
+ max-width:320px;font-size:13px}
+#colmenu .cm-head{font-weight:700;padding:4px 8px;color:var(--muted);
+ overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#colmenu button{display:block;width:100%;text-align:left;background:none;color:var(--txt);
+ padding:6px 8px;border-radius:6px;font-size:13px}
+#colmenu button:hover{background:#eff6ff}
+#colmenu .cm-btns{display:flex;gap:6px;padding:4px 0}
+#colmenu .cm-btns button{background:var(--accent);color:#fff;text-align:center}
+#colmenu .cm-btns button.sec{background:#4b5563}
+#colmenu .cm-sep{border-top:1px solid var(--line);margin:5px 0}
+#colmenu .cm-title{font-weight:700;padding:2px 8px}
+#colmenu .cm-q{width:100%;margin:4px 0;padding:5px 7px;font-size:13px}
+#colmenu .cm-list{max-height:200px;overflow:auto;border:1px solid var(--line);border-radius:6px}
+#colmenu .cm-row{display:block;padding:3px 8px;cursor:pointer;white-space:nowrap;
+ overflow:hidden;text-overflow:ellipsis}
+#colmenu .cm-row:hover{background:#eff6ff}
+#colmenu .cm-row.hide{display:none}
+#colmenu .cm-allrow{padding-left:8px}
 td.sel{background:#bfdbfe !important;outline:1px solid #2563eb;outline-offset:-1px}
 #toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#1b1f24;
  color:#fff;padding:10px 16px;border-radius:8px;opacity:0;pointer-events:none;
@@ -253,7 +276,7 @@ def _page(title: str, body: str, nav: bool = True, me: User | None = None) -> by
         if me else ""
     )
     header = (
-        "<header><a href='/'>CV 분석</a>" + "".join(링크)
+        "<header><a href='/'>지원자 관리</a>" + "".join(링크)
         + f"<span class='sp'></span>{누구}<a href='/logout'>로그아웃</a></header>"
         if nav
         else ""
@@ -272,7 +295,7 @@ def _login_page(error: str = "") -> bytes:
     msg = f"<p class='flag'>{html.escape(error)}</p>" if error else ""
     return _page(
         "로그인",
-        f"""<div class='card login'><h2>CV 분석 툴</h2>{msg}
+        f"""<div class='card login'><h2>지원자 관리</h2>{msg}
         <form method='post' action='/login'>
         <p><input type='text' name='userid' placeholder='아이디' autofocus style='width:100%'></p>
         <p><input type='password' name='password' placeholder='비밀번호' style='width:100%'></p>
@@ -511,8 +534,7 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
             <button type='submit'>검색</button>
             <a class='btn sec' href='/'>초기화</a>
           </form>
-          <p><a class='btn' href='/upload'>CV 업로드</a>
-             <a class='btn' href='/export.xlsx'>엑셀(.xlsx) 다운로드</a></p>
+          <p><a class='btn' href='/export.xlsx'>엑셀(.xlsx) 다운로드</a></p>
           {안내}
           {table}
         </div>""",
@@ -527,41 +549,42 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
 #: 범위 복사는 숨은 textarea 에 TSV 를 넣고 선택해 두는 방식이다.
 #: 사내망은 https 가 아니라 navigator.clipboard 를 못 쓰는 경우가 있어서,
 #: 브라우저가 자체적으로 처리하는 Ctrl+C 가 가장 확실하다.
-_TABLE_JS = """
+_TABLE_JS = r"""
 function markDirty(el){
   el.classList.toggle('dirty', el.value !== (el.dataset.orig || ''));
 }
 function cellText(td){
-  var f = td.querySelector('input,select,textarea');
+  if(!td) return '';
+  var f = td.querySelector ? td.querySelector('input,select,textarea') : null;
   if(f){
     if(f.type === 'checkbox') return f.checked ? 'Y' : '';
     if(f.tagName === 'SELECT'){
       var o = f.options[f.selectedIndex];
-      return o ? o.text.replace(/\\s+/g,' ').trim() : '';
+      return o ? o.text.replace(/\s+/g,' ').trim() : '';
     }
     return f.value;
   }
-  return (td.textContent || '').replace(/\\s+/g,' ').trim();
+  return (td.textContent || '').replace(/\s+/g,' ').trim();
 }
 function bodyRows(tb){ return tb.tBodies[0] ? Array.prototype.slice.call(tb.tBodies[0].rows) : []; }
 function headCells(tb){ return tb.tHead ? Array.prototype.slice.call(tb.tHead.rows[0].cells) : []; }
+function headText(th){ return (th.dataset.label || th.textContent || '').replace(/\s+/g,' ').trim(); }
 
-function tableTSV(tb, onlyVisible){
-  // 머리글이 빈 칸(체크박스·상세 링크)은 엑셀에 옮길 내용이 아니라 뺀다
-  var heads = headCells(tb).map(function(th){
-    return (th.textContent||'').replace(/\\s+/g,' ').trim();
-  });
+// 머리글이 빈 칸(체크박스·상세 링크)은 엑셀에 옮길 내용이 아니라 뺀다
+function keepCols(tb){
   var keep = [];
-  heads.forEach(function(h, i){ if(h) keep.push(i); });
-  if(!keep.length) keep = heads.map(function(_, i){ return i; });
-  var out = [keep.map(function(i){ return heads[i]; }).join('\\t')];
+  headCells(tb).forEach(function(th, i){ if(headText(th)) keep.push(i); });
+  return keep.length ? keep : headCells(tb).map(function(_, i){ return i; });
+}
+
+function tableTSV(tb, withHead){
+  var heads = headCells(tb), keep = keepCols(tb), out = [];
+  if(withHead !== false) out.push(keep.map(function(i){ return headText(heads[i]); }).join('\t'));
   bodyRows(tb).forEach(function(tr){
-    if(onlyVisible && tr.classList.contains('hide')) return;
-    out.push(keep.map(function(i){
-      return tr.cells[i] ? cellText(tr.cells[i]) : '';
-    }).join('\\t'));
+    if(tr.classList.contains('hide')) return;
+    out.push(keep.map(function(i){ return cellText(tr.cells[i]); }).join('\t'));
   });
-  return out.join('\\n');
+  return out.join('\n');
 }
 
 function copyText(text){
@@ -582,77 +605,200 @@ function copyText(text){
 
 function toast(msg){
   var el = document.getElementById('toast');
-  if(!el){
-    el = document.createElement('div');
-    el.id = 'toast';
-    document.body.appendChild(el);
-  }
+  if(!el){ el = document.createElement('div'); el.id = 'toast'; document.body.appendChild(el); }
   el.textContent = msg;
   el.className = 'show';
   clearTimeout(window.__toastT);
-  window.__toastT = setTimeout(function(){ el.className = ''; }, 2000);
+  window.__toastT = setTimeout(function(){ el.className = ''; }, 2200);
 }
+
+// --- 거르기 (표 전체 검색 + 열별 값 선택) ----------------------------------
+function applyFilters(tb){
+  var q = (tb.__q || '').trim().toLowerCase();
+  var f = tb.__filters || {};
+  var cols = Object.keys(f);
+  var 보임 = 0;
+  bodyRows(tb).forEach(function(tr){
+    var hit = !q || tr.innerText.toLowerCase().indexOf(q) >= 0;
+    for(var i = 0; hit && i < cols.length; i++){
+      var idx = parseInt(cols[i], 10);
+      if(!f[cols[i]].has(cellText(tr.cells[idx]))) hit = false;
+    }
+    tr.classList.toggle('hide', !hit);
+    if(hit) 보임++;
+    else {                                   // 안 보이는 줄은 체크를 풀어둔다
+      var c = tr.querySelector('input[type=checkbox]');
+      if(c) c.checked = false;
+    }
+  });
+  headCells(tb).forEach(function(th, i){
+    th.classList.toggle('filtered', f[i] !== undefined);
+  });
+  var out = tb.__bar && tb.__bar.querySelector('.tcount');
+  if(out) out.textContent = (q || cols.length) ? (보임 + '줄 보임') : '';
+}
+
+function sortBy(tb, idx, asc){
+  headCells(tb).forEach(function(o){ o.removeAttribute('data-dir'); });
+  if(idx === null){                                   // 정렬 해제 = 원래 순서
+    var body = tb.tBodies[0];
+    (tb.__order || []).forEach(function(r){ body.appendChild(r); });
+    return;
+  }
+  headCells(tb)[idx].dataset.dir = asc ? 'asc' : 'desc';
+  var rows = bodyRows(tb);
+  rows.sort(function(a, b){
+    var x = cellText(a.cells[idx]), y = cellText(b.cells[idx]);
+    var nx = parseFloat(x.replace(/[^0-9.\-]/g,'')), ny = parseFloat(y.replace(/[^0-9.\-]/g,''));
+    var 숫자 = x !== '' && y !== '' && !isNaN(nx) && !isNaN(ny)
+              && /^[0-9.,\-\s]+$/.test(x) && /^[0-9.,\-\s]+$/.test(y);
+    if(x === '' && y !== '') return 1;                // 빈칸은 늘 아래로
+    if(y === '' && x !== '') return -1;
+    var c = 숫자 ? (nx - ny) : x.localeCompare(y, 'ko');
+    return asc ? c : -c;
+  });
+  var body = tb.tBodies[0];
+  rows.forEach(function(r){ body.appendChild(r); });
+}
+
+function closeColMenu(){
+  var m = document.getElementById('colmenu');
+  if(m) m.remove();
+}
+
+// 열 제목을 누르면 무엇을 할지 고르게 한다 (엑셀 필터 단추와 같은 방식)
+function openColMenu(tb, idx, th){
+  closeColMenu();
+  var 값들 = {}, f = tb.__filters || {};
+  bodyRows(tb).forEach(function(tr){
+    var v = cellText(tr.cells[idx]);
+    값들[v] = (값들[v] || 0) + 1;
+  });
+  var 목록 = Object.keys(값들).sort(function(a, b){ return a.localeCompare(b, 'ko'); });
+  var 선택 = f[idx];
+
+  var m = document.createElement('div');
+  m.id = 'colmenu';
+  m.innerHTML =
+    "<div class='cm-head'>" + headText(th) + "</div>"
+    + "<button type='button' data-act='asc'>▲ 오름차순 정렬</button>"
+    + "<button type='button' data-act='desc'>▼ 내림차순 정렬</button>"
+    + "<button type='button' data-act='nosort'>정렬 해제</button>"
+    + "<div class='cm-sep'></div>"
+    + "<div class='cm-title'>값으로 거르기</div>"
+    + "<input type='text' class='cm-q' placeholder='값 찾기'>"
+    + "<label class='cm-row cm-allrow'><input type='checkbox' class='cm-all'> <b>전체</b></label>"
+    + "<div class='cm-list'>"
+    + 목록.map(function(v, i){
+        var on = !선택 || 선택.has(v);
+        return "<label class='cm-row' data-v='" + i + "'>"
+          + "<input type='checkbox' value='" + i + "'" + (on ? " checked" : "") + "> "
+          + (v === '' ? "<i>(빈칸)</i>" : v.replace(/</g,'&lt;'))
+          + " <span class='muted'>" + 값들[v] + "</span></label>";
+      }).join('')
+    + "</div>"
+    + "<div class='cm-btns'><button type='button' data-act='apply'>적용</button>"
+    + "<button type='button' class='sec' data-act='clear'>이 열 거르기 해제</button></div>"
+    + "<div class='cm-sep'></div>"
+    + "<button type='button' data-act='copycol'>이 열만 복사</button>";
+  document.body.appendChild(m);
+  var r = th.getBoundingClientRect();
+  m.style.left = Math.min(r.left, window.innerWidth - m.offsetWidth - 12) + 'px';
+  m.style.top = (r.bottom + window.scrollY + 2) + 'px';
+
+  var boxes = function(){ return Array.prototype.slice.call(m.querySelectorAll('.cm-list input')); };
+  var all = m.querySelector('.cm-all');
+  all.checked = boxes().every(function(b){ return b.checked; });
+  all.addEventListener('change', function(){
+    boxes().forEach(function(b){
+      if(!b.closest('.cm-row').classList.contains('hide')) b.checked = all.checked;
+    });
+  });
+  m.querySelector('.cm-q').addEventListener('input', function(e){
+    var q = e.target.value.toLowerCase();
+    Array.prototype.slice.call(m.querySelectorAll('.cm-list .cm-row')).forEach(function(row){
+      row.classList.toggle('hide', q && row.textContent.toLowerCase().indexOf(q) < 0);
+    });
+  });
+  m.addEventListener('click', function(ev){
+    var act = ev.target.dataset ? ev.target.dataset.act : null;
+    if(!act) return;
+    if(act === 'asc' || act === 'desc'){ sortBy(tb, idx, act === 'asc'); closeColMenu(); }
+    else if(act === 'nosort'){ sortBy(tb, null); closeColMenu(); }
+    else if(act === 'clear'){
+      tb.__filters = tb.__filters || {};
+      delete tb.__filters[idx];
+      applyFilters(tb); closeColMenu();
+    }
+    else if(act === 'apply'){
+      var 고른값 = new Set();
+      boxes().forEach(function(b){ if(b.checked) 고른값.add(목록[parseInt(b.value, 10)]); });
+      tb.__filters = tb.__filters || {};
+      if(고른값.size === 목록.length) delete tb.__filters[idx];
+      else tb.__filters[idx] = 고른값;
+      applyFilters(tb); closeColMenu();
+    }
+    else if(act === 'copycol'){
+      var 줄 = [headText(th)];
+      bodyRows(tb).forEach(function(tr){
+        if(!tr.classList.contains('hide')) 줄.push(cellText(tr.cells[idx]));
+      });
+      copyText(줄.join('\n'));
+      toast('이 열을 복사했습니다. Ctrl+C 로 붙여넣으세요.');
+      closeColMenu();
+    }
+  });
+}
+document.addEventListener('click', function(ev){
+  var m = document.getElementById('colmenu');
+  if(m && !m.contains(ev.target) && !(ev.target.closest && ev.target.closest('th.sortable'))) closeColMenu();
+});
+document.addEventListener('keydown', function(ev){ if(ev.key === 'Escape') closeColMenu(); });
 
 function addToolbar(tb){
   var box = tb.closest('.scroll');
   if(!box) return;
   var bar = document.createElement('div');
   bar.className = 'tbar';
-  var name = tb.dataset.name || document.title;
   bar.innerHTML =
     "<input type='text' placeholder='표에서 거르기' class='tfilter'>"
     + "<span class='muted tcount'></span><span style='flex:1'></span>"
+    + "<label class='muted'><input type='checkbox' class='twithhead' checked> 머리글 포함</label>"
     + "<button type='button' class='sec tcopy'>표 복사</button>"
     + "<button type='button' class='sec txlsx'>엑셀 내려받기</button>";
   box.parentNode.insertBefore(bar, box);
+  tb.__bar = bar;
 
-  var input = bar.querySelector('.tfilter'), count = bar.querySelector('.tcount');
-  input.addEventListener('input', function(){
-    var q = input.value.trim().toLowerCase(), 보임 = 0;
-    bodyRows(tb).forEach(function(tr){
-      var hit = !q || tr.innerText.toLowerCase().indexOf(q) >= 0;
-      tr.classList.toggle('hide', !hit);
-      if(hit) 보임++;
-    });
-    count.textContent = q ? (보임 + '줄 보임') : '';
+  bar.querySelector('.tfilter').addEventListener('input', function(e){
+    tb.__q = e.target.value;
+    applyFilters(tb);
   });
   bar.querySelector('.tcopy').addEventListener('click', function(){
-    copyText(tableTSV(tb, true));
-    toast('표 전체를 복사했습니다. 엑셀에 붙여넣으세요.');
+    copyText(tableTSV(tb, tb.__bar.querySelector('.twithhead').checked));
+    toast('표를 복사했습니다. 엑셀에 붙여넣으세요.');
   });
   bar.querySelector('.txlsx').addEventListener('click', function(){
     var form = document.createElement('form');
     form.method = 'post'; form.action = '/table.xlsx';
     form.innerHTML = "<input type='hidden' name='name'><input type='hidden' name='tsv'>";
-    form.elements.name.value = name;
+    form.elements.name.value = tb.dataset.name || document.title;
     form.elements.tsv.value = tableTSV(tb, true);
     document.body.appendChild(form);
+    window.__leaving = true;
     form.submit();
-    setTimeout(function(){ form.remove(); }, 1000);
+    setTimeout(function(){ form.remove(); window.__leaving = false; }, 1000);
   });
 }
 
 function sortable(tb){
   headCells(tb).forEach(function(th, idx){
     if(th.querySelector('input')) return;              // 전체선택 칸은 빼고
+    if(!headText(th)) return;
     th.classList.add('sortable');
+    th.title = '눌러서 정렬·거르기';
     th.addEventListener('click', function(ev){
       if(ev.target.tagName === 'A') return;
-      var asc = th.dataset.dir !== 'asc';
-      headCells(tb).forEach(function(o){ o.removeAttribute('data-dir'); });
-      th.dataset.dir = asc ? 'asc' : 'desc';
-      var rows = bodyRows(tb);
-      rows.sort(function(a, b){
-        var x = cellText(a.cells[idx] || {textContent:''});
-        var y = cellText(b.cells[idx] || {textContent:''});
-        var nx = parseFloat(x.replace(/[^0-9.\\-]/g,'')), ny = parseFloat(y.replace(/[^0-9.\\-]/g,''));
-        var 숫자 = x !== '' && y !== '' && !isNaN(nx) && !isNaN(ny)
-                  && /^[0-9.,\\-\\s]+$/.test(x) && /^[0-9.,\\-\\s]+$/.test(y);
-        var c = 숫자 ? (nx - ny) : x.localeCompare(y, 'ko');
-        return asc ? c : -c;
-      });
-      var body = tb.tBodies[0];
-      rows.forEach(function(r){ body.appendChild(r); });
+      openColMenu(tb, idx, th);
     });
   });
 }
@@ -660,26 +806,29 @@ function sortable(tb){
 function rangeSelect(tb){
   var anchor = null, dragging = false;
   function clear(){
-    tb.querySelectorAll('td.sel').forEach(function(td){ td.classList.remove('sel'); });
+    Array.prototype.slice.call(tb.querySelectorAll('td.sel')).forEach(function(td){
+      td.classList.remove('sel');
+    });
   }
   function pos(td){ return {r: td.parentNode.rowIndex, c: td.cellIndex}; }
   function paint(a, b){
     clear();
     var r1 = Math.min(a.r, b.r), r2 = Math.max(a.r, b.r);
     var c1 = Math.min(a.c, b.c), c2 = Math.max(a.c, b.c);
-    var lines = [];
+    var heads = headCells(tb), lines = [], cols = [];
+    for(var c = c1; c <= c2; c++) cols.push(c);
+    if(tb.__bar && tb.__bar.querySelector('.twithhead').checked){
+      lines.push(cols.map(function(c){ return heads[c] ? headText(heads[c]) : ''; }).join('\t'));
+    }
     bodyRows(tb).forEach(function(tr){
       if(tr.rowIndex < r1 || tr.rowIndex > r2 || tr.classList.contains('hide')) return;
-      var cols = [];
-      for(var c = c1; c <= c2; c++){
+      lines.push(cols.map(function(c){
         var td = tr.cells[c];
-        if(!td) continue;
-        td.classList.add('sel');
-        cols.push(cellText(td));
-      }
-      lines.push(cols.join('\\t'));
+        if(td) td.classList.add('sel');
+        return cellText(td);
+      }).join('\t'));
     });
-    return lines.join('\\n');
+    return lines.join('\n');
   }
   tb.addEventListener('mousedown', function(ev){
     var td = ev.target.closest && ev.target.closest('td');
@@ -700,15 +849,37 @@ function rangeSelect(tb){
     }
     tb.__tsv = paint(anchor, here);
   });
-  document.addEventListener('mouseup', function(ev){
+  document.addEventListener('mouseup', function(){
     if(!dragging) return;
     dragging = false;
     document.body.style.userSelect = '';
     if(window.__rangeDragged && tb.__tsv){
-      var n = tb.querySelectorAll('td.sel').length;
       copyText(tb.__tsv);
-      toast(n + '칸 선택됨 — Ctrl+C 로 복사하세요');
+      toast(tb.querySelectorAll('td.sel').length + '칸 선택됨 — Ctrl+C 로 복사하세요');
     }
+  });
+}
+
+// --- 저장 안 한 채로 나가려 할 때 -------------------------------------------
+function dirtyGuard(){
+  document.querySelectorAll('form').forEach(function(f){
+    f.addEventListener('submit', function(){ window.__leaving = true; });
+  });
+  document.addEventListener('click', function(ev){
+    var a = ev.target.closest && ev.target.closest('a[href]');
+    if(!a || a.target === '_blank') return;
+    var href = a.getAttribute('href') || '';
+    if(href.charAt(0) === '#' || href.indexOf('javascript:') === 0) return;
+    if(!document.querySelector('.dirty')) return;
+    if(confirm('저장하지 않은 수정이 있습니다.\n저장하지 않고 이동할까요?')) window.__leaving = true;
+    else ev.preventDefault();
+  }, true);
+  window.addEventListener('beforeunload', function(e){
+    if(window.__leaving) return;
+    if(!document.querySelector('.dirty')) return;
+    e.preventDefault();
+    e.returnValue = '저장하지 않은 수정이 있습니다.';
+    return e.returnValue;
   });
 }
 
@@ -718,10 +889,13 @@ function enhanceTables(){
     tb.dataset.enhanced = '1';
     if(!tb.tHead && tb.rows.length) tb.createTHead().appendChild(tb.rows[0]);
     if(!tb.tBodies.length) return;
+    tb.__order = bodyRows(tb);          // 정렬 해제하면 되돌릴 원래 순서
+    tb.__filters = {};
     addToolbar(tb);
     sortable(tb);
     rangeSelect(tb);
   });
+  dirtyGuard();
 }
 document.addEventListener('DOMContentLoaded', enhanceTables);
 """
@@ -974,17 +1148,6 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "") -> bytes:
 
 #: 명칭 관리 화면 전용 — 이름 좁히기 + 묶기 확인
 _NAMES_JS = """
-function filterNames(q){
-  q = (q || '').trim().toLowerCase();
-  var rows = document.querySelectorAll('tr[data-name]'), 보임 = 0;
-  rows.forEach(function(tr){
-    var hit = !q || (tr.dataset.name || '').indexOf(q) >= 0;
-    tr.classList.toggle('hide', !hit);
-    if(hit) 보임++; else { var c = tr.querySelector('input[name=ids]'); if(c) c.checked = false; }
-  });
-  var out = document.getElementById('namecount');
-  if(out) out.textContent = q ? (보임 + '건 보임') : '';
-}
 function confirmMerge(form){
   var 고른것 = document.querySelectorAll('input[name=ids]:checked');
   if(!고른것.length){ alert('묶을 표기를 왼쪽에서 하나 이상 체크하세요.'); return false; }
@@ -1130,12 +1293,6 @@ def _names_page(종류: str, me: User | None = None,
         if len(items) >= 2 else ""
     )
 
-    찾기 = (
-        "<p><input type='text' id='namefilter' placeholder='이름으로 좁히기'"
-        " style='width:260px' oninput='filterNames(this.value)'>"
-        " <span class='muted' id='namecount'></span></p>"
-        if len(items) > 10 else ""
-    )
 
     등급머리 = (
         "<th class='ctl'>학회/저널</th><th class='ctl'>등급</th>"
@@ -1167,7 +1324,7 @@ def _names_page(종류: str, me: User | None = None,
         <b>고치면 이미 등록된 지원자 표에도 바로 반영됩니다.</b></p></div>
         {등급열}
         <div class='card'><h2>{html.escape(종류)} {len(items)}건</h2>
-        {찾기}{저장바}{묶기바}
+        {저장바}{묶기바}
         <div class='scroll'>{표}</div></div>
         <script>{_NAMES_JS}</script>""",
         me=me,
@@ -2324,11 +2481,23 @@ class Handler(BaseHTTPRequestHandler):
                     나머지 = [f"{항목} {새}" for 항목, _, 새 in 변경 if 항목 != "표시명"]
                     바뀐것.append(머리 + (f" ({', '.join(나머지)})" if 나머지 else ""))
 
-            if not 바뀐것:
+            # 서로 다른 항목을 같은 이름으로 고쳤다면 그건 같은 대상이라는 뜻이다.
+            # 그냥 두면 표에 같은 이름이 여러 줄 남고 발견 횟수도 갈라진다.
+            합침 = registry.merge_same_display(kind)
+            for 이름, 개수 in 합침:
+                audit.record(me.아이디, "명칭", f"{kind}:{이름}", 항목="같은 이름 합치기",
+                             새값=f"{개수}건 → 1건")
+
+            if not 바뀐것 and not 합침:
                 return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote("바뀐 내용이 없습니다."))
-            보임 = ", ".join(바뀐것[:5]) + (" 외" if len(바뀐것) > 5 else "")
-            return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(
-                f"{len(바뀐것)}건 저장했습니다 — {보임}"))
+            조각 = []
+            if 바뀐것:
+                조각.append(f"{len(바뀐것)}건 저장했습니다 — "
+                          + ", ".join(바뀐것[:5]) + (" 외" if len(바뀐것) > 5 else ""))
+            if 합침:
+                조각.append("이름이 같아진 항목을 합쳤습니다: "
+                          + ", ".join(f"{이름}({개수}건→1건)" for 이름, 개수 in 합침))
+            return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(" / ".join(조각)))
 
         if path == "/names/merge":
             if not can(me, "명칭_관리"):

@@ -241,6 +241,35 @@ class NameRegistry:
             ]
             for r in rows[1:]:
                 self._absorb(r, rows[0].id)
+        self.merge_same_display()
+
+    def merge_same_display(self, 종류: str | None = None) -> list[tuple[str, int]]:
+        """대표명이 똑같은 항목들을 하나로 합친다.
+
+        담당자가 '포항공과대학교' 와 'POSTECH' 을 각각 '포항공대' 로 고쳐 놓으면
+        정규화키는 서로 달라서 표에 **같은 이름이 여러 줄** 남는다. 발견 횟수도
+        따로 세어져 어느 게 진짜인지 알 수 없다. 이름이 같다는 건 같은 대상이라는
+        뜻이므로 합친다 (지워지는 쪽 표기는 별칭으로 남아 계속 해석된다).
+
+        Returns:
+            [(대표명, 합친 줄 수), ...] — 화면에 알려줄 용도
+        """
+        종류 = canonical_kind(종류) if 종류 else 종류
+        묶음: dict[tuple[str, str], list[Name]] = {}
+        for n in self.list_all(종류):
+            묶음.setdefault((n.종류, n.표시명.strip().casefold()), []).append(n)
+
+        합친것: list[tuple[str, int]] = []
+        for rows in 묶음.values():
+            if len(rows) < 2:
+                continue
+            rows.sort(key=lambda n: (-n.발견횟수, n.id))
+            for r in rows[1:]:
+                self._absorb(r, rows[0].id)
+            합친것.append((rows[0].표시명, len(rows)))
+        if 합친것:
+            self._conn.commit()
+        return 합친것
 
     def _migrate_from_venues(self) -> None:
         """예전 venues 표가 같은 파일에 있으면 학회로 옮겨 담는다."""

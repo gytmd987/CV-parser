@@ -125,7 +125,7 @@ def _cmd_deps(_args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="cvtool", description="지원자 CV 분석 툴")
+    p = argparse.ArgumentParser(prog="cvtool", description="지원자 관리 툴 (CV 구조화 추출)")
     sub = p.add_subparsers(dest="command", required=True)
 
     ext = sub.add_parser("extract", help="CV 파일/텍스트를 구조화 추출")
