@@ -28,13 +28,18 @@ from .timeutil import now_kst
 #: 사전이 다루는 대상 종류.
 #: '소속' 은 학교와 회사를 함께 담는다 — 지원자의 현재 소속은 학교일 수도
 #: 회사일 수도 있어서 사전을 둘로 나누면 같은 곳이 양쪽에 생긴다.
-KINDS = ("소속", "학회", "저널", "전공")
+KINDS = ("소속", "학회·저널", "전공")
 
 #: 등급이 의미 있는 종류 (소속·전공은 등급을 매기지 않는다)
-GRADED_KINDS = ("학회", "저널")
+GRADED_KINDS = ("학회·저널",)
+
+#: 학회인지 저널인지는 **종류를 나누지 않고 열 하나로** 구분한다.
+#: 같은 곳을 어떤 CV 는 학회로, 어떤 CV 는 저널로 적어서 사전이 둘로
+#: 갈라지고 같은 이름이 양쪽에 생기는 일이 있었다.
+SUBTYPES = ("학회", "저널", "불명")
 
 #: 예전 이름 -> 지금 이름
-KIND_ALIASES = {"학교": "소속"}
+KIND_ALIASES = {"학교": "소속", "학회": "학회·저널", "저널": "학회·저널"}
 
 
 def canonical_kind(종류: str) -> str:
@@ -67,9 +72,12 @@ def normalize(raw: str, 종류: str = "학회") -> str:
     괄호 안 내용은 어느 종류든 떼어낸다. 그래야
     '포항공과대학교(POSTECH)' 와 '포항공과대학교' 가 자동으로 묶인다.
     ('POSTECH' 처럼 아예 다른 표기는 담당자가 관리화면에서 묶어준다.)
+
+    옛 종류 이름('학회'/'저널')으로 불러도 같은 키가 나와야 한다.
+    안 그러면 이미 저장된 정규화키와 어긋나 사전이 통째로 안 맞는다.
     """
     s = _PAREN_RE.sub(" ", raw.strip().lower())
-    if 종류 in GRADED_KINDS:
+    if canonical_kind(종류) in GRADED_KINDS:
         s = _YEAR_RE.sub(" ", s)
         s = _VENUE_NOISE_RE.sub(" ", s)
     return _NONWORD_RE.sub("", s)
@@ -85,6 +93,14 @@ class Name:
     국내해외: str
     발견횟수: int
     최초등록: str
+    유형: str = "불명"          # 학회 / 저널 (학회·저널 종류에서만 씀)
+    IF: str = ""               # Impact Factor (저널)
+
+    def google_url(self, 무엇: str = "impact factor") -> str:
+        """IF 를 찾아보기 쉽게 검색어를 미리 채운 구글 링크."""
+        from urllib.parse import quote_plus
+
+        return f"https://www.google.com/search?q={quote_plus(f'{self.표시명} {무엇}'.strip())}"
 
 
 _SCHEMA = """
@@ -97,6 +113,8 @@ CREATE TABLE IF NOT EXISTS names (
     국내해외      TEXT DEFAULT '불명',
     발견횟수      INTEGER DEFAULT 0,
     최초등록      TEXT DEFAULT '',
+    유형         TEXT DEFAULT '불명',
+    IF          TEXT DEFAULT '',
     UNIQUE(종류, 정규화키)
 );
 CREATE TABLE IF NOT EXISTS name_aliases (
@@ -123,8 +141,10 @@ class NameRegistry:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
+        self._add_missing_columns()
         self._seed_tiers()
         self._migrate_kind_names()
+        self._dedupe()
         self._migrate_from_venues()
         self._conn.commit()
         for suffix in ("", "-wal", "-shm"):
@@ -137,15 +157,90 @@ class NameRegistry:
                 (이름, 순서, 표시),
             )
 
-    def _migrate_kind_names(self) -> None:
-        """'학교' 로 저장돼 있던 것을 '소속' 으로 옮긴다.
+    def _add_missing_columns(self) -> None:
+        """예전 DB 에 없던 열을 붙인다."""
+        있는열 = {r["name"] for r in self._conn.execute("PRAGMA table_info(names)")}
+        for 열, 기본 in (("유형", "'불명'"), ("IF", "''")):
+            if 열 not in 있는열:
+                self._conn.execute(f"ALTER TABLE names ADD COLUMN {열} TEXT DEFAULT {기본}")
 
-        분류해 둔 대표명·별칭이 그대로 살아야 해서 행을 새로 만들지 않고
-        종류 이름만 바꾼다.
+    def _migrate_kind_names(self) -> None:
+        """'학교'->'소속', '학회'/'저널'->'학회·저널' 로 옮긴다.
+
+        분류해 둔 대표명·별칭·등급이 그대로 살아야 해서 행을 새로 만들지 않고
+        종류 이름만 바꾼다. 학회/저널은 어느 쪽이었는지를 '유형' 열에 남긴다.
         """
         for 옛, 새 in KIND_ALIASES.items():
-            self._conn.execute("UPDATE names SET 종류=? WHERE 종류=?", (새, 옛))
+            for row in self._conn.execute(
+                "SELECT * FROM names WHERE 종류=?", (옛,)
+            ).fetchall():
+                기존 = self._conn.execute(
+                    "SELECT id FROM names WHERE 종류=? AND 정규화키=?", (새, row["정규화키"])
+                ).fetchone()
+                if 기존:
+                    # 옮길 자리에 같은 이름이 이미 있다 (학회·저널이 갈라져 있던 흔적).
+                    # 그냥 UPDATE 하면 UNIQUE 제약에 걸려 프로그램이 아예 안 뜬다.
+                    self._absorb(Name(**dict(row)), 기존["id"])
+                    continue
+                if 옛 in SUBTYPES:
+                    self._conn.execute(
+                        "UPDATE names SET 종류=?, 유형=? WHERE id=?", (새, 옛, row["id"])
+                    )
+                else:
+                    self._conn.execute(
+                        "UPDATE names SET 종류=? WHERE id=?", (새, row["id"])
+                    )
             self._conn.execute("UPDATE name_aliases SET 종류=? WHERE 종류=?", (새, 옛))
+
+    def _absorb(self, src: "Name", 대표_id: int) -> None:
+        """src 항목을 대표 항목에 합치고 지운다.
+
+        분류해 둔 정보는 '값이 있는 쪽' 을 살린다. 빈 대표가 채워진 쪽을
+        덮어써 버리면 담당자가 해둔 일이 날아간다.
+        """
+        dst = self.get(대표_id)
+        if dst is None or src.id == 대표_id:
+            return
+        self._conn.execute(
+            "UPDATE name_aliases SET name_id=? WHERE name_id=?", (대표_id, src.id)
+        )
+        self._conn.execute(
+            "INSERT OR REPLACE INTO name_aliases (종류, 별칭키, name_id) VALUES (?,?,?)",
+            (dst.종류, src.정규화키, 대표_id),
+        )
+        등급 = dst.등급 if dst.등급 not in ("", "미분류") else src.등급
+        국내해외 = dst.국내해외 if dst.국내해외 not in ("", "불명") else src.국내해외
+        유형 = dst.유형 if dst.유형 not in ("", "불명") else src.유형
+        IF = dst.IF or src.IF
+        # 자동 정리에서는 CV 에 더 많이 나온 표기를 대표로 삼는다.
+        # (담당자가 직접 묶는 merge() 는 고른 쪽을 그대로 대표로 둔다.)
+        표시명 = dst.표시명 if dst.발견횟수 >= src.발견횟수 else src.표시명
+        self._conn.execute(
+            "UPDATE names SET 표시명=?, 등급=?, 국내해외=?, 유형=?, IF=?,"
+            " 발견횟수=발견횟수+? WHERE id=?",
+            (표시명, 등급, 국내해외, 유형, IF, src.발견횟수, 대표_id),
+        )
+        self._conn.execute("DELETE FROM names WHERE id=?", (src.id,))
+
+    def _dedupe(self) -> None:
+        """같은 정규화키가 여러 줄이면 하나로 합친다.
+
+        학회/저널이 따로 관리되던 시절에 같은 이름이 양쪽에 하나씩 생겼다.
+        발견횟수가 많은 쪽을 남기고, 지워지는 쪽 표기는 별칭으로 남겨
+        앞으로 같은 표기가 들어와도 남은 항목으로 해석되게 한다.
+        """
+        중복 = self._conn.execute(
+            "SELECT 종류, 정규화키 FROM names GROUP BY 종류, 정규화키 HAVING COUNT(*) > 1"
+        ).fetchall()
+        for 종류, 키 in [(r["종류"], r["정규화키"]) for r in 중복]:
+            rows = [
+                Name(**dict(r)) for r in self._conn.execute(
+                    "SELECT * FROM names WHERE 종류=? AND 정규화키=?"
+                    " ORDER BY 발견횟수 DESC, id", (종류, 키)
+                )
+            ]
+            for r in rows[1:]:
+                self._absorb(r, rows[0].id)
 
     def _migrate_from_venues(self) -> None:
         """예전 venues 표가 같은 파일에 있으면 학회로 옮겨 담는다."""
@@ -225,8 +320,14 @@ class NameRegistry:
         return self._conn.execute(sql, args).fetchone()["c"]
 
     # -- 등록 -------------------------------------------------------------
-    def observe(self, 종류: str, 표시명: str, *, 국내해외: str = "불명") -> Name:
-        """CV 에서 표기를 발견했을 때. 없으면 자동 등록하고 발견횟수를 센다."""
+    def observe(self, 종류: str, 표시명: str, *, 국내해외: str = "불명",
+                유형: str = "") -> Name:
+        """CV 에서 표기를 발견했을 때. 없으면 자동 등록하고 발견횟수를 센다.
+
+        '학회' 나 '저널' 로 부르면 종류는 '학회·저널' 하나로 합쳐지고,
+        어느 쪽이었는지는 유형 열에 남는다.
+        """
+        유형 = 유형 or (종류 if 종류 in SUBTYPES else "")
         종류 = canonical_kind(종류)
         if 종류 not in KINDS:
             raise ValueError(f"알 수 없는 종류: {종류}")
@@ -238,14 +339,21 @@ class NameRegistry:
         if nid is None:
             등급 = "미분류" if 종류 in GRADED_KINDS else ""
             cur = self._conn.execute(
-                "INSERT INTO names (종류,정규화키,표시명,등급,국내해외,발견횟수,최초등록)"
-                " VALUES (?,?,?,?,?,1,?)",
+                "INSERT INTO names"
+                " (종류,정규화키,표시명,등급,국내해외,발견횟수,최초등록,유형)"
+                " VALUES (?,?,?,?,?,1,?,?)",
                 (종류, key, 표시명.strip(), 등급, 국내해외,
-                 now_kst().strftime("%Y-%m-%d %H:%M:%S")),
+                 now_kst().strftime("%Y-%m-%d %H:%M:%S"), 유형 or "불명"),
             )
             nid = cur.lastrowid
         else:
             self._conn.execute("UPDATE names SET 발견횟수=발견횟수+1 WHERE id=?", (nid,))
+            # 유형을 모르던 항목에 학회/저널 정보가 들어오면 채운다
+            if 유형 in ("학회", "저널"):
+                self._conn.execute(
+                    "UPDATE names SET 유형=? WHERE id=? AND (유형 IS NULL OR 유형 IN ('','불명'))",
+                    (유형, nid),
+                )
         self._conn.commit()
         found = self.get(nid)
         assert found is not None
@@ -258,13 +366,22 @@ class NameRegistry:
         표시명: str | None = None,
         등급: str | None = None,
         국내해외: str | None = None,
+        유형: str | None = None,
+        IF: str | None = None,
     ) -> None:
-        """담당자가 대표명·등급·국내해외를 지정한다."""
+        """담당자가 대표명·등급·국내해외·유형·IF 를 지정한다.
+
+        IF 는 빈 값으로 지울 수 있어야 해서 다른 항목과 달리 공백도 저장한다.
+        """
         sets, args = [], []
-        for col, val in (("표시명", 표시명), ("등급", 등급), ("국내해외", 국내해외)):
+        for col, val in (("표시명", 표시명), ("등급", 등급),
+                         ("국내해외", 국내해외), ("유형", 유형)):
             if val is not None and str(val).strip():
                 sets.append(f"{col}=?")
                 args.append(str(val).strip())
+        if IF is not None:
+            sets.append("IF=?")
+            args.append(str(IF).strip())
         if not sets:
             return
         args.append(name_id)
@@ -292,6 +409,16 @@ class NameRegistry:
         self._conn.execute(
             "UPDATE names SET 발견횟수=발견횟수+? WHERE id=?", (src.발견횟수, 대표_id)
         )
+        # 분류해 둔 정보는 값이 있는 쪽을 살린다 (빈 대표가 채워진 별칭을 덮지 않게)
+        if dst.등급 in ("", "미분류") and src.등급 not in ("", "미분류"):
+            self._conn.execute("UPDATE names SET 등급=? WHERE id=?", (src.등급, 대표_id))
+        if dst.국내해외 in ("", "불명") and src.국내해외 not in ("", "불명"):
+            self._conn.execute(
+                "UPDATE names SET 국내해외=? WHERE id=?", (src.국내해외, 대표_id))
+        if dst.유형 in ("", "불명") and src.유형 not in ("", "불명"):
+            self._conn.execute("UPDATE names SET 유형=? WHERE id=?", (src.유형, 대표_id))
+        if not dst.IF and src.IF:
+            self._conn.execute("UPDATE names SET IF=? WHERE id=?", (src.IF, 대표_id))
         self._conn.execute("DELETE FROM names WHERE id=?", (별칭_id,))
         self._conn.commit()
 

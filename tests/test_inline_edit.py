@@ -59,6 +59,16 @@ def web(tmp_path_factory):
             with self._opener.open(self.base + path) as r:
                 return r.read().decode("utf-8", "replace")
 
+        def raw(self, path: str) -> bytes:
+            with self._opener.open(self.base + path) as r:
+                return r.read()
+
+        def post_raw(self, path: str, **fields):
+            body = urllib.parse.urlencode(fields, doseq=True, encoding="utf-8").encode()
+            req = urllib.request.Request(self.base + path, data=body)
+            with self._opener.open(req) as r:
+                return r.status, r.read()
+
     def make_client():
         jar = urllib.request.build_opener(
             urllib.request.HTTPCookieProcessor(CookieJar())
@@ -129,21 +139,24 @@ def test_edit_cell_unknown_candidate(web):
     assert code == 404 and res["ok"] is False
 
 
-def test_edit_cell_registers_name_in_registry(web, cid):
-    """표에서 손으로 넣은 학교도 명칭 사전에 올라와야 나중에 묶을 수 있다."""
-    web.cell(id=cid, 항목="박사_학교", 새값="포항공과대학교(POSTECH)", 이전값="")
-    found = web.module.registry.lookup("학교", "포항공과대학교")
-    assert found is not None and found.표시명 == "포항공과대학교(POSTECH)"
+def test_registry_columns_are_not_editable_in_the_table(web, cid):
+    """소속·전공을 표에서 고치면 대표명이 원문 자리에 들어가 사전과 꼬인다."""
+    code, res = web.cell(id=cid, 항목="박사_학교", 새값="서울대학교", 이전값="")
+    assert code == 400 and res["ok"] is False
+    assert "명칭" in res["error"] or "표에서 직접" in res["error"]
+    assert web.module.store.get(cid).박사_학교 == ""
 
 
-def test_edited_cell_shows_registry_display_name(web, cid):
-    """표시명을 바꾸면 표에는 대표명이, 편집칸에는 원문이 남는다."""
-    web.cell(id=cid, 항목="석사_학교", 새값="한국과학기술원", 이전값="")
-    found = web.module.registry.lookup("학교", "한국과학기술원")
-    web.module.registry.classify(found.id, 표시명="KAIST")
-    row = web.module.store.get(cid).to_row(web.module.registry)
-    assert row["석사_학교"] == "KAIST"
+def test_registry_column_editable_from_detail_with_dictionary(web, cid):
+    """상세 화면에서는 사전에 있는 이름 중 골라 넣을 수 있다."""
+    web.module.registry.observe("소속", "한국과학기술원")
+    web.post("/candidate/edit", id=cid, 항목="석사_학교", 새값="한국과학기술원", 이전값="")
     assert web.module.store.get(cid).석사_학교 == "한국과학기술원"
+
+
+def test_detail_edit_rejects_name_outside_dictionary(web, cid):
+    web.post("/candidate/edit", id=cid, 항목="학사_학교", 새값="없는대학교", 이전값="")
+    assert web.module.store.get(cid).학사_학교 == ""
 
 
 # --- 사용자 정의 열 ----------------------------------------------------------
@@ -227,9 +240,11 @@ def test_logged_out_cell_edit_returns_json(web, cid):
     assert code == 401 and res["ok"] is False
 
 
-def test_recruit_table_cells_are_editable(web, cid):
+def test_recruit_table_does_not_edit_candidate_fields(web, cid):
+    """채용 현황은 채용 상태만 고친다. 지원자 정보를 여기서 고치면 실수로 덮어쓴다."""
     page = web.get("/recruit")
-    assert "data-col=" in page and "/api/cell" in page
+    assert "data-col=" not in page
+    assert "id='recruitform'" in page          # 채용 상태는 한 폼으로 저장
 
 
 # --- 명칭 관리 화면 ----------------------------------------------------------
@@ -373,3 +388,88 @@ def test_dashboard_no_longer_shows_upload_box(web):
     """표를 보러 올 때마다 업로드 상자가 자리를 차지하지 않게 뺐다."""
     page = web.get("/")
     assert "enctype='multipart/form-data'" not in page
+
+
+# --- 채용 현황 일괄 저장 ------------------------------------------------------
+@pytest.fixture
+def org(web):
+    """부서 하나 + 과제 하나를 만들고 id 를 돌려준다."""
+    a = web.module.auth
+    if not a.departments():
+        a.add_department("반도체사업부")
+    did = a.departments()[0]["id"]
+    if not a.projects(did):
+        a.add_project(did, "차세대공정")
+    return did, a.projects(did)[0]["id"]
+
+
+def test_recruit_saves_many_rows_at_once(web, cid, org):
+    did, pid = org
+    code, body = web.post(
+        "/recruit/save",
+        **{f"부서_{cid}": str(did), f"과제_{cid}": str(pid),
+           f"단계_{cid}_서류 검토": "합격", f"비고_{cid}": "1차 통과"},
+    )
+    p = web.module.recruit.get(cid)
+    assert (p.부서_id, p.project_id) == (did, pid)
+    assert p.단계상태["서류 검토"] == "합격"
+    assert p.비고 == "1차 통과"
+    assert "저장했습니다" in body
+
+
+def test_recruit_save_reports_nothing_changed(web, cid):
+    code, body = web.post("/recruit/save", **{f"비고_{cid}": ""})
+    assert "바뀐 내용이 없습니다" in body
+
+
+def test_recruit_save_is_recorded_in_history(web, cid, org):
+    did, pid = org
+    web.post("/recruit/save", **{f"단계_{cid}_전화 면접": "불합격"})
+    이력 = web.module.audit.recent(50, 대상종류="채용현황")
+    assert any(e.항목 == "전화 면접" and e.새값 == "불합격" for e in 이력)
+
+
+def test_recruit_has_separate_dept_and_project_columns(web, cid, org):
+    page = web.get("/recruit")
+    assert f"name='부서_{cid}'" in page
+    assert f"name='과제_{cid}'" in page
+    assert "syncProjects" in page          # 부서를 바꾸면 과제 목록이 따라온다
+
+
+def test_recruit_has_no_per_row_save_buttons(web, cid):
+    page = web.get("/recruit")
+    for 옛라우트 in ("/recruit/stage", "/recruit/note", "/recruit/assign"):
+        assert 옛라우트 not in page
+
+
+def test_recruit_exports_xlsx(web, cid, org):
+    did, pid = org
+    web.post("/recruit/save", **{f"부서_{cid}": str(did), f"과제_{cid}": str(pid)})
+    body = web.raw("/recruit/export.xlsx")
+    assert body[:2] == b"PK"                       # zip = xlsx
+    assert "반도체사업부".encode() in body or b"sheet1" in body
+
+
+# --- 표 공통 기능 -------------------------------------------------------------
+def test_every_page_gets_the_table_toolkit(web):
+    for path in ("/", "/recruit", "/history", "/users"):
+        page = web.get(path)
+        assert "enhanceTables" in page, path
+        assert "tableTSV" in page, path
+
+
+def test_table_xlsx_turns_a_pasted_table_into_a_workbook(web):
+    tsv = "이름\t점수\n홍길동\t90\n김영희\t85"
+    code, body = web.post_raw("/table.xlsx", name="시험", tsv=tsv)
+    assert body[:2] == b"PK"
+    assert len(body) > 500
+
+
+def test_table_xlsx_survives_duplicate_headers(web):
+    code, body = web.post_raw("/table.xlsx", name="x", tsv="A\tA\n1\t2")
+    assert body[:2] == b"PK"
+
+
+def test_tsv_view_is_gone(web):
+    page = web.get("/")
+    assert "export.tsv" not in page

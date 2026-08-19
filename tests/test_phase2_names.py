@@ -35,10 +35,25 @@ def test_observe_registers_and_counts(reg):
     assert a.id == b.id and b.발견횟수 == 2
 
 
-def test_same_name_different_kinds_are_separate(reg):
+def test_conference_and_journal_share_one_entry(reg):
+    """같은 곳을 어떤 CV 는 학회로, 어떤 CV 는 저널로 적는다. 갈라지면 안 된다."""
     학회 = reg.observe("학회", "ICML")
     저널 = reg.observe("저널", "ICML")
-    assert 학회.id != 저널.id
+    assert 학회.id == 저널.id
+    assert reg.get(학회.id).유형 == "학회"        # 처음 본 쪽이 남는다
+
+
+def test_subtype_filled_in_when_first_seen_unknown(reg):
+    나 = reg.observe("소속", "가나다")           # 유형이 의미 없는 종류
+    assert reg.get(나.id).유형 == "불명"
+
+
+def test_kinds_and_subtypes_are_different_axes():
+    from cvtool.names import GRADED_KINDS, KINDS, SUBTYPES
+
+    assert KINDS == ("소속", "학회·저널", "전공")
+    assert GRADED_KINDS == ("학회·저널",)
+    assert SUBTYPES == ("학회", "저널", "불명")
 
 
 def test_merge_makes_alias_resolve_to_target(reg):

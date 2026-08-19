@@ -107,21 +107,60 @@ def _valid_month(mm: str) -> bool:
         return False
 
 
+#: 두 자리 지역번호는 서울(02) 하나뿐이고 나머지는 세 자리다.
+_AREA_3 = (
+    "010", "011", "016", "017", "018", "019",          # 휴대전화
+    "031", "032", "033", "041", "042", "043", "044",   # 경기·강원·충청
+    "051", "052", "053", "054", "055",                 # 경상
+    "061", "062", "063", "064",                        # 전라·제주
+    "070", "050", "080",                               # 인터넷·안심·수신자부담
+)
+#: 1588 같은 대표번호
+_SPECIAL_4 = ("15", "16", "18")
+
+
+def _strip_kr_country_code(text: str, digits: str) -> str:
+    """+82 / 0082 / 82 로 시작하면 국내 형식(0으로 시작)으로 되돌린다.
+
+    '+82 (0)10-...' 처럼 국가번호와 0 이 같이 적힌 경우도 있어서,
+    국가번호를 뗀 뒤 남은 0 을 한 번 더 걷어내고 0 을 새로 붙인다.
+    """
+    국가번호 = text.lstrip().startswith(("+82", "0082", "82"))
+    if not 국가번호:
+        return digits
+    if digits.startswith("0082"):
+        digits = digits[4:]
+    elif digits.startswith("82"):
+        digits = digits[2:]
+    return "0" + digits.lstrip("0")
+
+
+def _format_kr(digits: str) -> str:
+    """국내 번호를 지역번호에 맞춰 끊는다. 모르면 빈 문자열."""
+    if digits.startswith("02") and len(digits) in (9, 10):
+        가운데 = digits[2:-4]
+        return f"02-{가운데}-{digits[-4:]}"
+    if digits[:3] in _AREA_3 and len(digits) in (10, 11):
+        가운데 = digits[3:-4]
+        return f"{digits[:3]}-{가운데}-{digits[-4:]}"
+    if len(digits) == 8 and digits[:2] in _SPECIAL_4:
+        return f"{digits[:4]}-{digits[4:]}"
+    return ""
+
+
 def phone(value: str) -> str:
-    """전화번호를 010-1234-5678 꼴로. 국가번호(+82)는 0 으로 되돌린다."""
+    """전화번호를 010-1234-5678 꼴로. 국가번호(+82)는 0 으로 되돌린다.
+
+    한국 번호가 아니면(+1 등) 손대지 않는다. 지어내는 것보다 원문이 낫다.
+    """
     if not value:
         return ""
     text = str(value).strip()
     digits = _digits(text)
     if not digits:
         return ""
-    if text.startswith("+82") or digits.startswith("82"):
-        digits = "0" + digits[2:] if digits.startswith("82") else digits
-    if len(digits) == 11 and digits.startswith("01"):
-        return f"{digits[:3]}-{digits[3:7]}-{digits[7:]}"
-    if len(digits) == 10 and digits.startswith("01"):
-        return f"{digits[:3]}-{digits[3:6]}-{digits[6:]}"
-    return text  # 형태를 모르면 원문 그대로 둔다 (지어내지 않는다)
+    digits = _strip_kr_country_code(text, digits)
+    return _format_kr(digits) or text
 
 
 def email(value: str) -> str:

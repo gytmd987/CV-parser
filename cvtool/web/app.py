@@ -31,6 +31,7 @@ from ..config import settings
 from ..edit import (
     CHOICE_FIELDS,
     READONLY_FIELDS,
+    REGISTRY_FIELDS,
     ConflictError,
     ValidationError,
     apply_edit,
@@ -39,7 +40,7 @@ from ..edit import (
     validate_custom,
 )
 from ..dotenv import LOADED_FROM, candidate_paths
-from ..export import records_to_tsv, records_to_xlsx
+from ..export import build_xlsx, records_to_xlsx
 from ..fsutil import is_world_readable, mode_of, safe_filename, secure_dir, secure_file
 from ..extract import extract_cv_from_text
 from ..ingestion.parsers import UnsupportedFormat, extract_text
@@ -52,6 +53,7 @@ from ..dedup import fingerprint, find_duplicates
 from ..names import (
     GRADED_KINDS,
     KINDS,
+    SUBTYPES,
     NameRegistry,
     canonical_kind,
     observe_record,
@@ -211,6 +213,17 @@ td.ctl,th.ctl{white-space:normal;max-width:none;overflow:visible}
 .mergebar b{color:#1d4ed8}
 tr.hide{display:none}
 input.dirty,select.dirty{background:#fef3c7;border-color:#fcd34d}
+.tbar{display:flex;gap:8px;align-items:center;margin:0 0 8px}
+.tbar input.tfilter{width:220px}
+th.sortable{cursor:pointer;user-select:none}
+th.sortable:hover{background:#dbeafe}
+th[data-dir=asc]::after{content:' \25B2';font-size:10px}
+th[data-dir=desc]::after{content:' \25BC';font-size:10px}
+td.sel{background:#bfdbfe !important;outline:1px solid #2563eb;outline-offset:-1px}
+#toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#1b1f24;
+ color:#fff;padding:10px 16px;border-radius:8px;opacity:0;pointer-events:none;
+ transition:opacity .15s;z-index:99}
+#toast.show{opacity:.95}
 .done{background:#dcfce7;border:1px solid #86efac;color:#14532d;padding:10px 14px;
  border-radius:6px;margin-bottom:14px}
 """
@@ -223,7 +236,10 @@ def _page(title: str, body: str, nav: bool = True, me: User | None = None) -> by
     if can(me, "지원자_등록"):
         링크.append("<a href='/upload'>CV 업로드</a>")
     if can(me, "명칭_관리"):
-        링크.append(f"<a href='/names?kind=학회'>명칭 관리{badge}</a>")
+        링크.append(
+            "<a href='/names?kind=" + urllib.parse.quote("학회·저널")
+            + f"'>명칭 관리{badge}</a>"
+        )
     if can(me, "부서과제_관리"):
         링크.append("<a href='/org'>부서·과제</a>")
     if can(me, "계정_현업추가"):
@@ -247,7 +263,7 @@ def _page(title: str, body: str, nav: bool = True, me: User | None = None) -> by
         f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
         f"<title>{html.escape(title)}</title><style>{_CSS}</style></head>"
         f"<body>{header}<main>{body}</main>"
-        + (f"<script>{_INLINE_JS}</script>" if nav else "")
+        + (f"<script>{_TABLE_JS}{_INLINE_JS}</script>" if nav else "")
         + "</body></html>"
     ).encode("utf-8")
 
@@ -299,6 +315,7 @@ def _status_table() -> str:
 #: 페이지를 새로 그리지 않아 넓은 표에서 스크롤 위치가 유지된다.
 _INLINE_JS = """
 document.addEventListener('click', function(ev){
+  if(window.__rangeDragged){ window.__rangeDragged = false; return; }  // 범위 선택 중이었다
   var td = ev.target.closest && ev.target.closest('td.edit');
   if(!td || td.querySelector('input,select')) return;
   openCell(td);
@@ -377,26 +394,17 @@ def _cell(cid: str, col: str, 표시: str, 원본: str, spec, *,
     )
 
 
-def _observe_edited(항목: str, 값: str) -> None:
-    """사람이 손으로 넣은 학교·전공 표기도 명칭 사전에 올린다.
-
-    올려두지 않으면 '서울대'와 '서울대학교'를 나중에 묶을 방법이 없다.
-    레코드 값은 건드리지 않는다 — 보여줄 때만 대표명으로 바뀐다.
-    """
-    종류 = NAME_COLUMNS.get(항목)
-    if not 종류:
-        return
-    for part in str(값 or "").split(MULTI_SEP):
-        if part.strip():
-            try:
-                registry.observe(종류, part)
-            except ValueError:
-                pass
-
-
 def _editable(col: str) -> bool:
-    """표에서 직접 고칠 수 있는 열인가."""
-    return col not in READONLY_FIELDS and not col.startswith(TIER_COLUMN_PREFIX)
+    """표에서 직접 고칠 수 있는 열인가.
+
+    명칭 사전이 관리하는 열(소속·학교·전공)은 제외한다. 표에 보이는 값은
+    사전을 거친 대표명이라, 그 값을 그대로 저장하면 원문 표기가 사라진다.
+    """
+    return (
+        col not in READONLY_FIELDS
+        and col not in REGISTRY_FIELDS
+        and not col.startswith(TIER_COLUMN_PREFIX)
+    )
 
 
 def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "") -> bytes:
@@ -504,13 +512,240 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
             <a class='btn sec' href='/'>초기화</a>
           </form>
           <p><a class='btn' href='/upload'>CV 업로드</a>
-             <a class='btn' href='/export.xlsx'>엑셀(.xlsx) 다운로드</a>
-             <a class='btn sec' href='/export.tsv'>TSV 보기(복사용)</a></p>
+             <a class='btn' href='/export.xlsx'>엑셀(.xlsx) 다운로드</a></p>
           {안내}
           {table}
         </div>""",
         me=me,
     )
+
+
+# ---------------------------------------------------------------------------
+# 표 공통 기능 — 정렬 · 거르기 · 엑셀처럼 범위 복사 · 엑셀 내려받기
+# ---------------------------------------------------------------------------
+#: 페이지마다 따로 만들지 않는다. `.scroll` 안의 표를 찾아 한 번에 붙인다.
+#: 범위 복사는 숨은 textarea 에 TSV 를 넣고 선택해 두는 방식이다.
+#: 사내망은 https 가 아니라 navigator.clipboard 를 못 쓰는 경우가 있어서,
+#: 브라우저가 자체적으로 처리하는 Ctrl+C 가 가장 확실하다.
+_TABLE_JS = """
+function markDirty(el){
+  el.classList.toggle('dirty', el.value !== (el.dataset.orig || ''));
+}
+function cellText(td){
+  var f = td.querySelector('input,select,textarea');
+  if(f){
+    if(f.type === 'checkbox') return f.checked ? 'Y' : '';
+    if(f.tagName === 'SELECT'){
+      var o = f.options[f.selectedIndex];
+      return o ? o.text.replace(/\\s+/g,' ').trim() : '';
+    }
+    return f.value;
+  }
+  return (td.textContent || '').replace(/\\s+/g,' ').trim();
+}
+function bodyRows(tb){ return tb.tBodies[0] ? Array.prototype.slice.call(tb.tBodies[0].rows) : []; }
+function headCells(tb){ return tb.tHead ? Array.prototype.slice.call(tb.tHead.rows[0].cells) : []; }
+
+function tableTSV(tb, onlyVisible){
+  // 머리글이 빈 칸(체크박스·상세 링크)은 엑셀에 옮길 내용이 아니라 뺀다
+  var heads = headCells(tb).map(function(th){
+    return (th.textContent||'').replace(/\\s+/g,' ').trim();
+  });
+  var keep = [];
+  heads.forEach(function(h, i){ if(h) keep.push(i); });
+  if(!keep.length) keep = heads.map(function(_, i){ return i; });
+  var out = [keep.map(function(i){ return heads[i]; }).join('\\t')];
+  bodyRows(tb).forEach(function(tr){
+    if(onlyVisible && tr.classList.contains('hide')) return;
+    out.push(keep.map(function(i){
+      return tr.cells[i] ? cellText(tr.cells[i]) : '';
+    }).join('\\t'));
+  });
+  return out.join('\\n');
+}
+
+function copyText(text){
+  var ta = document.getElementById('copybuf');
+  if(!ta){
+    ta = document.createElement('textarea');
+    ta.id = 'copybuf';
+    ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0';
+    document.body.appendChild(ta);
+  }
+  ta.value = text;
+  ta.select();
+  var ok = false;
+  try { ok = document.execCommand('copy'); } catch(e) { ok = false; }
+  if(!ok && navigator.clipboard) navigator.clipboard.writeText(text);
+  return ta;
+}
+
+function toast(msg){
+  var el = document.getElementById('toast');
+  if(!el){
+    el = document.createElement('div');
+    el.id = 'toast';
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.className = 'show';
+  clearTimeout(window.__toastT);
+  window.__toastT = setTimeout(function(){ el.className = ''; }, 2000);
+}
+
+function addToolbar(tb){
+  var box = tb.closest('.scroll');
+  if(!box) return;
+  var bar = document.createElement('div');
+  bar.className = 'tbar';
+  var name = tb.dataset.name || document.title;
+  bar.innerHTML =
+    "<input type='text' placeholder='표에서 거르기' class='tfilter'>"
+    + "<span class='muted tcount'></span><span style='flex:1'></span>"
+    + "<button type='button' class='sec tcopy'>표 복사</button>"
+    + "<button type='button' class='sec txlsx'>엑셀 내려받기</button>";
+  box.parentNode.insertBefore(bar, box);
+
+  var input = bar.querySelector('.tfilter'), count = bar.querySelector('.tcount');
+  input.addEventListener('input', function(){
+    var q = input.value.trim().toLowerCase(), 보임 = 0;
+    bodyRows(tb).forEach(function(tr){
+      var hit = !q || tr.innerText.toLowerCase().indexOf(q) >= 0;
+      tr.classList.toggle('hide', !hit);
+      if(hit) 보임++;
+    });
+    count.textContent = q ? (보임 + '줄 보임') : '';
+  });
+  bar.querySelector('.tcopy').addEventListener('click', function(){
+    copyText(tableTSV(tb, true));
+    toast('표 전체를 복사했습니다. 엑셀에 붙여넣으세요.');
+  });
+  bar.querySelector('.txlsx').addEventListener('click', function(){
+    var form = document.createElement('form');
+    form.method = 'post'; form.action = '/table.xlsx';
+    form.innerHTML = "<input type='hidden' name='name'><input type='hidden' name='tsv'>";
+    form.elements.name.value = name;
+    form.elements.tsv.value = tableTSV(tb, true);
+    document.body.appendChild(form);
+    form.submit();
+    setTimeout(function(){ form.remove(); }, 1000);
+  });
+}
+
+function sortable(tb){
+  headCells(tb).forEach(function(th, idx){
+    if(th.querySelector('input')) return;              // 전체선택 칸은 빼고
+    th.classList.add('sortable');
+    th.addEventListener('click', function(ev){
+      if(ev.target.tagName === 'A') return;
+      var asc = th.dataset.dir !== 'asc';
+      headCells(tb).forEach(function(o){ o.removeAttribute('data-dir'); });
+      th.dataset.dir = asc ? 'asc' : 'desc';
+      var rows = bodyRows(tb);
+      rows.sort(function(a, b){
+        var x = cellText(a.cells[idx] || {textContent:''});
+        var y = cellText(b.cells[idx] || {textContent:''});
+        var nx = parseFloat(x.replace(/[^0-9.\\-]/g,'')), ny = parseFloat(y.replace(/[^0-9.\\-]/g,''));
+        var 숫자 = x !== '' && y !== '' && !isNaN(nx) && !isNaN(ny)
+                  && /^[0-9.,\\-\\s]+$/.test(x) && /^[0-9.,\\-\\s]+$/.test(y);
+        var c = 숫자 ? (nx - ny) : x.localeCompare(y, 'ko');
+        return asc ? c : -c;
+      });
+      var body = tb.tBodies[0];
+      rows.forEach(function(r){ body.appendChild(r); });
+    });
+  });
+}
+
+function rangeSelect(tb){
+  var anchor = null, dragging = false;
+  function clear(){
+    tb.querySelectorAll('td.sel').forEach(function(td){ td.classList.remove('sel'); });
+  }
+  function pos(td){ return {r: td.parentNode.rowIndex, c: td.cellIndex}; }
+  function paint(a, b){
+    clear();
+    var r1 = Math.min(a.r, b.r), r2 = Math.max(a.r, b.r);
+    var c1 = Math.min(a.c, b.c), c2 = Math.max(a.c, b.c);
+    var lines = [];
+    bodyRows(tb).forEach(function(tr){
+      if(tr.rowIndex < r1 || tr.rowIndex > r2 || tr.classList.contains('hide')) return;
+      var cols = [];
+      for(var c = c1; c <= c2; c++){
+        var td = tr.cells[c];
+        if(!td) continue;
+        td.classList.add('sel');
+        cols.push(cellText(td));
+      }
+      lines.push(cols.join('\\t'));
+    });
+    return lines.join('\\n');
+  }
+  tb.addEventListener('mousedown', function(ev){
+    var td = ev.target.closest && ev.target.closest('td');
+    if(!td || !tb.contains(td)) return;
+    if(ev.target.closest('input,select,textarea,a,button')) return;
+    anchor = pos(td); dragging = true;
+    window.__rangeDragged = false;
+    clear();
+  });
+  tb.addEventListener('mousemove', function(ev){
+    if(!dragging || !anchor) return;
+    var td = ev.target.closest && ev.target.closest('td');
+    if(!td || !tb.contains(td)) return;
+    var here = pos(td);
+    if(here.r !== anchor.r || here.c !== anchor.c){
+      window.__rangeDragged = true;
+      document.body.style.userSelect = 'none';
+    }
+    tb.__tsv = paint(anchor, here);
+  });
+  document.addEventListener('mouseup', function(ev){
+    if(!dragging) return;
+    dragging = false;
+    document.body.style.userSelect = '';
+    if(window.__rangeDragged && tb.__tsv){
+      var n = tb.querySelectorAll('td.sel').length;
+      copyText(tb.__tsv);
+      toast(n + '칸 선택됨 — Ctrl+C 로 복사하세요');
+    }
+  });
+}
+
+function enhanceTables(){
+  document.querySelectorAll('.scroll table').forEach(function(tb){
+    if(tb.dataset.enhanced) return;
+    tb.dataset.enhanced = '1';
+    if(!tb.tHead && tb.rows.length) tb.createTHead().appendChild(tb.rows[0]);
+    if(!tb.tBodies.length) return;
+    addToolbar(tb);
+    sortable(tb);
+    rangeSelect(tb);
+  });
+}
+document.addEventListener('DOMContentLoaded', enhanceTables);
+"""
+
+
+def _tsv_to_xlsx(tsv: str) -> bytes:
+    """화면에 보이는 표를 그대로 엑셀로 만든다.
+
+    표마다 서버 라우트를 만들지 않으려고, 화면에서 만든 TSV 를 받아
+    같은 xlsx 작성기로 넘긴다. 머리글이 겹치면 뒤에 번호를 붙인다.
+    """
+    lines = [ln for ln in (tsv or "").replace("\r\n", "\n").split("\n") if ln.strip()]
+    if not lines:
+        return build_xlsx([], ["(내용 없음)"])
+    header, seen = [], {}
+    for name in lines[0].split("\t"):
+        name = name.strip() or "-"
+        seen[name] = seen.get(name, 0) + 1
+        header.append(name if seen[name] == 1 else f"{name}_{seen[name]}")
+    rows = []
+    for line in lines[1:]:
+        cells = line.split("\t")
+        rows.append({h: (cells[i] if i < len(cells) else "") for i, h in enumerate(header)})
+    return build_xlsx(rows, header)
 
 
 def _busy_count() -> int:
@@ -563,6 +798,16 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "") -> bytes:
     수정가능 = can(me, "지원자_수정")
 
     def 입력칸(항목: str, 값: str) -> str:
+        if 항목 in REGISTRY_FIELDS:
+            종류 = NAME_COLUMNS[항목]
+            현재 = registry.display(종류, 값) if 값 else ""
+            보기 = [""] + [n.표시명 for n in registry.list_all(종류)]
+            opts = "".join(
+                f"<option value='{html.escape(o)}'{' selected' if o == 현재 else ''}>"
+                f"{html.escape(o) or '(빈칸)'}</option>"
+                for o in dict.fromkeys(보기)
+            )
+            return f"<select name='새값'>{opts}</select>"
         spec = field_spec(항목)
         if spec.입력 == "select":
             opts = "".join(
@@ -740,9 +985,6 @@ function filterNames(q){
   var out = document.getElementById('namecount');
   if(out) out.textContent = q ? (보임 + '건 보임') : '';
 }
-function markDirty(el){
-  el.classList.toggle('dirty', el.value !== (el.dataset.orig || ''));
-}
 function confirmMerge(form){
   var 고른것 = document.querySelectorAll('input[name=ids]:checked');
   if(!고른것.length){ alert('묶을 표기를 왼쪽에서 하나 이상 체크하세요.'); return false; }
@@ -816,6 +1058,10 @@ def _names_page(종류: str, me: User | None = None,
         )
         등급칸 = ""
         if 등급종류:
+            유형opt = "".join(
+                f"<option{' selected' if s == i.유형 else ''}>{html.escape(s)}</option>"
+                for s in SUBTYPES
+            )
             등급opt = "".join(
                 f"<option{' selected' if g == i.등급 else ''}>{html.escape(g)}</option>"
                 for g in 등급목록
@@ -825,11 +1071,20 @@ def _names_page(종류: str, me: User | None = None,
                 for v in ("불명", "해외", "국내")
             )
             등급칸 = (
+                f"<td class='ctl'><select form='saveform' name='유형_{i.id}'"
+                f" data-orig='{html.escape(i.유형)}' onchange='markDirty(this)'>{유형opt}"
+                f"</select></td>"
                 f"<td class='ctl'><select form='saveform' name='등급_{i.id}'"
                 f" data-orig='{html.escape(i.등급)}' onchange='markDirty(this)'>{등급opt}</select></td>"
                 f"<td class='ctl'><select form='saveform' name='국내해외_{i.id}'"
                 f" data-orig='{html.escape(i.국내해외)}' onchange='markDirty(this)'>{해외opt}"
                 f"</select></td>"
+                f"<td class='ctl'><input type='text' form='saveform' name='IF_{i.id}'"
+                f" value='{html.escape(i.IF)}' style='width:70px' placeholder='예: 12.5'"
+                f" data-orig='{html.escape(i.IF)}' oninput='markDirty(this)'>"
+                f" <a href='{html.escape(i.google_url())}' target='_blank' rel='noopener'"
+                f" title='구글에서 &quot;{html.escape(i.표시명)} impact factor&quot; 검색'>IF 찾기</a>"
+                f"</td>"
             )
         미분류표시 = (
             " <span class='pill p-미분류'>미분류</span>"
@@ -882,7 +1137,11 @@ def _names_page(종류: str, me: User | None = None,
         if len(items) > 10 else ""
     )
 
-    등급머리 = "<th class='ctl'>등급</th><th class='ctl'>국내/해외</th>" if 등급종류 else ""
+    등급머리 = (
+        "<th class='ctl'>학회/저널</th><th class='ctl'>등급</th>"
+        "<th class='ctl'>국내/해외</th><th class='ctl'>Impact Factor</th>"
+        if 등급종류 else ""
+    )
     표 = (
         "<table><tr><th style='width:34px'>"
         "<input type='checkbox' title='전체 선택' onclick=\"for(const c of "
@@ -1056,18 +1315,37 @@ def _history_page(me: User, 대상종류: str = "", limit: int = 300) -> bytes:
 
 
 
-def _recruit_page(me: User, sort: str = "", error: str = "") -> bytes:
-    """채용 현황 관리.
+#: 채용 현황 화면 전용 — 부서를 바꾸면 과제 목록이 따라 바뀐다
+_RECRUIT_JS = """
+function syncProjects(sel){
+  var cid = sel.dataset.cid;
+  var proj = document.getElementById('proj-' + cid);
+  if(!proj) return;
+  var 목록 = (window.과제표 || 과제표)[sel.value] || [];
+  proj.innerHTML = '';
+  var 빈 = document.createElement('option');
+  빈.value = ''; 빈.textContent = '-';
+  proj.appendChild(빈);
+  목록.forEach(function(pair){
+    var op = document.createElement('option');
+    op.value = pair[0]; op.textContent = pair[1];
+    proj.appendChild(op);
+  });
+  proj.value = '';
+  markDirty(proj);
+}
+"""
 
-    지원자마다 단계별 상태를 드롭다운으로 바꾼다. 현업은 자기 과제만 보인다.
-    기본 정렬은 불합격을 맨 아래로 내린다.
+
+def _recruit_rows(me: User, sort: str = ""):
+    """채용 현황 표에 나갈 (레코드, 진행, 값 함수) 를 만든다.
+
+    화면과 엑셀이 같은 데이터를 보게 하려고 한 곳에서 만든다.
     """
     보이는과제 = auth.visible_project_ids(me)      # None 이면 전부
     진행맵 = recruit.all()
-    depts = auth.departments()
-    projects = auth.projects()
-    부서명 = {d["id"]: d["이름"] for d in depts}
-    과제명 = {p["id"]: p["이름"] for p in projects}
+    부서명 = {d["id"]: d["이름"] for d in auth.departments()}
+    과제명 = {p["id"]: p["이름"] for p in auth.projects()}
 
     records = store.list_all()
     if 보이는과제 is not None:
@@ -1076,12 +1354,8 @@ def _recruit_page(me: User, sort: str = "", error: str = "") -> bytes:
             if (진행맵.get(r.지원자_ID) and 진행맵[r.지원자_ID].project_id in 보이는과제)
         ]
 
-    표열 = recruit.columns()
-    사용자열정의 = {f["이름"]: f for f in store.fields()}
-    사용자열이름 = set(사용자열정의)
     사용자값맵 = store.custom_map()
-    수정가능 = can(me, "채용현황_수정")
-    담당자 = can(me, "지원자_수정")
+    사용자열이름 = set(store.field_names())
 
     def 값(rec, col: str) -> str:
         p = 진행맵.get(rec.지원자_ID)
@@ -1099,23 +1373,53 @@ def _recruit_page(me: User, sort: str = "", error: str = "") -> bytes:
             return 사용자값맵.get(rec.지원자_ID, {}).get(col, "")
         return str(rec.to_row(registry).get(col, "") or "")
 
-    # 정렬: 기본은 불합격 아래로. 열 제목을 누르면 그 열 기준
     def 정렬키(rec):
         p = 진행맵.get(rec.지원자_ID)
         기본 = p.정렬키() if p else (0, 0, 0)
         if sort:
             return (기본[0], 값(rec, sort).lower())   # 불합격은 어떤 정렬에서도 아래로
         return 기본
-    records.sort(key=정렬키)
 
-    부서옵션 = "".join(f"<option value='{d['id']}'>{html.escape(d['이름'])}</option>" for d in depts)
-    과제_by_부서 = {}
+    records.sort(key=정렬키)
+    return records, 진행맵, 값
+
+
+def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> bytes:
+    """채용 현황 관리.
+
+    현업은 배정된 과제의 지원자만 보인다. 기본 정렬은 불합격을 맨 아래로 내린다.
+
+    화면 규칙:
+      - **저장 버튼은 맨 위 하나뿐이다.** 여러 사람 상태를 바꾸고 한 번에 저장한다.
+      - **지원자 정보 열은 여기서 못 고친다.** 채용 상태를 보는 화면이라
+        지원자 정보까지 고칠 수 있으면 실수로 덮어쓰기 쉽다.
+        고칠 일이 있으면 지원자 목록이나 상세 화면에서 한다.
+    """
+    records, 진행맵, 값 = _recruit_rows(me, sort)
+    보이는과제 = auth.visible_project_ids(me)
+    depts = auth.departments()
+    projects = auth.projects()
+
+    표열 = recruit.columns()
+    수정가능 = can(me, "채용현황_수정")
+    담당자 = can(me, "지원자_수정")
+
+    부서옵션전체 = "".join(
+        f"<option value='{d['id']}'>{html.escape(d['이름'])}</option>" for d in depts
+    )
+    과제_by_부서: dict[int, list] = {}
     for pr in projects:
         과제_by_부서.setdefault(pr["부서_id"], []).append(pr)
+    # 부서를 바꾸면 과제 목록이 따라 바뀌어야 한다 (페이지를 새로 그리지 않고)
+    과제표 = json.dumps(
+        {str(k): [[pr["id"], pr["이름"]] for pr in v] for k, v in 과제_by_부서.items()},
+        ensure_ascii=False,
+    )
 
     rows = []
     for rec in records:
         p = 진행맵.get(rec.지원자_ID)
+        cid = rec.지원자_ID
         cells = []
         for col in 표열:
             v = html.escape(값(rec, col))
@@ -1126,83 +1430,87 @@ def _recruit_page(me: User, sort: str = "", error: str = "") -> bytes:
                     for st in STATUSES
                 )
                 cells.append(
-                    f"<td><form method='post' action='/recruit/stage' style='display:inline'>"
-                    f"<input type='hidden' name='id' value='{html.escape(rec.지원자_ID)}'>"
-                    f"<input type='hidden' name='단계' value='{html.escape(col)}'>"
-                    f"<select name='상태' onchange='this.form.submit()'>{opts}</select>"
-                    f"</form></td>"
+                    f"<td class='ctl'><select form='recruitform'"
+                    f" name='단계_{html.escape(cid)}_{html.escape(col)}'"
+                    f" data-orig='{v}' onchange='markDirty(this)'>{opts}</select></td>"
                 )
             elif col == "부서" and 담당자:
                 현재부서 = p.부서_id if p else None
-                현재과제 = p.project_id if p else None
                 옵션 = "".join(
                     f"<option value='{d['id']}'{' selected' if d['id'] == 현재부서 else ''}>"
                     f"{html.escape(d['이름'])}</option>" for d in depts
                 )
+                cells.append(
+                    f"<td class='ctl'><select form='recruitform'"
+                    f" name='부서_{html.escape(cid)}' data-orig='{v}'"
+                    f" onchange=\"markDirty(this);syncProjects(this)\""
+                    f" data-cid='{html.escape(cid)}'>"
+                    f"<option value=''>-</option>{옵션}</select></td>"
+                )
+            elif col == "과제" and 담당자:
+                현재부서 = p.부서_id if p else None
+                현재과제 = p.project_id if p else None
                 과제옵션 = "".join(
                     f"<option value='{pr['id']}'{' selected' if pr['id'] == 현재과제 else ''}>"
                     f"{html.escape(pr['이름'])}</option>"
                     for pr in 과제_by_부서.get(현재부서, [])
                 )
                 cells.append(
-                    f"<td><form method='post' action='/recruit/assign' style='display:flex;gap:4px'>"
-                    f"<input type='hidden' name='id' value='{html.escape(rec.지원자_ID)}'>"
-                    f"<select name='dept' onchange='this.form.submit()'>"
-                    f"<option value=''>-</option>{옵션}</select>"
-                    f"<select name='project' onchange='this.form.submit()'>"
-                    f"<option value=''>-</option>{과제옵션}</select></form></td>"
+                    f"<td class='ctl'><select form='recruitform'"
+                    f" name='과제_{html.escape(cid)}' id='proj-{html.escape(cid)}'"
+                    f" data-orig='{v}' onchange='markDirty(this)'>"
+                    f"<option value=''>-</option>{과제옵션}</select></td>"
                 )
-            elif col == "과제" and 담당자:
-                continue   # 부서 칸에서 함께 고른다
             elif col == "비고" and 수정가능:
                 cells.append(
-                    f"<td><form method='post' action='/recruit/note' style='display:flex;gap:4px'>"
-                    f"<input type='hidden' name='id' value='{html.escape(rec.지원자_ID)}'>"
-                    f"<input type='text' name='비고' value='{v}' style='width:160px'>"
-                    f"<button type='submit'>저장</button></form></td>"
+                    f"<td class='ctl'><input type='text' form='recruitform'"
+                    f" name='비고_{html.escape(cid)}' value='{v}' style='width:180px'"
+                    f" data-orig='{v}' oninput='markDirty(this)'></td>"
                 )
             elif col == "최종상태":
                 cls = " class='flag'" if p and p.탈락 else ""
                 cells.append(f"<td{cls}>{v}</td>")
-            elif 담당자 and col in 사용자열이름:
-                값_ = 값(rec, col)
-                cells.append(_cell(rec.지원자_ID, col, 값_, 값_,
-                                   custom_field_spec(사용자열정의[col]), scope="사용자"))
-            elif 담당자 and hasattr(rec, col) and _editable(col):
-                cells.append(_cell(rec.지원자_ID, col, 값(rec, col),
-                                   str(getattr(rec, col, "") or ""), field_spec(col)))
             else:
+                # 지원자 정보 열은 보기만 한다 (고치려면 지원자 목록/상세에서)
                 cells.append(f"<td title='{v}'>{v}</td>")
-        링크 = f"<td><a href='/candidate?id={urllib.parse.quote(rec.지원자_ID)}'>상세</a></td>"
+        링크 = f"<td><a href='/candidate?id={urllib.parse.quote(cid)}'>상세</a></td>"
         묶음 = " class='dup'" if p and p.탈락 else ""
         rows.append(f"<tr{묶음}>{링크}{''.join(cells)}</tr>")
 
-    머리 = "<th></th>" + "".join(
-        f"<th><a href='/recruit?sort={urllib.parse.quote(c)}' style='color:inherit'>"
-        f"{html.escape(c)}</a></th>"
-        for c in 표열
-        if not (c == "과제" and 담당자)
-    )
+    머리 = "<th></th>" + "".join(f"<th>{html.escape(c)}</th>" for c in 표열)
+    알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
     오류 = f"<div class='warn'>{html.escape(error)}</div>" if error else ""
     안내 = (
         "배정된 과제의 지원자만 보입니다."
         if 보이는과제 is not None
-        else "열 제목을 누르면 그 열로 정렬됩니다. 불합격자는 항상 아래로 갑니다."
+        else "열 제목을 눌러 정렬하고, 표 위 칸으로 걸러 봅니다. 불합격자는 항상 아래로 갑니다."
     )
-    if 담당자:
-        안내 += " 지원자 정보 칸은 눌러서 바로 고칠 수 있습니다."
+    if not (수정가능 or 담당자):
+        안내 += " 보기 전용입니다."
+    else:
+        안내 += " 지원자 정보 열은 여기서 고칠 수 없습니다 (지원자 목록에서 고치세요)."
+    저장바 = (
+        "<form method='post' action='/recruit/save' id='recruitform' class='mergebar'>"
+        "<button type='submit'>고친 내용 저장</button>"
+        "<span class='muted'>여러 줄을 고친 뒤 <b>한 번만</b> 누르세요. "
+        "고친 칸은 노랗게 표시됩니다.</span></form>"
+        if rows and (수정가능 or 담당자) else ""
+    )
     열구성 = (
-        "<p><a class='btn sec' href='/recruit/columns'>표 열 구성</a></p>"
+        "<a class='btn sec' href='/recruit/columns'>표 열 구성</a> "
         if can(me, "열_구성") else ""
     )
     표 = (
-        f"<div class='scroll'><table><tr>{머리}</tr>{''.join(rows)}</table></div>"
+        f"<div class='scroll'><table data-name='채용현황'><tr>{머리}</tr>{''.join(rows)}</table></div>"
         if rows else "<p class='muted'>표시할 지원자가 없습니다.</p>"
     )
     return _page(
         "채용 현황",
-        f"""{오류}<div class='card'><h2>채용 현황 <span class='muted'>{len(records)}명</span></h2>
-        <p class='muted'>{안내}</p>{열구성}{표}</div>""",
+        f"""{알림}{오류}<div class='card'><h2>채용 현황 <span class='muted'>{len(records)}명</span></h2>
+        <p class='muted'>{안내}</p>
+        <p>{열구성}<a class='btn' href='/recruit/export.xlsx'>엑셀(.xlsx) 다운로드</a></p>
+        {저장바}{표}</div>
+        <script>var 과제표 = {과제표};{_RECRUIT_JS}</script>""",
         me=me,
     )
 
@@ -1393,7 +1701,19 @@ class Handler(BaseHTTPRequestHandler):
             params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             return self._send(
                 _recruit_page(me, (params.get("sort") or [""])[0],
-                              (params.get("err") or [""])[0])
+                              (params.get("err") or [""])[0],
+                              (params.get("msg") or [""])[0])
+            )
+        if path == "/recruit/export.xlsx":
+            표열 = recruit.columns()
+            records, _진행, 값 = _recruit_rows(me, (urllib.parse.parse_qs(
+                urllib.parse.urlparse(self.path).query).get("sort") or [""])[0])
+            rows = [{c: 값(rec, c) for c in 표열} for rec in records]
+            stamp = now_kst().strftime("%Y%m%d_%H%M")
+            return self._send(
+                build_xlsx(rows, 표열),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                extra={"Content-Disposition": f'attachment; filename="recruit_{stamp}.xlsx"'},
             )
         if path == "/fields":
             if not can(me, "열_구성"):
@@ -1433,6 +1753,8 @@ class Handler(BaseHTTPRequestHandler):
                 error=(params.get("err") or [""])[0],
                 msg=(params.get("msg") or [""])[0],
             ))
+        if path == "/favicon.ico":
+            return self._send(b"", "image/x-icon", code=204)
         if path == "/export.xlsx":
             data = records_to_xlsx(store.list_all(), registry,
                                    (store.field_names(), store.custom_map()))
@@ -1442,16 +1764,6 @@ class Handler(BaseHTTPRequestHandler):
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 extra={"Content-Disposition": f'attachment; filename="cv_{stamp}.xlsx"'},
             )
-        if path == "/export.tsv":
-            tsv = records_to_tsv(store.list_all(), registry,
-                                  (store.field_names(), store.custom_map()))
-            body = _page(
-                "TSV",
-                "<div class='card'><h2>엑셀 붙여넣기용 TSV</h2>"
-                "<p class='muted'>전체 선택 후 복사해서 엑셀에 붙여넣으세요.</p>"
-                f"<textarea style='width:100%;height:60vh'>{html.escape(tsv)}</textarea></div>",
-            )
-            return self._send(body)
         return self._send(_page("없음", "<div class='card'>페이지가 없습니다.</div>"), code=404)
 
     # -- POST ---------------------------------------------------------------
@@ -1505,6 +1817,100 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as exc:  # noqa: BLE001
                     _set_status(safe_name, "실패", f"{type(exc).__name__}: {exc}")
             return self._redirect("/upload")
+
+        if path == "/table.xlsx":
+            data = urllib.parse.parse_qs(
+                self._read_body().decode("utf-8", "replace"), keep_blank_values=True
+            )
+            이름 = ((data.get("name") or ["표"])[0] or "표").strip()[:40]
+            stamp = now_kst().strftime("%Y%m%d_%H%M")
+            # 한글 파일명은 RFC 5987 로 따로 보낸다 (옛 브라우저는 ASCII 이름을 쓴다)
+            한글 = urllib.parse.quote(f"{이름}_{stamp}.xlsx")
+            return self._send(
+                _tsv_to_xlsx((data.get("tsv") or [""])[0]),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                extra={"Content-Disposition":
+                       f'attachment; filename="table_{stamp}.xlsx";'
+                       f" filename*=UTF-8''{한글}"},
+            )
+
+        if path == "/recruit/save":
+            # 표 전체가 한 번에 온다. 실제로 값이 달라진 것만 저장한다.
+            if not (can(me, "채용현황_수정") or can(me, "지원자_수정")):
+                return self._deny()
+            data = urllib.parse.parse_qs(
+                self._read_body().decode("utf-8", "replace"), keep_blank_values=True
+            )
+            보이는 = auth.visible_project_ids(me)
+            바뀐것: list[str] = []
+            이름맵 = {r.지원자_ID: (r.한글_이름 or r.영문_이름 or r.지원자_ID)
+                     for r in store.list_all()}
+
+            def 볼수있나(cid: str) -> bool:
+                return 보이는 is None or recruit.get(cid).project_id in 보이는
+
+            # 1) 단계 상태
+            if can(me, "채용현황_수정"):
+                for key, 값들 in data.items():
+                    if not key.startswith("단계_"):
+                        continue
+                    몸통 = key[len("단계_"):]
+                    for 단계 in STAGES:
+                        if 몸통.endswith("_" + 단계):
+                            cid = 몸통[: -(len(단계) + 1)]
+                            break
+                    else:
+                        continue
+                    if not 볼수있나(cid):
+                        continue
+                    try:
+                        이전 = recruit.set_stage(cid, 단계, 값들[0], me.아이디)
+                    except ValueError as exc:
+                        return self._redirect("/recruit?err=" + urllib.parse.quote(str(exc)))
+                    if 이전 != 값들[0]:
+                        audit.record(me.아이디, "채용현황", cid, 항목=단계,
+                                     이전값=이전, 새값=값들[0])
+                        바뀐것.append(f"{이름맵.get(cid, cid)} {단계} {값들[0] or '(빈칸)'}")
+
+                # 2) 비고
+                for key, 값들 in data.items():
+                    if not key.startswith("비고_"):
+                        continue
+                    cid = key[len("비고_"):]
+                    if not 볼수있나(cid):
+                        continue
+                    이전 = recruit.set_note(cid, 값들[0], me.아이디)
+                    if 이전 != 값들[0]:
+                        audit.record(me.아이디, "채용현황", cid, 항목="비고",
+                                     이전값=이전, 새값=값들[0])
+                        바뀐것.append(f"{이름맵.get(cid, cid)} 비고")
+
+            # 3) 부서 / 과제 (지원자 수정 권한이 있어야 배정할 수 있다)
+            if can(me, "지원자_수정"):
+                for key, 값들 in data.items():
+                    if not key.startswith("부서_"):
+                        continue
+                    cid = key[len("부서_"):]
+                    dept = 값들[0]
+                    proj = (data.get(f"과제_{cid}") or [""])[0]
+                    부서_id = int(dept) if dept.isdigit() else None
+                    project_id = int(proj) if proj.isdigit() else None
+                    # 부서를 바꾸면 그 부서에 속하지 않는 과제는 떨어뜨린다
+                    if project_id is not None:
+                        소속 = {pr["id"] for pr in auth.projects(부서_id)} if 부서_id else set()
+                        if project_id not in 소속:
+                            project_id = None
+                    옛부서, 옛과제 = recruit.set_assignment(cid, 부서_id, project_id, me.아이디)
+                    if (옛부서, 옛과제) != (부서_id, project_id):
+                        audit.record(me.아이디, "채용현황", cid, 항목="부서/과제",
+                                     이전값=f"{옛부서}/{옛과제}", 새값=f"{부서_id}/{project_id}")
+                        바뀐것.append(f"{이름맵.get(cid, cid)} 부서/과제")
+
+            if not 바뀐것:
+                return self._redirect("/recruit?msg=" + urllib.parse.quote("바뀐 내용이 없습니다."))
+            보임 = ", ".join(바뀐것[:5]) + (" 외" if len(바뀐것) > 5 else "")
+            return self._redirect("/recruit?msg=" + urllib.parse.quote(
+                f"{len(바뀐것)}건 저장했습니다 — {보임}"))
 
         if path == "/fields/add":
             if not can(me, "열_구성"):
@@ -1593,58 +1999,6 @@ class Handler(BaseHTTPRequestHandler):
                 audit.record(me.아이디, "과제", 새이름, 항목="과제명",
                              이전값=옛이름, 새값=새이름)
             return self._redirect("/org")
-
-        if path == "/recruit/stage":
-            if not can(me, "채용현황_수정"):
-                return self._deny()
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            cid = (data.get("id") or [""])[0]
-            단계 = (data.get("단계") or [""])[0]
-            상태 = (data.get("상태") or [""])[0]
-            보이는 = auth.visible_project_ids(me)
-            if 보이는 is not None and recruit.get(cid).project_id not in 보이는:
-                return self._deny("배정된 과제의 지원자만 수정할 수 있습니다.")
-            try:
-                이전 = recruit.set_stage(cid, 단계, 상태, me.아이디)
-            except ValueError as exc:
-                return self._redirect("/recruit?err=" + urllib.parse.quote(str(exc)))
-            if 이전 != 상태:
-                audit.record(me.아이디, "채용현황", cid, 항목=단계, 이전값=이전, 새값=상태)
-            return self._redirect("/recruit")
-
-        if path == "/recruit/assign":
-            if not can(me, "지원자_수정"):
-                return self._deny()
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            cid = (data.get("id") or [""])[0]
-            dept = (data.get("dept") or [""])[0]
-            proj = (data.get("project") or [""])[0]
-            부서_id = int(dept) if dept.isdigit() else None
-            project_id = int(proj) if proj.isdigit() else None
-            # 부서를 바꾸면 그 부서에 속하지 않는 과제는 떨어뜨린다
-            if project_id is not None:
-                소속 = {pr["id"] for pr in auth.projects(부서_id)} if 부서_id else set()
-                if project_id not in 소속:
-                    project_id = None
-            옛부서, 옛과제 = recruit.set_assignment(cid, 부서_id, project_id, me.아이디)
-            if (옛부서, 옛과제) != (부서_id, project_id):
-                audit.record(me.아이디, "채용현황", cid, 항목="부서/과제",
-                             이전값=f"{옛부서}/{옛과제}", 새값=f"{부서_id}/{project_id}")
-            return self._redirect("/recruit")
-
-        if path == "/recruit/note":
-            if not can(me, "채용현황_수정"):
-                return self._deny()
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            cid = (data.get("id") or [""])[0]
-            비고 = (data.get("비고") or [""])[0]
-            보이는 = auth.visible_project_ids(me)
-            if 보이는 is not None and recruit.get(cid).project_id not in 보이는:
-                return self._deny("배정된 과제의 지원자만 수정할 수 있습니다.")
-            이전 = recruit.set_note(cid, 비고, me.아이디)
-            if 이전 != 비고:
-                audit.record(me.아이디, "채용현황", cid, 항목="비고", 이전값=이전, 새값=비고)
-            return self._redirect("/recruit")
 
         if path == "/fields":
             if not can(me, "열_구성"):
@@ -1743,7 +2097,6 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": False, "error": str(exc)}, code=400)
             if 옛값 != 저장값:
                 store.save(rec)
-                _observe_edited(항목, 저장값)
                 audit.record(me.아이디, "지원자", cid, 항목=항목,
                              이전값=옛값, 새값=저장값, 비고="표에서 수정")
             표시 = str(rec.to_row(registry).get(항목, "") or "")
@@ -1762,12 +2115,12 @@ class Handler(BaseHTTPRequestHandler):
             if rec is None:
                 return self._redirect(뒤로)
             try:
-                옛값, 저장값 = apply_edit(rec, 항목, 새값, 기대_이전값=이전값)
+                옛값, 저장값 = apply_edit(rec, 항목, 새값, 기대_이전값=이전값,
+                                        registry=registry)
             except (ValidationError, ConflictError) as exc:
                 return self._redirect(f"{뒤로}&err={urllib.parse.quote(str(exc))}")
             if 옛값 != 저장값:
                 store.save(rec)
-                _observe_edited(항목, 저장값)
                 audit.record(me.아이디, "지원자", cid, 항목=항목, 이전값=옛값, 새값=저장값)
             return self._redirect(뒤로)
 
@@ -1889,11 +2242,17 @@ class Handler(BaseHTTPRequestHandler):
             data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
             ids = data.get("ids") or []
             if ids:
-                store.delete_many(ids)
+                store.delete_many(ids)       # 원본·첨부파일까지 함께 지운다
+                for cid in ids:
+                    recruit.delete(cid)      # 채용 현황에 유령 줄이 남지 않게
+                    audit.record(me.아이디, "지원자", cid, 비고="지원자 삭제")
             return self._redirect("/")
 
         if path == "/candidates/purge":
-            store.purge_expired()
+            지운것 = store.purge_expired()
+            for cid in 지운것:
+                recruit.delete(cid)
+                audit.record(me.아이디, "지원자", cid, 비고="보관기간 만료 삭제")
             return self._redirect("/")
 
         if path == "/candidate/reanalyze":
@@ -1915,7 +2274,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/names/save":
             if not can(me, "명칭_관리"):
                 return self._deny()
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            # 빈칸도 받아야 IF 를 지울 수 있다
+            data = urllib.parse.parse_qs(
+                self._read_body().decode("utf-8", "replace"), keep_blank_values=True
+            )
             kind = canonical_kind((data.get("kind") or ["학회"])[0])
             뒤로 = f"/names?kind={urllib.parse.quote(kind)}"
 
@@ -1934,6 +2296,10 @@ class Handler(BaseHTTPRequestHandler):
                     표시명=(data.get(f"표시명_{nid}") or [None])[0],
                     등급=(data.get(f"등급_{nid}") or [None])[0],
                     국내해외=(data.get(f"국내해외_{nid}") or [None])[0],
+                    유형=(data.get(f"유형_{nid}") or [None])[0],
+                    # IF 는 지울 수 있어야 해서 빈 문자열도 그대로 넘긴다
+                    # IF 는 빈칸으로 지울 수 있어야 해서 보내온 경우엔 공백도 그대로
+                    IF=(data.get(f"IF_{nid}") or [""])[0] if f"IF_{nid}" in data else None,
                 )
                 이후 = registry.get(nid)
                 if 이후 is None:
@@ -1942,8 +2308,10 @@ class Handler(BaseHTTPRequestHandler):
                     (항목, 옛, 새)
                     for 항목, 옛, 새 in (
                         ("표시명", 이전.표시명, 이후.표시명),
+                        ("학회/저널", 이전.유형, 이후.유형),
                         ("등급", 이전.등급, 이후.등급),
                         ("국내해외", 이전.국내해외, 이후.국내해외),
+                        ("IF", 이전.IF, 이후.IF),
                     )
                     if 옛 != 새
                 ]

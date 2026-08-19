@@ -135,7 +135,14 @@ class CandidateStore:
         return path if path.is_file() else None
 
     def _unlink_files(self, ids: list[str]) -> None:
-        """DB 행을 지우기 전에 원본과 첨부파일부터 지운다."""
+        """DB 행을 지우기 전에 그 지원자의 파일을 **전부** 지운다.
+
+        DB 에 적힌 파일만 지우면, 연결이 끊긴 파일(재분석 중 오류 등)이 서버에
+        남아 개인정보가 그대로 보관된다. 그래서 마지막에 지원자_ID 로 시작하는
+        파일을 통째로 쓸어낸다. 파일명은 전부 지원자_ID 기반이라 안전하다.
+          원본  : CV-XXXX.pdf
+          첨부  : CV-XXXX-att3.docx
+        """
         for cid in ids:
             path = self.file_path(cid)
             if path:
@@ -144,6 +151,17 @@ class CandidateStore:
                 (self.files_dir / att["저장명"]).unlink(missing_ok=True)
             self._conn.execute("DELETE FROM attachments WHERE 지원자_ID=?", (cid,))
             self._conn.execute("DELETE FROM custom_values WHERE 지원자_ID=?", (cid,))
+            for 남은 in self.files_of(cid):
+                남은.unlink(missing_ok=True)
+
+    def files_of(self, 지원자_ID: str) -> list[Path]:
+        """그 지원자 것으로 저장된 파일 전부 (원본·첨부·끊어진 것 포함)."""
+        if not 지원자_ID or self.files_dir is None or not self.files_dir.is_dir():
+            return []
+        안전 = 지원자_ID.replace("[", "[[]")          # glob 특수문자 방어
+        return sorted(
+            set(self.files_dir.glob(f"{안전}.*")) | set(self.files_dir.glob(f"{안전}-att*"))
+        )
 
     # -- 쓰기 -------------------------------------------------------------
     def save(

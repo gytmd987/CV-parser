@@ -18,10 +18,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from . import normalize as N
-from .schemas import 학위상태_ENUM, 현재_신분_ENUM
+from .schemas import NAME_COLUMNS, 학위상태_ENUM, 현재_신분_ENUM
 
 #: 수정할 수 없는 항목 (시스템이 관리한다)
 READONLY_FIELDS = {"지원자_ID", "추출_일시", "원본_파일명"}
+
+#: 명칭 사전이 대표명을 붙이는 항목. 여기서 직접 고치면 사전과 어긋난다.
+#: (표에 보이는 값은 사전을 거친 대표명이라, 그 값을 그대로 저장하면
+#:  원문 표기가 사라지고 나중에 사전을 고쳐도 되돌릴 수 없다.)
+REGISTRY_FIELDS = set(NAME_COLUMNS)
 
 #: 드롭다운으로만 고를 수 있는 항목
 CHOICE_FIELDS: dict[str, list[str]] = {
@@ -88,6 +93,11 @@ def validate(항목: str, 값: str) -> str:
     """
     if 항목 in READONLY_FIELDS:
         raise ValidationError(f"'{항목}' 은 수정할 수 없습니다.")
+    if 항목 in REGISTRY_FIELDS:
+        raise ValidationError(
+            f"'{항목}' 은 여기서 고치지 않습니다. 표기가 잘못됐으면 "
+            f"'명칭 관리' 에서 대표명을 고치세요 (표에 바로 반영됩니다)."
+        )
 
     원본 = (값 or "").strip()
 
@@ -134,12 +144,36 @@ def validate(항목: str, 값: str) -> str:
     return N.text(원본)
 
 
-def apply_edit(rec, 항목: str, 새값: str, 기대_이전값: str | None = None) -> tuple[str, str]:
+def validate_registry(항목: str, 값: str, registry) -> str:
+    """소속·전공처럼 명칭 사전이 관리하는 항목의 값을 검사한다.
+
+    **자유 입력을 받지 않는다.** 사전에 이미 있는 이름 중에서만 고를 수 있다.
+    자유 입력을 허용하면 표에 보이는 대표명을 그대로 저장해 버리는 일이 생기고,
+    그러면 원문 표기가 사라져 나중에 사전을 고쳐도 되돌릴 수 없다.
+    """
+    종류 = NAME_COLUMNS.get(항목)
+    if 종류 is None:
+        raise ValidationError(f"명칭 사전이 관리하는 항목이 아닙니다: {항목}")
+    원본 = (값 or "").strip()
+    if not 원본:
+        return ""
+    found = registry.lookup(종류, 원본)
+    if found is None:
+        raise ValidationError(
+            f"'{원본}' 은 명칭 사전에 없습니다. '명칭 관리' 화면의 {종류} 목록에서 고르세요."
+        )
+    return found.표시명
+
+
+def apply_edit(rec, 항목: str, 새값: str, 기대_이전값: str | None = None,
+               registry=None) -> tuple[str, str]:
     """레코드의 한 항목만 고친다.
 
     Args:
         기대_이전값: 화면에 보이던 값. 지금 값과 다르면 다른 사람이 먼저
             고친 것이므로 ConflictError 를 낸다. None 이면 검사하지 않는다.
+        registry: 명칭 사전. 소속·전공 항목은 이것을 넘겨야만 고칠 수 있고,
+            사전에 있는 이름 중에서만 고를 수 있다. 안 넘기면 거부된다.
     Returns:
         (이전값, 저장된 값)
     """
@@ -150,7 +184,15 @@ def apply_edit(rec, 항목: str, 새값: str, 기대_이전값: str | None = Non
     if 기대_이전값 is not None and 현재값 != str(기대_이전값 or ""):
         raise ConflictError(항목, 현재값, str(기대_이전값 or ""))
 
-    저장값 = validate(항목, 새값)
+    if 항목 in REGISTRY_FIELDS:
+        if registry is None:
+            raise ValidationError(
+                f"'{항목}' 은 표에서 직접 고칠 수 없습니다. 지원자 상세 화면에서 "
+                f"명칭 사전에 있는 이름 중 골라 주세요."
+            )
+        저장값 = validate_registry(항목, 새값, registry)
+    else:
+        저장값 = validate(항목, 새값)
     setattr(rec, 항목, 저장값)
     return 현재값, 저장값
 

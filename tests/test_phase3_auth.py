@@ -263,8 +263,35 @@ def test_field_spec_gives_dropdown_for_choices():
 
 # --- 동시 편집 ---------------------------------------------------------------
 def test_edit_returns_old_and_new():
-    rec = CVRecord(지원자_ID="T", 박사_학교="서울대")
-    assert apply_edit(rec, "박사_학교", "서울대학교") == ("서울대", "서울대학교")
+    rec = CVRecord(지원자_ID="T", 한글_이름="홍길동")
+    assert apply_edit(rec, "한글_이름", "홍길순") == ("홍길동", "홍길순")
+
+
+def test_registry_managed_field_needs_the_dictionary(tmp_path):
+    """소속·전공은 자유 입력으로 못 고친다. 사전과 어긋나기 때문."""
+    from cvtool.names import NameRegistry
+
+    rec = CVRecord(지원자_ID="T")
+    with pytest.raises(ValidationError):
+        apply_edit(rec, "박사_학교", "서울대학교")          # registry 없이
+
+    reg = NameRegistry(tmp_path / "n.db")
+    with pytest.raises(ValidationError):
+        apply_edit(rec, "박사_학교", "서울대학교", registry=reg)   # 사전에 없는 이름
+
+    reg.observe("소속", "서울대학교")
+    assert apply_edit(rec, "박사_학교", "서울대학교", registry=reg)[1] == "서울대학교"
+
+
+def test_registry_field_accepts_representative_name(tmp_path):
+    """사전에서 대표명을 바꿨으면 그 대표명으로 저장된다."""
+    from cvtool.names import NameRegistry
+
+    reg = NameRegistry(tmp_path / "n.db")
+    나 = reg.observe("소속", "포항공대")
+    reg.classify(나.id, 표시명="POSTECH")
+    rec = CVRecord(지원자_ID="T")
+    assert apply_edit(rec, "박사_학교", "포항공대", registry=reg)[1] == "POSTECH"
 
 
 def test_conflict_when_someone_else_changed_it():
@@ -285,9 +312,9 @@ def test_no_conflict_when_value_matches():
 def test_different_fields_do_not_conflict():
     """서로 다른 칸을 고치면 충돌이 없어야 한다 (구글 시트 같은 체감)."""
     rec = CVRecord(지원자_ID="T")
-    apply_edit(rec, "박사_학교", "서울대학교", 기대_이전값="")
+    apply_edit(rec, "한글_이름", "홍길동", 기대_이전값="")
     apply_edit(rec, "이메일", "a@x.com", 기대_이전값="")
-    assert rec.박사_학교 == "서울대학교" and rec.이메일 == "a@x.com"
+    assert rec.한글_이름 == "홍길동" and rec.이메일 == "a@x.com"
 
 
 def test_unknown_field_rejected():
