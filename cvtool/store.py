@@ -55,6 +55,8 @@ CREATE TABLE IF NOT EXISTS matches (
     사유         TEXT DEFAULT '',
     근거         TEXT DEFAULT '',
     순위         INTEGER DEFAULT 0,
+    유사도        REAL,
+    평가됨        INTEGER DEFAULT 1,
     판단일시      TEXT DEFAULT '',
     PRIMARY KEY (지원자_ID, 과제키)
 );
@@ -113,6 +115,7 @@ class CandidateStore:
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
         self._migrate()
+        self._matches_columns()
         self._conn.commit()
         # sqlite 가 만든 -wal/-shm 파일에도 같은 내용이 들어간다
         for suffix in ("", "-wal", "-shm"):
@@ -267,6 +270,26 @@ class CandidateStore:
         rows = self._conn.execute("SELECT 지원자_ID, 등록년도 FROM candidates")
         return {r["지원자_ID"]: r["등록년도"] or "" for r in rows}
 
+    def meta_map(self) -> dict[str, dict[str, str]]:
+        """{지원자_ID: {등록년도, 등록일시, 원본_파일명, 보관_만료일}}.
+
+        표에 관리 정보 열을 같이 보여주려고 한 번에 읽는다. 사람마다
+        meta() 를 부르면 지원자 수만큼 질의가 나간다.
+        """
+        rows = self._conn.execute(
+            "SELECT 지원자_ID, 등록년도, 등록일시, 원본_파일명, 보관_만료일"
+            " FROM candidates"
+        )
+        return {
+            r["지원자_ID"]: {
+                "등록년도": r["등록년도"] or "",
+                "등록일시": r["등록일시"] or "",
+                "원본_파일명": r["원본_파일명"] or "",
+                "보관_만료일": r["보관_만료일"] or "",
+            }
+            for r in rows
+        }
+
     def fingerprints(self) -> list[tuple[CVRecord, list[str]]]:
         """중복 검토용 (레코드, 지문) 목록."""
         out = []
@@ -392,6 +415,14 @@ class CandidateStore:
         self._conn.commit()
 
     # -- 과제 매칭 ----------------------------------------------------------
+    def _matches_columns(self) -> None:
+        """예전 DB 에 없던 매칭 열을 붙인다."""
+        있는열 = {r["name"] for r in self._conn.execute("PRAGMA table_info(matches)")}
+        for 열, 정의 in (("유사도", "REAL"), ("평가됨", "INTEGER DEFAULT 1")):
+            if 열 not in 있는열:
+                self._conn.execute(f"ALTER TABLE matches ADD COLUMN {열} {정의}")
+        self._conn.commit()
+
     def save_matches(self, 지원자_ID: str, matches) -> None:
         """이 지원자의 과제 매칭 결과를 통째로 갈아 끼운다.
 
@@ -403,10 +434,11 @@ class CandidateStore:
         self._conn.execute("DELETE FROM matches WHERE 지원자_ID=?", (지원자_ID,))
         for 순위, m in enumerate(matches, start=1):
             self._conn.execute(
-                "INSERT INTO matches (지원자_ID,과제키,과제명,점수,사유,근거,순위,판단일시)"
-                " VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT INTO matches (지원자_ID,과제키,과제명,점수,사유,근거,순위,"
+                "유사도,평가됨,판단일시) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (지원자_ID, m.과제키, m.과제명, m.점수, m.사유,
-                 "\n".join(m.근거), 순위, now),
+                 "\n".join(m.근거), 순위, getattr(m, "유사도", None),
+                 1 if getattr(m, "평가됨", True) else 0, now),
             )
         self._conn.commit()
 
@@ -418,6 +450,7 @@ class CandidateStore:
         for r in rows:
             d = dict(r)
             d["근거"] = [x for x in (d.get("근거") or "").split("\n") if x.strip()]
+            d["평가됨"] = bool(d.get("평가됨", 1))
             out.append(d)
         return out
 
@@ -427,6 +460,14 @@ class CandidateStore:
             "SELECT * FROM matches WHERE 순위=1"
         )
         return {r["지원자_ID"]: dict(r) for r in rows}
+
+    def match_counts(self) -> dict[str, int]:
+        """지원자별 비교한 과제 수. '정말 다 비교했나' 를 화면에서 보여주려고."""
+        return {
+            r["지원자_ID"]: r["c"] for r in self._conn.execute(
+                "SELECT 지원자_ID, COUNT(*) c FROM matches GROUP BY 지원자_ID"
+            )
+        }
 
     def matched_count(self) -> int:
         return self._conn.execute(

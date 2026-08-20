@@ -7,7 +7,7 @@ import json
 import pytest
 
 from cvtool import projects as pm
-from cvtool.matching import Match, candidate_profile, match, shortlist
+from cvtool.matching import Match, candidate_profile, match, similarities
 from cvtool.projects import Project, ProjectsError, load, parse, resolve_path
 from cvtool.schemas import CVRecord
 
@@ -138,42 +138,105 @@ def test_profile_leaves_out_personal_details():
         assert 개인정보 not in 글
 
 
-# --- 후보 좁히기 ---------------------------------------------------------------
+# --- 모든 과제와 비교한다 ------------------------------------------------------
 def _과제(n: int) -> list[Project]:
     return parse([{"과제명": f"과제{i}", "설명": f"내용{i}"} for i in range(n)])
 
 
-def test_few_projects_are_all_kept():
-    목록 = _과제(3)
-    assert shortlist("아무거나", 목록, top=8) == 목록
+class 묶음기록LLM:
+    """받은 과제를 모두 채점하고, 무엇을 받았는지 기록한다."""
+
+    def __init__(self, 점수=50, 빼먹기: int = 0):
+        self.본과제: list[str] = []
+        self.호출 = 0
+        self.점수 = 점수
+        self.빼먹기 = 빼먹기
+
+    def chat_json(self, messages, schema, **kw):
+        self.호출 += 1
+        본문 = messages[1]["content"]
+        키들 = [l.split("과제키: ")[1].rstrip("]")
+              for l in 본문.splitlines() if l.startswith("[과제키:")]
+        self.본과제 += 키들
+        낼것 = 키들[: len(키들) - self.빼먹기] if self.빼먹기 else 키들
+        return {"결과": [{"과제키": k, "점수": self.점수, "사유": "기준에 따라"}
+                       for k in 낼것]}
+
+    def close(self):
+        pass
 
 
-def test_many_projects_are_narrowed():
-    assert len(shortlist("아무거나", _과제(30), top=5)) == 5
+def test_every_project_is_compared():
+    """좁히다가 정작 잘 맞는 과제를 빼먹던 문제. 이제 전부 본다."""
+    목록 = _과제(12)
+    llm = 묶음기록LLM()
+    나온것 = match("지원자", 목록, client=llm, batch=5)
+    assert len(set(llm.본과제)) == 12
+    assert len(나온것) == 12
 
 
-def test_embedding_failure_falls_back_to_word_overlap():
-    """임베딩이 죽어도 매칭은 되어야 한다."""
-    class 고장난것:
+def test_projects_are_asked_in_small_batches():
+    """한 번에 다 물으면 답이 길어져 잘린다."""
+    llm = 묶음기록LLM()
+    match("지원자", _과제(12), client=llm, batch=5)
+    assert llm.호출 == 3          # 5 + 5 + 2
+
+
+def test_unanswered_projects_are_marked_not_dropped():
+    """조용히 빼면 사람이 '비교했는데 낮구나' 로 오해한다."""
+    llm = 묶음기록LLM(빼먹기=1)
+    나온것 = match("지원자", _과제(3), client=llm, batch=3)
+    미평가 = [m for m in 나온것 if not m.평가됨]
+    assert len(미평가) == 1
+    assert "채점하지 않" in 미평가[0].사유
+    assert 미평가[0].등급 == "미평가"
+
+
+def test_unanswered_projects_are_asked_once_more():
+    llm = 묶음기록LLM(빼먹기=1)
+    match("지원자", _과제(3), client=llm, batch=3)
+    assert llm.호출 == 2          # 첫 질문 + 빠진 것 재질문
+
+
+def test_evaluated_projects_rank_above_unevaluated():
+    llm = 묶음기록LLM(점수=0, 빼먹기=1)
+    나온것 = match("지원자", _과제(3), client=llm, batch=3)
+    assert 나온것[-1].평가됨 is False
+
+
+def test_embedding_only_changes_the_asking_order():
+    """임베딩이 죽어도 결과 과제 수는 같아야 한다."""
+    class 죽음:
         def embed(self, texts):
             raise RuntimeError("TEI 죽음")
 
-    목록 = parse([{"과제명": f"과제{i}", "설명": "반도체 식각" if i == 7 else "생물"}
-                for i in range(20)])
-    좁힌것 = shortlist("반도체 식각 공정", 목록, top=3, embed_client=고장난것())
-    assert len(좁힌것) == 3
-    assert any("과제7" == p.이름 for p in 좁힌것)
+    목록 = _과제(7)
+    있을때 = match("지원자", 목록, client=묶음기록LLM(), batch=3)
+    없을때 = match("지원자", 목록, client=묶음기록LLM(), batch=3, embed_client=죽음())
+    assert len(있을때) == len(없을때) == 7
 
 
-def test_embedding_is_used_when_it_works():
+def test_similarity_is_recorded_when_embedding_works():
     class 가짜:
         def embed(self, texts):
-            # 첫 번째(지원자)와 똑같은 벡터를 세 번째 과제에만 준다
-            return [[1.0, 0.0]] + [[0.0, 1.0]] * (len(texts) - 1 - 1) + [[1.0, 0.0]]
+            return [[1.0, 0.0]] + [[1.0, 0.0]] + [[0.0, 1.0]] * (len(texts) - 2)
 
-    목록 = _과제(12)
-    좁힌것 = shortlist("지원자", 목록, top=2, embed_client=가짜())
-    assert 목록[-1] in 좁힌것
+    나온것 = match("지원자", _과제(2), client=묶음기록LLM(), embed_client=가짜())
+    유사도 = {m.과제명: m.유사도 for m in 나온것}
+    assert 유사도["과제0"] == 1.0 and 유사도["과제1"] == 0.0
+
+
+def test_similarity_is_none_without_embedding():
+    나온것 = match("지원자", _과제(2), client=묶음기록LLM())
+    assert all(m.유사도 is None for m in 나온것)
+
+
+def test_similarities_survive_a_dead_embedding_service():
+    class 죽음:
+        def embed(self, texts):
+            raise RuntimeError("죽음")
+
+    assert similarities("지원자", _과제(3), 죽음()) == {}
 
 
 # --- 점수 · 사유 ---------------------------------------------------------------
@@ -202,7 +265,7 @@ def test_match_returns_scores_and_reasons():
     assert [m.과제키 for m in 나온것] == ["P-1", "P-2"]      # 점수 높은 순
     assert 나온것[0].과제명 == "차세대 공정"
     assert 나온것[0].근거 == ["반도체 식각"]
-    assert 나온것[0].등급 == "매우 적합"
+    assert 나온것[0].등급 == "적합"          # 85 점은 70~89 구간
 
 
 def test_invented_projects_are_dropped():
@@ -241,11 +304,26 @@ def test_empty_profile_is_refused():
         match("   ", parse([{"과제명": "가"}]), client=가짜LLM({"결과": []}))
 
 
-def test_grades_read_in_korean():
-    assert Match("k", "n", 85, "").등급 == "매우 적합"
-    assert Match("k", "n", 65, "").등급 == "적합"
-    assert Match("k", "n", 45, "").등급 == "보통"
-    assert Match("k", "n", 10, "").등급 == "낮음"
+def test_grades_follow_the_rubric():
+    """등급 이름이 점수 눈금과 어긋나면 사람이 오해한다."""
+    assert Match("k", "n", 95, "").등급 == "매우 적합"
+    assert Match("k", "n", 75, "").등급 == "적합"
+    assert Match("k", "n", 55, "").등급 == "인접 분야"
+    assert Match("k", "n", 35, "").등급 == "기초만 겹침"
+    assert Match("k", "n", 10, "").등급 == "접점 없음"
+    assert Match("k", "n", 0, "", 평가됨=False).등급 == "미평가"
+
+
+def test_prompt_carries_the_score_rubric():
+    """점수의 뜻을 안 알려주면 모델이 느낌으로 매긴다."""
+    from cvtool.matching import SCORE_RUBRIC
+
+    목록 = parse([{"과제명": "가", "id": "P-1"}])
+    llm = 가짜LLM({"결과": []})
+    match("지원자 정보", 목록, client=llm)
+    지시 = llm.받은프롬프트[0]["content"]
+    assert SCORE_RUBRIC in 지시
+    assert "하나도 빠짐없이" in 지시
 
 
 # --- 저장 --------------------------------------------------------------------

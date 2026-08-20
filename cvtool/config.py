@@ -70,8 +70,10 @@ class Settings:
     # 원본에서 필요한 과제·필드만 골라 저장하는 파일. 비우면 데이터 폴더에 만든다.
     # 이 파일이 있으면 매칭은 **원본 대신 이 파일**을 쓴다.
     projects_curated: str = _env("CVTOOL_PROJECTS_CURATED", "")
-    # LLM 에 한 번에 넣을 과제 수. 넘으면 임베딩으로 먼저 좁힌다.
-    match_top: int = int(_env("CVTOOL_MATCH_TOP", "8"))
+    # 한 번에 물어볼 과제 수. **과제는 전부 비교하고**, 답이 잘리지 않게 나눠 묻는다.
+    match_batch: int = int(_env("CVTOOL_MATCH_BATCH", "5"))
+    # 화면에 기본으로 보여줄 상위 과제 수 (나머지는 '전체 보기')
+    match_show: int = int(_env("CVTOOL_MATCH_SHOW", "3"))
     # CV 를 분석한 뒤 매칭까지 자동으로 돌릴지. 과제 파일이 있을 때만 뜻이 있다.
     match_auto: bool = _env("CVTOOL_MATCH_AUTO", "1").lower() not in ("0", "false", "no", "")
 

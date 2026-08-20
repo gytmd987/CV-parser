@@ -59,7 +59,7 @@ from ..names import (
     observe_record,
 )
 from ..mailing import MailStore, Template, html_to_text, render
-from ..matching import candidate_profile, match as match_projects
+from ..matching import SCORE_RUBRIC, candidate_profile, match as match_projects
 from .. import projects as projectsmod
 from ..clients import mailer as mailapi
 from ..recruit import RECRUIT_COLUMNS, STAGES, STATUSES, RecruitStore
@@ -142,7 +142,7 @@ def 매칭실행(rec, *, 사용자: str = "") -> tuple[int, str]:
         return 0, ""
     profile = candidate_profile(rec, registry)
     try:
-        결과 = match_projects(profile, 목록, top=settings.match_top,
+        결과 = match_projects(profile, 목록, batch=settings.match_batch,
                             embed_client=_embed_client())
     except Exception as exc:  # noqa: BLE001 - 매칭이 실패해도 지원자는 남아야 한다
         return 0, f"{type(exc).__name__}: {exc}"
@@ -290,6 +290,7 @@ input[type=password],input[type=text],select{padding:7px 9px;border:1px solid va
 .p-대기중{background:#e5e7eb;color:#374151}
 .p-겹침{background:#fef3c7;color:#92400e}
 .dup{background:#fff1f2}
+tr.grouphead td{background:#eef2ff;border-top:2px solid #c7d2fe}
 td.edit{cursor:cell}
 td.edit:hover{outline:2px solid var(--accent);outline-offset:-2px}
 td.saved{background:#dcfce7 !important}
@@ -383,6 +384,7 @@ td.sel{background:#bfdbfe !important;outline:1px solid #2563eb;outline-offset:-1
 .mailbody{border:1px solid var(--line);border-radius:8px;padding:14px 16px;
  background:#fff;max-height:420px;overflow:auto;font:12pt/1.7 "맑은 고딕",sans-serif}
 .mailbody img{max-width:100%}
+pre.rubric{background:#f6f7f9;border:1px solid var(--line);border-radius:6px;padding:10px 12px;font-size:12px;white-space:pre-wrap;margin:8px 0 0;color:var(--muted)}
 #toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#1b1f24;
  color:#fff;padding:10px 16px;border-radius:8px;opacity:0;pointer-events:none;
  transition:opacity .15s;z-index:99}
@@ -582,7 +584,6 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
     records = store.list_filtered(q, review_only, 년도)
     전체 = store.count()
     만료 = store.expired_count()
-    연도맵 = store.year_map()
     미분류 = registry.unclassified_count()
 
     warns = []
@@ -608,6 +609,7 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
     COLS = 표열()
     사용자열정의 = {f["이름"]: f for f in store.fields()}
     사용자값맵 = store.custom_map()
+    관리값맵 = store.meta_map()
     수정가능 = can(me, "지원자_수정")
     이름표 = 라벨(COLS)
     head = "".join(f"<th>{html.escape(이름표[c])}</th>" for c in COLS)
@@ -618,9 +620,13 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
         cells = [
             f"<td><input type='checkbox' name='ids' value='{html.escape(cid)}'></td>",
             f"<td><a href='/candidate?id={urllib.parse.quote(cid)}'>상세</a></td>",
-            f"<td class='muted'>{html.escape(연도맵.get(cid, ''))}</td>",
         ]
         for c in COLS:
+            if c in MANAGE_COLUMNS:
+                # 등록·보관 정보는 표에서 고치지 않는다 (상세 화면에서 고친다)
+                v = html.escape(관리값맵.get(cid, {}).get(c, ""))
+                cells.append(f"<td class='muted' title='{v}'>{v}</td>")
+                continue
             if c in 사용자열정의:
                 값 = 사용자값맵.get(cid, {}).get(c, "")
                 if 수정가능:
@@ -648,7 +654,7 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
           <div class='scroll'><table>
             <tr><th><input type='checkbox' onclick="for(const c of
                 this.closest('table').querySelectorAll('input[name=ids]'))c.checked=this.checked">
-            </th><th></th><th>등록년도</th>{head}</tr>
+            </th><th></th>{head}</tr>
             {''.join(body_rows)}
           </table></div>
         </form>"""
@@ -1063,13 +1069,57 @@ def _tsv_to_xlsx(tsv: str) -> bytes:
     return build_xlsx(rows, header)
 
 
+#: DB 에는 있지만 CV 에서 뽑은 값이 아닌 열 — 언제 등록했고 원본이 무엇인지.
+#: 표에서 고칠 수 없다 (등록년도는 상세 화면에서 고친다).
+MANAGE_COLUMNS = ("등록년도", "등록일시", "원본_파일명", "보관_만료일")
+
+
+def 열목록(registry_=None) -> list[tuple[str, str]]:
+    """이 시스템이 아는 **모든 열**을 (구분, 열이름) 으로 돌려준다.
+
+    표 항목 탭이 이걸 그대로 보여준다. 지원자 정보 열만 관리할 수 있으면
+    채용 현황 열 이름을 못 바꾸고, 관리 정보 열은 아예 표에 못 올린다.
+    """
+    reg = registry_ or registry
+    out = [("지원자 정보", c) for c in table_columns(reg)]
+    out += [("관리 정보", c) for c in MANAGE_COLUMNS]
+    out += [("채용 현황", c) for c in RECRUIT_COLUMNS]
+    out += [("추가한 열", c) for c in store.field_names()]
+    return out
+
+
+def 지원자열(registry_=None) -> list[str]:
+    """지원자 목록·엑셀에 나갈 수 있는 열 전부 (숨김·순서 적용 전)."""
+    return (list(table_columns(registry_ or registry)) + list(MANAGE_COLUMNS)
+            + store.field_names())
+
+
+#: 관리 정보 중 처음에는 접어 두는 열. 표가 넓어지기만 하고 평소엔 안 본다.
+#: 표 항목 탭에서 숨김을 풀면(설정이 생기면) 그때부터 보인다.
+MANAGE_HIDDEN_BY_DEFAULT = ("등록일시", "원본_파일명", "보관_만료일")
+
+
+def 기본숨김(col: str, cfg: dict) -> bool:
+    """설정을 한 번도 안 건드린 관리 정보 열인가."""
+    return col in MANAGE_HIDDEN_BY_DEFAULT and col not in cfg
+
+
 def 표열(registry_=None) -> list[str]:
     """지원자 표에 실제로 나갈 열 (숨김·순서 설정 반영)."""
-    return store.arrange(list(table_columns(registry_ or registry)) + store.field_names())
+    cfg = store.column_config()
+    return store.arrange([c for c in 지원자열(registry_) if not 기본숨김(c, cfg)])
 
 
 def 라벨(열들: list[str]) -> dict[str, str]:
     return store.labels(열들)
+
+
+def _표값맵() -> dict[str, dict[str, str]]:
+    """추출 결과에 없는 열(추가한 열·관리 정보)의 값. {지원자_ID: {열: 값}}"""
+    합침 = store.meta_map()
+    for cid, 값들 in store.custom_map().items():
+        합침.setdefault(cid, {}).update(값들)
+    return 합침
 
 
 #: 메일 본문 편집기.
@@ -1390,12 +1440,24 @@ def _볼수있나(me: User, 지원자_ID: str) -> bool:
     return recruit.get(지원자_ID).project_id in 보이는
 
 
+def _등급이름(m: dict) -> str:
+    """저장된 점수로 등급 이름을 되살린다 (Match.등급 과 같은 눈금)."""
+    if not m.get("평가됨", True):
+        return "미평가"
+    점수 = m.get("점수") or 0
+    for 문턱, 이름 in ((90, "매우 적합"), (70, "적합"), (50, "인접 분야"),
+                    (30, "기초만 겹침")):
+        if 점수 >= 문턱:
+            return 이름
+    return "접점 없음"
+
+
 def _점수색(점수: int) -> str:
-    if 점수 >= 80:
+    if 점수 >= 90:
         return "p-완료"
-    if 점수 >= 60:
+    if 점수 >= 70:
         return "p-처리중"
-    if 점수 >= 40:
+    if 점수 >= 50:
         return "p-검토필요"
     return "p-대기중"
 
@@ -1527,6 +1589,8 @@ def _match_page(me: User, error: str = "", msg: str = "") -> bytes:
     목록, 파일오류 = 과제목록()
     경로 = projectsmod.resolve_path(쓰는과제파일()[0])
     맨위 = store.top_matches()
+    비교수 = store.match_counts()
+    보여줄수 = max(1, settings.match_show)
     보이는과제 = auth.visible_project_ids(me)
     진행맵 = recruit.all()
     records = store.list_all()
@@ -1546,7 +1610,10 @@ def _match_page(me: User, error: str = "", msg: str = "") -> bytes:
         f"<tr><th>맞춰본 지원자</th><td>{store.matched_count()}명 "
         f"/ 전체 {len(records)}명</td></tr>"
         f"<tr><th>자동 매칭</th><td>{'켜짐' if settings.match_auto else '꺼짐'} "
-        "<span class='muted'>(CVTOOL_MATCH_AUTO)</span></td></tr></table>"
+        "<span class='muted'>(CVTOOL_MATCH_AUTO)</span></td></tr>"
+        f"<tr><th>비교 방식</th><td>과제 <b>전부</b>와 비교 · "
+        f"한 번에 {settings.match_batch}개씩 물어봄 "
+        "<span class='muted'>(CVTOOL_MATCH_BATCH)</span></td></tr></table>"
     )
     과제줄 = "".join(
         f"<tr><td>{html.escape(p.번호 or p.키)}</td><td><b>{html.escape(p.이름)}</b></td>"
@@ -1559,19 +1626,34 @@ def _match_page(me: User, error: str = "", msg: str = "") -> bytes:
 
     지원자줄 = []
     for rec in records:
-        m = 맨위.get(rec.지원자_ID)
         이름 = rec.한글_이름 or rec.영문_이름 or rec.지원자_ID
-        지원자줄.append(
-            f"<tr><td><a href='/candidate?id={urllib.parse.quote(rec.지원자_ID)}'>"
-            f"{html.escape(이름)}</a></td>"
-            + (f"<td><b>{html.escape(m['과제명'])}</b></td>"
-               f"<td><span class='pill {_점수색(m['점수'])}'>{m['점수']}점</span></td>"
-               f"<td style='white-space:normal'>{html.escape(m['사유'])}</td>"
-               f"<td class='muted'>{html.escape(m['판단일시'])}</td>"
-               if m else
-               "<td colspan='4' class='muted'>아직 맞춰보지 않았습니다.</td>")
-            + "</tr>"
-        )
+        고른것 = store.matches(rec.지원자_ID)[:보여줄수]
+        링크 = (f"<a href='/candidate?id={urllib.parse.quote(rec.지원자_ID)}'>"
+              f"{html.escape(이름)}</a>")
+        if not 고른것:
+            지원자줄.append(
+                f"<tr><td>{링크}</td>"
+                "<td colspan='4' class='muted'>아직 맞춰보지 않았습니다.</td></tr>"
+            )
+            continue
+        칸 = 비교수.get(rec.지원자_ID, 0)
+        for 자리, m in enumerate(고른것):
+            첫줄 = 자리 == 0
+            지원자줄.append(
+                "<tr>"
+                + (f"<td rowspan='{len(고른것)}'>{링크}"
+                   f"<br><span class='muted'>과제 {칸}개와 비교</span></td>"
+                   if 첫줄 else "")
+                + f"<td>{m['순위']}</td>"
+                f"<td><b>{html.escape(m['과제명'])}</b>"
+                + (f"<br><span class='muted'>유사도 {m['유사도']:.2f}</span>"
+                   if m.get("유사도") is not None else "")
+                + "</td>"
+                + (f"<td><span class='pill {_점수색(m['점수'])}'>{m['점수']}점</span>"
+                   f"<br><span class='muted'>{_등급이름(m)}</span></td>"
+                   if m["평가됨"] else "<td><span class='pill p-실패'>미평가</span></td>")
+                + f"<td style='white-space:normal'>{html.escape(m['사유'])}</td></tr>"
+            )
     지원자표 = "".join(지원자줄) or \
         "<tr><td colspan='5' class='muted'>지원자가 없습니다.</td></tr>"
 
@@ -1604,9 +1686,14 @@ def _match_page(me: User, error: str = "", msg: str = "") -> bytes:
         "<th>담당</th><th>설명</th></tr>" + 과제줄 + "</table></div></div>"
         + f"<div class='card'><h2>지원자별 1순위 <span class='muted'>"
         f"{len(records)}명</span></h2>" + 실행
+        + f"<p class='muted'>지원자마다 <b>모든 과제와 비교</b>하고 상위 "
+        f"{보여줄수}개를 보여줍니다. 점수 눈금은 아래와 같고, "
+        "<b>LLM 의 판단이지 측정값이 아닙니다.</b> 유사도는 임베딩 코사인값으로 "
+        "돌릴 때마다 같은 값이 나오는 참고 수치입니다.</p>"
+        f"<pre class='rubric'>{html.escape(SCORE_RUBRIC)}</pre>"
         + "<div class='scroll'><table data-name='지원자별 과제 매칭'>"
-        "<tr><th>지원자</th><th>1순위 과제</th><th>점수</th><th>판단 사유</th>"
-        "<th>판단 일시</th></tr>" + 지원자표 + "</table></div></div>",
+        "<tr><th>지원자</th><th>순위</th><th>과제</th><th>점수</th>"
+        "<th>판단 사유</th></tr>" + 지원자표 + "</table></div></div>",
         me=me,
     )
 
@@ -1763,21 +1850,48 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "") -> bytes:
     매칭 = store.matches(지원자_ID)
     매칭카드 = ""
     if settings.projects_json:
-        if 매칭:
-            줄 = "".join(
+        보여줄수 = max(1, settings.match_show)
+
+        def 매칭줄(m: dict) -> str:
+            유사 = ("<br><span class='muted'>임베딩 유사도 "
+                  f"{m['유사도']:.2f}</span>" if m.get("유사도") is not None else "")
+            점수칸 = (f"<span class='pill {_점수색(m['점수'])}'>{m['점수']}점</span>"
+                   f"<br><span class='muted'>{_등급이름(m)}</span>"
+                   if m["평가됨"] else
+                   "<span class='pill p-실패'>미평가</span>")
+            return (
                 f"<tr><td>{m['순위']}</td><td><b>{html.escape(m['과제명'])}</b>"
-                f"<br><span class='muted'>{html.escape(m['과제키'])}</span></td>"
-                f"<td><span class='pill {_점수색(m['점수'])}'>{m['점수']}점</span></td>"
+                f"<br><span class='muted'>{html.escape(m['과제키'])}</span>{유사}</td>"
+                f"<td>{점수칸}</td>"
                 f"<td style='white-space:normal'>{html.escape(m['사유'])}"
                 + ("<br><span class='muted'>근거: "
                    + html.escape(" · ".join(m["근거"])) + "</span>" if m["근거"] else "")
                 + "</td></tr>"
-                for m in 매칭
             )
-            안내 = f"<p class='muted'>{html.escape(매칭[0]['판단일시'])} 기준</p>"
+
+        if 매칭:
+            위 = "".join(매칭줄(m) for m in 매칭[:보여줄수])
+            나머지 = "".join(매칭줄(m) for m in 매칭[보여줄수:])
+            더보기 = (
+                f"<details><summary class='muted' style='cursor:pointer;padding:6px 0'>"
+                f"나머지 {len(매칭) - 보여줄수}개 과제도 보기</summary>"
+                "<div class='scroll'><table>"
+                "<tr><th style='width:44px'>순위</th><th>과제</th>"
+                "<th style='width:92px'>점수</th><th>판단 사유</th></tr>"
+                f"{나머지}</table></div></details>"
+                if len(매칭) > 보여줄수 else ""
+            )
+            미평가 = sum(1 for m in 매칭 if not m["평가됨"])
+            안내 = (
+                f"<p class='muted'>{html.escape(매칭[0]['판단일시'])} 기준 · "
+                f"과제 <b>{len(매칭)}개 전부</b>와 비교했습니다"
+                + (f" · <span class='flag'>{미평가}개는 모델이 답하지 않아 미평가</span>"
+                   if 미평가 else "")
+                + "</p>"
+            )
         else:
-            줄 = "<tr><td colspan='4' class='muted'>아직 맞춰보지 않았습니다.</td></tr>"
-            안내 = ""
+            위, 더보기, 안내 = ("<tr><td colspan='4' class='muted'>"
+                             "아직 맞춰보지 않았습니다.</td></tr>", "", "")
         다시 = (
             "<form method='post' action='/match/one' style='display:inline'>"
             f"<input type='hidden' name='id' value='{html.escape(지원자_ID)}'>"
@@ -1786,11 +1900,15 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "") -> bytes:
         )
         매칭카드 = (
             "<div class='card'><h2>연구 과제 매칭</h2>" + 안내
-            + f"<p>{다시} <span class='muted'>CV 에 적힌 전공·연구·경력을 회사 과제와 "
-            "맞춰 봅니다. 사람이 확인할 <b>판단 사유</b>가 함께 나옵니다.</span></p>"
+            + f"<p>{다시} <a class='btn sec' href='/match'>과제 매칭 화면</a></p>"
             "<div class='scroll'><table data-name='과제 매칭'>"
-            "<tr><th style='width:44px'>순위</th><th>과제</th><th style='width:80px'>점수</th>"
-            "<th>판단 사유</th></tr>" + 줄 + "</table></div></div>"
+            "<tr><th style='width:44px'>순위</th><th>과제</th>"
+            "<th style='width:92px'>점수</th><th>판단 사유</th></tr>"
+            + 위 + "</table></div>" + 더보기
+            + "<p class='muted'>점수는 아래 눈금으로 매깁니다. "
+            "<b>LLM 의 판단이지 측정값이 아닙니다</b> — 순위를 참고하고 "
+            "사유와 근거를 사람이 확인하세요.</p>"
+            f"<pre class='rubric'>{html.escape(SCORE_RUBRIC)}</pre></div>"
         )
 
     메일기록 = mailing.history(지원자_ID)
@@ -2681,9 +2799,12 @@ def _recruit_rows(me: User, sort: str = ""):
 
     사용자값맵 = store.custom_map()
     사용자열이름 = set(store.field_names())
+    관리값맵 = store.meta_map()
 
     def 값(rec, col: str) -> str:
         p = 진행맵.get(rec.지원자_ID)
+        if col in MANAGE_COLUMNS:
+            return 관리값맵.get(rec.지원자_ID, {}).get(col, "")
         if col == "부서":
             return 부서명.get(p.부서_id, "") if p else ""
         if col == "과제":
@@ -2725,7 +2846,8 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
     depts = auth.departments()
     projects = auth.projects()
 
-    표열 = recruit.columns()
+    표열 = store.arrange(recruit.columns())
+    이름표 = 라벨(표열)
     수정가능 = can(me, "채용현황_수정")
     담당자 = can(me, "지원자_수정")
 
@@ -2802,7 +2924,7 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
         묶음 = " class='dup'" if p and p.탈락 else ""
         rows.append(f"<tr{묶음}>{링크}{''.join(cells)}</tr>")
 
-    머리 = "<th></th>" + "".join(f"<th>{html.escape(c)}</th>" for c in 표열)
+    머리 = "<th></th>" + "".join(f"<th>{html.escape(이름표[c])}</th>" for c in 표열)
     알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
     오류 = f"<div class='warn'>{html.escape(error)}</div>" if error else ""
     안내 = (
@@ -2842,7 +2964,7 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
 
 def _recruit_columns_page(me: User) -> bytes:
     """관리자가 채용 현황 표에 보일 열과 순서를 정한다."""
-    전체 = list(table_columns(registry)) + list(RECRUIT_COLUMNS) + store.field_names()
+    전체 = [c for _, c in 열목록()]
     현재 = recruit.columns()
     항목 = "".join(
         f"<label style='display:block;padding:3px 0'>"
@@ -2867,27 +2989,47 @@ def _recruit_columns_page(me: User) -> bytes:
 
 
 
+#: 열이 어디에 쓰이는지 — 표 항목 탭에서 한눈에 보이게 적어 둔다.
+COLUMN_GROUP_NOTE = {
+    "지원자 정보": "지원자 목록 · 엑셀 내려받기. CV 에서 뽑아 채웁니다.",
+    "관리 정보": "언제 등록했고 원본이 무엇인지. 표에서는 보기만 합니다.",
+    "채용 현황": "채용 현황 표. 어떤 열을 쓸지는 [표 열 구성] 에서 고릅니다.",
+    "추가한 열": "직접 만든 열. 값은 사람이 채웁니다.",
+}
+
+
 def _fields_page(me: User, error: str = "", msg: str = "") -> bytes:
-    """표에 나갈 열을 관리한다 — **기본 열과 추가한 열을 한 자리에서.**
+    """표에 나갈 열을 관리한다 — **이 시스템이 아는 모든 열을 한 자리에서.**
 
-    예전에는 추가한 열만 보였다. 기본 열도 이름이 마음에 안 들거나 안 쓰는 게
-    있어서, 같은 화면에서 보이는 이름·숨김·순서를 정할 수 있어야 한다.
+    예전에는 지원자 정보 열과 직접 추가한 열만 보였다. 그래서 채용 현황 열
+    이름을 바꿀 수 없었고, 등록년도·원본 파일명 같은 관리 정보 열은 아예
+    표에 올릴 수도 없었다. 이제 네 묶음을 모두 보여준다.
 
-    다만 기본 열의 **입력 형식은 바꾸지 않는다.** 형식 검사와 추출 스키마가
-    그 열에 걸려 있어서, 여기서 바꾸면 이미 들어 있는 값과 어긋난다.
+    다만 **입력 형식은 바꾸지 않는다.** 형식 검사와 추출 스키마가 그 열에
+    걸려 있어서, 여기서 바꾸면 이미 들어 있는 값과 어긋난다.
     """
-    기본열 = list(table_columns(registry))
     사용자열 = {f["이름"]: f for f in store.fields()}
     cfg = store.column_config()
     유형옵션 = "".join(f"<option>{t}</option>" for t in CUSTOM_TYPES)
+    쓰는채용열 = set(recruit.columns())
 
-    def 설명(col: str) -> str:
-        if col in 사용자열:
+    def 설명(구분: str, col: str) -> str:
+        if 구분 == "추가한 열":
             f = 사용자열[col]
             선택지 = f["선택지"] or ""
             return (f"{f['유형']}" + (f" · {html.escape(선택지)}" if 선택지 else "")
                     + f"<br><span class='muted'>{html.escape(f['만든일시'])}"
                     + (f" ({html.escape(f['만든이'])})" if f["만든이"] else "") + "</span>")
+        if 구분 == "관리 정보":
+            return "<span class='muted'>자동 기록 (고치려면 지원자 상세 화면)</span>"
+        if 구분 == "채용 현황":
+            if col in STAGES:
+                return "선택 · " + html.escape(", ".join(v or "(빈칸)" for v in STATUSES))
+            if col in ("부서", "과제"):
+                return "<span class='muted'>조직에서 고른 값</span>"
+            if col == "최종상태":
+                return "<span class='muted'>계산 결과 (단계 상태에서 정함)</span>"
+            return "텍스트"
         if col in CHOICE_FIELDS:
             return "선택 · " + html.escape(", ".join(v or "(빈칸)" for v in CHOICE_FIELDS[col]))
         if col in REGISTRY_FIELDS:
@@ -2897,16 +3039,34 @@ def _fields_page(me: User, error: str = "", msg: str = "") -> bytes:
         spec = field_spec(col)
         return html.escape(spec.도움말 or "텍스트")
 
+    전체 = 열목록()
+    묶음수: dict[str, int] = {}
+    for 구분, _c in 전체:
+        묶음수[구분] = 묶음수.get(구분, 0) + 1
+
     rows = []
-    for i, col in enumerate(기본열 + list(사용자열), start=1):
+    직전구분 = ""
+    for i, (구분, col) in enumerate(전체, start=1):
+        if 구분 != 직전구분:
+            직전구분 = 구분
+            rows.append(
+                f"<tr class='grouphead'><td colspan='7'><b>{html.escape(구분)}</b> "
+                f"<span class='muted'>{묶음수[구분]}개 — "
+                f"{html.escape(COLUMN_GROUP_NOTE[구분])}</span></td></tr>"
+            )
         c = cfg.get(col, {})
-        추가열 = col in 사용자열
+        추가열 = 구분 == "추가한 열"
+        숨김중 = c.get("숨김") or 기본숨김(col, cfg)
+        # 채용 현황 열은 [표 열 구성] 에서 안 고르면 애초에 표에 안 나온다.
+        꼬리 = ""
+        if 구분 == "채용 현황" and col not in 쓰는채용열:
+            꼬리 = " <span class='muted'>(지금 표에 없음)</span>"
         rows.append(
             f"<tr>"
-            f"<td>{html.escape(col)}</td>"
+            f"<td>{html.escape(col)}{꼬리}</td>"
             f"<td><span class='pill {'p-완료' if 추가열 else 'p-대기중'}'>"
-            f"{'추가한 열' if 추가열 else '기본 열'}</span></td>"
-            f"<td style='white-space:normal'>{설명(col)}</td>"
+            f"{html.escape(구분)}</span></td>"
+            f"<td style='white-space:normal'>{설명(구분, col)}</td>"
             f"<td class='ctl'><input type='hidden' form='colform' name='col'"
             f" value='{html.escape(col)}'>"
             f"<input type='text' form='colform' name='label_{i}'"
@@ -2917,7 +3077,7 @@ def _fields_page(me: User, error: str = "", msg: str = "") -> bytes:
             f" value='{c.get('순서') or ''}' placeholder='-' style='width:70px' min='0'"
             f" data-orig='{c.get('순서') or ''}' oninput='markDirty(this)'></td>"
             f"<td><label><input type='checkbox' form='colform' name='hide_{i}'"
-            f"{' checked' if c.get('숨김') else ''} onchange='markDirty(this)'"
+            f"{' checked' if 숨김중 else ''} onchange='markDirty(this)'"
             f" data-orig=''> 숨김</label></td>"
             f"<td>" + (
                 "<form method='post' action='/fields/delete' style='display:inline'"
@@ -2930,6 +3090,7 @@ def _fields_page(me: User, error: str = "", msg: str = "") -> bytes:
 
     알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
     오류 = f"<p class='flag'>{html.escape(error)}</p>" if error else ""
+    묶음요약 = " · ".join(f"{k} {v}개" for k, v in 묶음수.items())
     return _page(
         "표 항목",
         알림
@@ -2944,7 +3105,7 @@ def _fields_page(me: User, error: str = "", msg: str = "") -> bytes:
         "<b>값은 사람이 채웁니다</b> — LLM 이 자동으로 채우지 않습니다.</p></div>"
 
         + "<div class='card'><h2>표에 나갈 열 "
-        f"<span class='muted'>기본 {len(기본열)}개 · 추가 {len(사용자열)}개</span></h2>"
+        f"<span class='muted'>{html.escape(묶음요약)}</span></h2>"
         "<form method='post' action='/fields/columns' id='colform' class='mergebar'>"
         "<button type='submit'>고친 내용 저장</button>"
         "<span class='muted'>보이는 이름·순서·숨김을 고치고 <b>한 번만</b> 누르세요. "
@@ -2953,9 +3114,10 @@ def _fields_page(me: User, error: str = "", msg: str = "") -> bytes:
         "<tr><th>열 이름</th><th>구분</th><th>입력 형식</th><th class='ctl'>표에 보일 이름</th>"
         "<th class='ctl'>순서</th><th>숨김</th><th></th></tr>"
         + "".join(rows) + "</table></div>"
-        "<p class='muted'>기본 열의 <b>입력 형식은 바꾸지 않습니다</b> — 형식 검사와 "
-        "추출 스키마가 걸려 있어서 여기서 바꾸면 이미 들어 있는 값과 어긋납니다. "
-        "안 쓰는 열은 <b>숨김</b>으로 두세요.</p></div>",
+        "<p class='muted'>여기서 정한 이름·순서·숨김은 <b>화면과 엑셀에 함께</b> 적용됩니다. "
+        "<b>입력 형식은 바꾸지 않습니다</b> — 형식 검사와 추출 스키마가 걸려 있어서 "
+        "여기서 바꾸면 이미 들어 있는 값과 어긋납니다. 안 쓰는 열은 <b>숨김</b>으로 두세요.</p>"
+        "</div>",
         me=me,
     )
 
@@ -3104,13 +3266,14 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/recruit/export.xlsx":
             if not (can(me, "채용현황_수정") or can(me, "지원자_조회")):
                 return self._deny()
-            표열 = recruit.columns()
+            표열 = store.arrange(recruit.columns())
+            이름표 = 라벨(표열)
             records, _진행, 값 = _recruit_rows(me, (urllib.parse.parse_qs(
                 urllib.parse.urlparse(self.path).query).get("sort") or [""])[0])
-            rows = [{c: 값(rec, c) for c in 표열} for rec in records]
+            rows = [{이름표[c]: 값(rec, c) for c in 표열} for rec in records]
             stamp = now_kst().strftime("%Y%m%d_%H%M")
             return self._send(
-                build_xlsx(rows, 표열),
+                build_xlsx(rows, [이름표[c] for c in 표열]),
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 extra={"Content-Disposition": f'attachment; filename="recruit_{stamp}.xlsx"'},
             )
@@ -3228,7 +3391,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._deny()
             열 = 표열()
             data = records_to_xlsx(store.list_all(), registry,
-                                   (store.field_names(), store.custom_map()),
+                                   (store.field_names(), _표값맵()),
                                    열=열, 라벨=라벨(열))
             stamp = now_kst().strftime("%Y%m%d_%H%M")
             return self._send(
@@ -3736,7 +3899,11 @@ class Handler(BaseHTTPRequestHandler):
                 새라벨 = (data.get(f"label_{i}") or [""])[0].strip()
                 순서값 = (data.get(f"order_{i}") or [""])[0].strip()
                 숨김 = f"hide_{i}" in data
-                옛 = 이전.get(col, {"표시이름": "", "숨김": False, "순서": 0})
+                # 관리 정보 열은 설정이 없으면 "숨김" 이 기본이다. 그 상태에서
+                # 체크를 풀었으면 바뀐 것으로 봐야 설정이 저장된다.
+                옛 = 이전.get(
+                    col, {"표시이름": "", "숨김": 기본숨김(col, 이전), "순서": 0}
+                )
                 try:
                     새순서 = int(순서값) if 순서값 else 0
                 except ValueError:

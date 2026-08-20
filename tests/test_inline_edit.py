@@ -552,12 +552,37 @@ def test_merge_ui_is_gone(web, names):
     assert "여기로 묶기" not in page
 
 
-# --- 표 항목: 기본 열도 보이고 고칠 수 있다 --------------------------------------
-def test_fields_page_lists_builtin_columns_too(web):
+# --- 표 항목: DB 에 있는 모든 열이 보이고 고칠 수 있다 ---------------------------
+def test_fields_page_lists_every_group_of_columns(web):
+    """지원자 정보 · 관리 정보 · 채용 현황 · 추가한 열이 모두 나와야 한다."""
     page = web.get("/fields")
-    assert "기본 열" in page and "추가한 열" in page
+    for 구분 in ("지원자 정보", "관리 정보", "채용 현황", "추가한 열"):
+        assert 구분 in page, 구분
     for 기본 in ("한글_이름", "박사_학교", "검토_필요"):
         assert 기본 in page
+
+
+def test_fields_page_lists_recruit_and_management_columns(web):
+    """예전에는 없던 채용 현황 열과 관리 정보 열도 관리할 수 있어야 한다."""
+    page = web.get("/fields")
+    for col in ("부서", "과제", "최종상태", "비고"):
+        assert col in page, col
+    for col in ("등록년도", "등록일시", "원본_파일명", "보관_만료일"):
+        assert col in page, col
+
+
+def test_recruit_column_can_be_renamed(web, cid):
+    """표 항목 탭에서 바꾼 이름이 채용 현황 표 머리글에 나와야 한다."""
+    web.post("/fields/columns", col=["최종상태"], label_1="합격 여부", order_1="")
+    page = web.get("/recruit")
+    assert "합격 여부" in page
+
+
+def test_management_column_can_be_shown_in_the_candidate_table(web, cid):
+    """관리 정보 열은 기본으로 접혀 있지만 숨김을 풀면 표에 나온다."""
+    assert "원본_파일명" not in web.module.표열()
+    web.post("/fields/columns", col=["원본_파일명"], label_1="", order_1="")
+    assert "원본_파일명" in web.module.표열()
 
 
 def test_builtin_column_can_be_renamed_and_hidden(web, cid):
