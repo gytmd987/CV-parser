@@ -172,6 +172,7 @@ _CSS = """
 body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.55 "맑은 고딕",system-ui,sans-serif}
 header{background:#1b1f24;color:#fff;padding:12px 20px;display:flex;gap:18px;align-items:center}
 header a{color:#cbd5e1;text-decoration:none;font-weight:600}
+header .brand{color:#fff;font-weight:700;margin-right:6px;padding-right:14px;border-right:1px solid #3a4149}
 header a:hover{color:#fff}
 header .sp{flex:1}
 main{padding:20px;max-width:1600px;margin:0 auto}
@@ -310,7 +311,11 @@ td.sel{background:#bfdbfe !important;outline:1px solid #2563eb;outline-offset:-1
 def _page(title: str, body: str, nav: bool = True, me: User | None = None) -> bytes:
     미분류 = registry.unclassified_count() if nav else 0
     badge = f' <span class="pill p-미분류">{미분류}</span>' if 미분류 else ""
-    링크 = ["<a href='/'>지원자</a>", "<a href='/recruit'>채용 현황</a>"]
+    링크 = []
+    if can(me, "지원자_목록"):
+        링크.append("<a href='/'>지원자</a>")
+    if can(me, "채용현황_수정") or can(me, "지원자_조회"):
+        링크.append("<a href='/recruit'>채용 현황</a>")
     if can(me, "지원자_등록"):
         링크.append("<a href='/upload'>CV 업로드</a>")
     if can(me, "메일_템플릿"):
@@ -326,14 +331,14 @@ def _page(title: str, body: str, nav: bool = True, me: User | None = None) -> by
         링크.append("<a href='/users'>계정</a>")
     if can(me, "열_구성"):
         링크.append("<a href='/fields'>표 항목</a>")
-    if me is not None:
+    if can(me, "변경이력_조회"):
         링크.append("<a href='/history'>변경 이력</a>")
     누구 = (
         f"<span class='muted' style='color:#94a3b8'>{html.escape(me.이름)} ({me.역할})</span> "
         if me else ""
     )
     header = (
-        "<header><a href='/'>지원자 관리</a>" + "".join(링크)
+        "<header><span class='brand'>지원자 관리</span>" + "".join(링크)
         + f"<span class='sp'></span>{누구}<a href='/logout'>로그아웃</a></header>"
         if nav
         else ""
@@ -1280,6 +1285,24 @@ function rtVars(btn){
 }
 document.addEventListener('DOMContentLoaded', rtInit);
 """
+
+def 홈(me: User | None) -> str:
+    """이 사람이 처음 볼 화면. 현업은 채용 현황이 홈이다."""
+    return "/" if can(me, "지원자_목록") else "/recruit"
+
+
+def _볼수있나(me: User, 지원자_ID: str) -> bool:
+    """현업은 **배정된 과제의 지원자만** 볼 수 있다.
+
+    화면에서 감추는 것으로는 부족하다. 주소를 직접 쳐도 막혀야 한다.
+    """
+    if not can(me, "지원자_조회"):
+        return False
+    보이는 = auth.visible_project_ids(me)
+    if 보이는 is None:
+        return True
+    return recruit.get(지원자_ID).project_id in 보이는
+
 
 def _busy_count() -> int:
     with _status_lock:
@@ -2444,17 +2467,18 @@ def _org_page(me: User, error: str = "") -> bytes:
             for p in 소속
         ) or "<li class='muted'>과제 없음</li>"
         카드.append(
-            "<div class='card'><h2>"
+            # 폼 안에 폼을 넣으면 브라우저가 안쪽을 버린다. 그래서 '부서 삭제' 를
+            # 눌러도 삭제가 아니라 이름 저장이 실행되고 있었다. 나란히 둔다.
+            "<div class='card'><h2 style='display:flex;gap:6px;align-items:center'>"
             "<form method='post' action='/org/dept/rename' style='display:flex;gap:6px'>"
             f"<input type='hidden' name='id' value='{d['id']}'>"
             f"<input type='text' name='name' value='{html.escape(d['이름'])}' style='width:220px'>"
-            "<button type='submit'>부서명 저장</button>"
-            "<form method='post' action='/org/dept/delete' style='display:inline'"
+            "<button type='submit'>부서명 저장</button></form>"
+            "<form method='post' action='/org/dept/delete'"
             " onsubmit=\"return confirm('부서를 삭제하면 그 아래 과제와 배정도 함께 지워집니다.')\">"
             f"<input type='hidden' name='id' value='{d['id']}'>"
             "<button class='danger'>부서 삭제</button></form>"
-            "</form>"
-            f" <span class='muted'>과제 {len(소속)}개</span></h2><ul>{항목}</ul>"
+            f"<span class='muted'>과제 {len(소속)}개</span></h2><ul>{항목}</ul>"
             "<form method='post' action='/org/project/add' style='display:flex;gap:8px'>"
             f"<input type='hidden' name='dept' value='{d['id']}'>"
             "<input type='text' name='name' placeholder='과제 이름' required>"
@@ -2893,6 +2917,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._redirect("/login")
 
         if path == "/":
+            if not can(me, "지원자_목록"):
+                return self._redirect(홈(me))    # 현업은 채용 현황으로
             params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             return self._send(
                 _dashboard(
@@ -2903,9 +2929,13 @@ class Handler(BaseHTTPRequestHandler):
                 )
             )
         if path == "/upload":
+            if not can(me, "지원자_등록"):
+                return self._deny()
             return self._send(_upload_page(me))
         if path == "/candidate":
             params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            if not _볼수있나(me, (params.get("id") or [""])[0]):
+                return self._deny("배정된 과제의 지원자만 볼 수 있습니다.")
             cid = (params.get("id") or [""])[0]
             return self._send(_candidate_page(cid, me, (params.get("err") or [""])[0]))
         if path == "/users":
@@ -2919,9 +2949,17 @@ class Handler(BaseHTTPRequestHandler):
             params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             return self._send(_org_page(me, (params.get("err") or [""])[0]))
         if path == "/history":
+            if not can(me, "변경이력_조회"):
+                return self._deny()
             params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             return self._send(_history_page(me, (params.get("kind") or [""])[0]))
         if path == "/candidate/file":
+            if not _볼수있나(
+                me,
+                (urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                 .get("id") or [""])[0],
+            ):
+                return self._deny("배정된 과제의 지원자만 볼 수 있습니다.")
             params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             cid = (params.get("id") or [""])[0]
             fpath = store.file_path(cid) if cid else None
@@ -2938,6 +2976,8 @@ class Handler(BaseHTTPRequestHandler):
                 extra={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"},
             )
         if path == "/recruit":
+            if not (can(me, "채용현황_수정") or can(me, "지원자_조회")):
+                return self._deny()
             params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             return self._send(
                 _recruit_page(me, (params.get("sort") or [""])[0],
@@ -2945,6 +2985,8 @@ class Handler(BaseHTTPRequestHandler):
                               (params.get("msg") or [""])[0])
             )
         if path == "/recruit/export.xlsx":
+            if not (can(me, "채용현황_수정") or can(me, "지원자_조회")):
+                return self._deny()
             표열 = recruit.columns()
             records, _진행, 값 = _recruit_rows(me, (urllib.parse.parse_qs(
                 urllib.parse.urlparse(self.path).query).get("sort") or [""])[0])
@@ -3028,6 +3070,8 @@ class Handler(BaseHTTPRequestHandler):
             if not att:
                 return self._send(_page("없음", "<div class='card'>첨부파일이 없습니다.</div>"),
                                   code=404)
+            if not _볼수있나(me, att["지원자_ID"]):
+                return self._deny("배정된 과제의 지원자만 볼 수 있습니다.")
             fpath = store.files_dir / att["저장명"]
             if not fpath.is_file():
                 return self._send(_page("없음", "<div class='card'>파일이 사라졌습니다.</div>"),
@@ -3051,6 +3095,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/favicon.ico":
             return self._send(b"", "image/x-icon", code=204)
         if path == "/export.xlsx":
+            if not can(me, "엑셀_다운로드"):
+                return self._deny()
             열 = 표열()
             data = records_to_xlsx(store.list_all(), registry,
                                    (store.field_names(), store.custom_map()),
@@ -3082,7 +3128,8 @@ class Handler(BaseHTTPRequestHandler):
             token = auth.start_session(user.아이디)
             audit.record(user.아이디, "로그인", user.아이디, 비고="로그인")
             return self._redirect(
-                "/", {"Set-Cookie": f"cvsession={token}; HttpOnly; Path=/; SameSite=Strict"}
+                홈(user),
+                {"Set-Cookie": f"cvsession={token}; HttpOnly; Path=/; SameSite=Strict"},
             )
 
         me = self._user()
@@ -3825,6 +3872,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._redirect("/")
 
         if path == "/candidates/purge":
+            if not can(me, "지원자_삭제"):
+                return self._deny()
             지운것 = store.purge_expired()
             for cid in 지운것:
                 recruit.delete(cid)
@@ -3832,6 +3881,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._redirect("/")
 
         if path == "/candidate/reanalyze":
+            if not can(me, "지원자_등록"):
+                return self._deny()
             data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
             cid = (data.get("id") or [""])[0]
             meta = store.meta(cid) if cid else None

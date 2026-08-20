@@ -66,8 +66,11 @@ def web(tmp_path_factory):
         def post_raw(self, path: str, **fields):
             body = urllib.parse.urlencode(fields, doseq=True, encoding="utf-8").encode()
             req = urllib.request.Request(self.base + path, data=body)
-            with self._opener.open(req) as r:
-                return r.status, r.read()
+            try:
+                with self._opener.open(req) as r:
+                    return r.status, r.read()
+            except urllib.error.HTTPError as e:      # 4xx 도 코드를 봐야 한다
+                return e.code, e.read()
 
     def make_client():
         jar = urllib.request.build_opener(
@@ -592,3 +595,91 @@ def test_field_worker_cannot_change_columns(web):
     other.post("/login", userid="hyunup", password="pw1234")
     code, _ = other.post("/fields/columns", col=["한글_이름"], label_1="이름")
     assert code == 403
+
+
+# --- 현업은 배정된 과제의 채용 현황만 --------------------------------------------
+@pytest.fixture
+def 현업(web, org):
+    """차세대공정에 배정된 현업 계정으로 로그인한 클라이언트."""
+    did, pid = org
+    a = web.module.auth
+    try:
+        a.create_user("hyun2", "현업이", "pw1234", "현업", 생성자="admin")
+    except ValueError:
+        pass
+    a.assign("hyun2", pid)
+    c = web.__class__.new()
+    c.post("/login", userid="hyun2", password="pw1234")
+    return c, did, pid
+
+
+def test_field_worker_sees_only_the_recruit_tab(현업):
+    c, _did, _pid = 현업
+    머리 = c.get("/recruit").split("<main>", 1)[0]
+    assert "href='/recruit'" in 머리
+    for 없어야할것 in ("href='/'>", "href='/history'", "href='/upload'", "href='/mail'",
+                   "href='/users'", "href='/org'", "href='/fields'"):
+        assert 없어야할것 not in 머리, 없어야할것
+
+
+def test_home_is_not_a_duplicate_of_the_applicant_tab(web):
+    """제목과 '지원자' 탭이 같은 곳으로 가서 헷갈렸다. 제목은 이름일 뿐이다."""
+    머리 = web.get("/").split("<main>", 1)[0]
+    assert "<span class='brand'>지원자 관리</span>" in 머리
+    assert 머리.count("href='/'>") == 1          # '지원자' 탭 하나뿐
+
+
+def test_field_worker_lands_on_recruit(현업):
+    c, _d, _p = 현업
+    assert "채용 현황" in c.get("/recruit")
+    코드, 본문 = c.post_raw("/mail/send", id="1")      # 발송 권한 없음
+    assert 코드 == 403
+
+
+@pytest.mark.parametrize("경로", ["/history", "/upload", "/mail", "/users", "/org",
+                                "/fields", "/export.xlsx", "/recruit/columns"])
+def test_field_worker_is_refused_elsewhere(현업, 경로):
+    """화면에서 감추는 것으로는 부족하다. 주소를 직접 쳐도 막혀야 한다."""
+    c, _d, _p = 현업
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        c._opener.open(c.base + 경로)
+    assert exc.value.code == 403
+
+
+def test_field_worker_gets_redirected_from_the_applicant_list(현업):
+    c, _d, _p = 현업
+    with c._opener.open(c.base + "/") as r:
+        assert r.url.endswith("/recruit")        # 막는 대신 자기 홈으로 보낸다
+
+
+def test_field_worker_cannot_open_another_projects_candidate(web, 현업, cid):
+    """배정 안 된 지원자는 주소를 알아도 못 본다."""
+    c, _did, _pid = 현업
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        c._opener.open(c.base + "/candidate?id=" + urllib.parse.quote(cid))
+    assert exc.value.code == 403
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        c._opener.open(c.base + "/candidate/file?id=" + urllib.parse.quote(cid))
+    assert exc.value.code == 403
+
+
+def test_field_worker_can_open_their_own_candidate(web, 현업, cid):
+    c, did, pid = 현업
+    web.module.recruit.set_assignment(cid, did, pid, "admin")
+    본문 = c.get("/candidate?id=" + urllib.parse.quote(cid))
+    assert "관리 정보" in 본문
+
+
+def test_purge_needs_delete_permission(현업):
+    c, _d, _p = 현업
+    코드, _ = c.post_raw("/candidates/purge")
+    assert 코드 == 403
+
+
+def test_department_delete_button_is_not_swallowed(web, org):
+    """폼 안에 폼을 넣으면 브라우저가 안쪽을 버려서, 삭제가 이름 저장으로 바뀐다."""
+    page = web.get("/org")
+    이름폼 = page.index("action='/org/dept/rename'")
+    닫힘 = page.index("</form>", 이름폼)
+    삭제폼 = page.index("action='/org/dept/delete'")
+    assert 닫힘 < 삭제폼          # 삭제 폼이 이름 폼 **밖에** 있어야 한다
