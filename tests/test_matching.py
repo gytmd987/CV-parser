@@ -300,3 +300,156 @@ def test_no_shadowed_definitions_in_the_web_module():
     )
     겹친것 = {이름: 수 for 이름, 수 in 센것.items() if 수 > 1}
     assert not 겹친것, f"두 번 정의된 함수: {겹친것}"
+
+
+# --- 사내 과제 파일 모양 (dep_name / project_name / core_tech ...) ----------------
+사내과제 = {
+    "dep_name": "공정개발팀",
+    "project_name": "차세대 반도체 식각 공정 개발",
+    "core_tech": "플라즈마 진단",
+    "deliverable": "공정 레시피",
+    "challenge": "고종횡비 균일도",
+    "background": "소자 미세화",
+    "milestones": ["2024 1차"],
+    "expected_impact": "수율 3%p",
+    "keywords_kr": ["반도체", "식각"],
+    "keywords_en": ["semiconductor", "etching"],
+    "작성자": "김철수",
+    "문서버전": "v3.2",
+}
+
+
+def test_company_field_names_are_understood():
+    p = parse([사내과제])[0]
+    assert p.이름 == "차세대 반도체 식각 공정 개발"
+    assert p.담당 == "공정개발팀"
+
+
+def test_korean_and_english_keywords_are_merged():
+    """keywords_kr 과 keywords_en 이 따로 있으면 둘 다 쓴다."""
+    assert parse([사내과제])[0].키워드 == ["반도체", "식각", "semiconductor", "etching"]
+
+
+def test_known_fields_get_korean_labels_in_the_summary():
+    """LLM 이 읽을 글이라 core_tech 보다 '핵심 기술' 이 낫다."""
+    글 = parse([사내과제])[0].요약()
+    for 라벨 in ("핵심 기술", "산출물", "기술적 난제", "배경", "기대 효과"):
+        assert 라벨 in 글
+
+
+# --- 다듬기 --------------------------------------------------------------------
+def _사내파일(tmp_path, 개수: int = 3):
+    from cvtool.projects import raw_items, read_json
+
+    데이터 = []
+    for i in range(개수):
+        d = dict(사내과제)
+        d["project_name"] = f"과제{i}"
+        d["코드"] = f"P-{i}"
+        데이터.append(d)
+    f = tmp_path / "raw.json"
+    f.write_text(json.dumps(데이터, ensure_ascii=False), encoding="utf-8")
+    return f, raw_items(read_json(f))
+
+
+def test_field_stats_lists_every_field_with_a_sample(tmp_path):
+    from cvtool.projects import field_stats
+
+    _f, 항목 = _사내파일(tmp_path)
+    통계 = {x.이름: x for x in field_stats(항목)}
+    assert 통계["core_tech"].라벨 == "핵심 기술"
+    assert 통계["core_tech"].채운수 == 3 and 통계["core_tech"].비율 == 100
+    assert 통계["core_tech"].예시 == "플라즈마 진단"
+    assert 통계["project_name"].필수 is True       # 이름은 뺄 수 없다
+    assert 통계["작성자"].필수 is False
+
+
+def test_field_stats_counts_only_filled_values(tmp_path):
+    from cvtool.projects import field_stats, raw_items
+
+    항목 = raw_items([{"project_name": "가", "메모": "있음"},
+                    {"project_name": "나", "메모": ""}])
+    통계 = {x.이름: x for x in field_stats(항목)}
+    assert (통계["메모"].채운수, 통계["메모"].전체수) == (1, 2)
+
+
+def test_curate_keeps_only_what_was_chosen(tmp_path):
+    from cvtool.projects import curate, item_key
+
+    _f, 항목 = _사내파일(tmp_path)
+    나온것 = curate(항목, {item_key(*항목[0])}, {"dep_name", "core_tech"})
+    assert len(나온것) == 1
+    assert set(나온것[0]) == {"dep_name", "core_tech", "project_name"}   # 이름은 항상
+    assert "작성자" not in 나온것[0]
+
+
+def test_curate_keeps_the_name_even_if_unchecked(tmp_path):
+    from cvtool.projects import curate
+
+    _f, 항목 = _사내파일(tmp_path, 1)
+    assert "project_name" in curate(항목, None, {"dep_name"})[0]
+
+
+def test_curate_drops_unselected_projects(tmp_path):
+    from cvtool.projects import curate
+
+    from cvtool.projects import item_key
+
+    _f, 항목 = _사내파일(tmp_path, 3)
+    고른것 = {item_key(*항목[0]), item_key(*항목[2])}
+    assert len(curate(항목, 고른것, None)) == 2
+
+
+def test_curated_file_reads_back_as_projects(tmp_path):
+    from cvtool.projects import curate, curated_meta, save_curated
+
+    from cvtool.projects import item_key
+
+    _f, 항목 = _사내파일(tmp_path, 2)
+    고른것 = curate(항목, {item_key(*항목[0])},
+                 {"dep_name", "core_tech", "keywords_kr"})
+    저장 = save_curated(tmp_path / "curated.json", 고른것, 출처="원본", 만든이="admin")
+
+    다시 = load(저장)
+    assert [p.이름 for p in 다시] == ["과제0"]
+    assert 다시[0].담당 == "공정개발팀"
+    assert "작성자" not in 다시[0].요약()          # 뺀 정보는 LLM 에 안 간다
+
+    메타 = curated_meta(저장)
+    assert 메타["과제수"] == 1 and 메타["만든이"] == "admin"
+    assert "core_tech" in 메타["필드"]
+
+
+def test_curated_meta_is_empty_when_there_is_no_file(tmp_path):
+    from cvtool.projects import curated_meta
+
+    assert curated_meta(tmp_path / "없다.json") == {}
+
+
+def test_raw_items_handles_every_shape():
+    from cvtool.projects import raw_items
+
+    assert len(raw_items([{"a": 1}, {"b": 2}])) == 2
+    assert len(raw_items({"projects": [{"a": 1}]})) == 1
+    assert raw_items({"P-1": {"a": 1}})[0][0] == "P-1"
+    assert len(raw_items({"과제명": "가"})) == 1
+
+
+def test_dict_key_survives_curation(tmp_path):
+    """번호가 사전 키로만 있던 경우에도 번호를 잃지 않는다."""
+    from cvtool.projects import curate, raw_items
+
+    항목 = raw_items({"P-9": {"project_name": "가", "core_tech": "나"}})
+    나온것 = curate(항목, {"P-9"}, {"core_tech"})
+    assert 나온것[0]["과제번호"] == "P-9"
+
+
+def test_the_key_is_computed_the_same_way_everywhere(tmp_path):
+    """화면에서 고른 키와 저장할 때 쓰는 키가 다르면 고른 과제가 빠진다."""
+    from cvtool.projects import curate, item_key, raw_items
+
+    항목 = raw_items([{"project_name": "가", "코드": "P-1"},
+                    {"project_name": "나"}])
+    키들 = {item_key(k, v) for k, v in 항목}
+    assert 키들 == {"P-1", "나"}
+    assert len(curate(항목, 키들, None)) == 2

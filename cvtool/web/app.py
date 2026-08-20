@@ -95,9 +95,27 @@ mailing = MailStore(DATA_DIR / "mail.db", DATA_DIR / "mail_files")
 _projects_cache: dict = {"mtime": None, "path": None, "목록": [], "오류": ""}
 
 
+def 다듬은파일() -> Path:
+    """필요한 과제·필드만 남겨 저장하는 파일의 위치."""
+    if settings.projects_curated:
+        return Path(projectsmod.resolve_path(settings.projects_curated))
+    return DATA_DIR / "과제_선별.json"
+
+
+def 쓰는과제파일() -> tuple[str, bool]:
+    """(실제로 매칭에 쓰는 경로, 다듬은 파일인지).
+
+    다듬은 파일이 있으면 그것을 쓴다. 원본에는 매칭에 쓸모없는 항목이 많다.
+    """
+    다듬 = 다듬은파일()
+    if 다듬.is_file():
+        return str(다듬), True
+    return settings.projects_json, False
+
+
 def 과제목록(다시: bool = False) -> tuple[list, str]:
     """(과제 목록, 오류 메시지). 파일이 바뀌면 자동으로 다시 읽는다."""
-    경로 = settings.projects_json
+    경로, _다듬음 = 쓰는과제파일()
     if not 경로:
         return [], ""
     풀린것 = projectsmod.resolve_path(경로)
@@ -1382,10 +1400,132 @@ def _점수색(점수: int) -> str:
     return "p-대기중"
 
 
+def _curate_page(me: User, error: str = "", msg: str = "") -> bytes:
+    """원본 과제 파일을 읽고 **어떤 과제·어떤 정보만 남길지** 고른다.
+
+    원본에는 매칭에 쓸모없는 항목이 많다. 그대로 LLM 에 밀어 넣으면 프롬프트만
+    길어지고 판단이 흐려진다. 사람이 한 번 골라 다듬은 파일을 만들고, 매칭은
+    그 파일을 쓴다. **원본은 건드리지 않는다.**
+    """
+    원본경로 = settings.projects_json
+    다듬 = 다듬은파일()
+    메타 = projectsmod.curated_meta(다듬)
+
+    try:
+        data = projectsmod.read_json(원본경로)
+        항목 = projectsmod.raw_items(data)
+        필드 = projectsmod.field_stats(항목)
+        읽기오류 = ""
+    except projectsmod.ProjectsError as exc:
+        항목, 필드, 읽기오류 = [], [], str(exc)
+
+    # 지금 다듬은 파일에 들어 있는 것을 미리 체크해 둔다
+    고른필드 = set(메타.get("필드") or [])
+    고른과제: set[str] = set()
+    if 메타:
+        try:
+            고른과제 = {p.키 for p in projectsmod.load(다듬)}
+            고른과제 |= {p.이름 for p in projectsmod.load(다듬)}
+        except projectsmod.ProjectsError:
+            고른과제 = set()
+    처음 = not 메타
+
+    필드줄 = "".join(
+        f"<tr><td><label><input type='checkbox' form='curform' name='fields'"
+        f" value='{html.escape(f.이름)}'"
+        + (" checked disabled" if f.필수 else
+           (" checked" if (처음 or f.이름 in 고른필드) else ""))
+        + f"> <b>{html.escape(f.라벨)}</b></label>"
+        + ("<br><span class='muted'>과제 이름이라 항상 남습니다</span>" if f.필수 else "")
+        + f"</td><td class='muted'>{html.escape(f.이름)}</td>"
+        f"<td>{f.채운수}/{f.전체수} <span class='muted'>({f.비율}%)</span></td>"
+        f"<td style='white-space:normal' class='muted'>{html.escape(f.예시)}</td></tr>"
+        for f in 필드
+    ) or "<tr><td colspan='4' class='muted'>읽은 필드가 없습니다.</td></tr>"
+
+    과제줄 = []
+    for 기본키, 원본 in 항목:
+        p = projectsmod.to_project(원본, 기본키)
+        if p is None:
+            continue
+        키 = projectsmod.item_key(기본키, 원본)
+        체크 = " checked" if (처음 or 키 in 고른과제 or p.이름 in 고른과제) else ""
+        과제줄.append(
+            f"<tr><td><input type='checkbox' form='curform' name='keys'"
+            f" value='{html.escape(키)}'{체크}></td>"
+            f"<td>{html.escape(p.담당)}</td>"
+            f"<td><b>{html.escape(p.이름)}</b>"
+            f"<br><span class='muted'>{html.escape(키)}</span></td>"
+            f"<td>{html.escape(', '.join(p.키워드[:8]))}</td>"
+            f"<td style='white-space:normal' class='muted'>{html.escape(p.설명[:150])}"
+            f"{'…' if len(p.설명) > 150 else ''}</td></tr>"
+        )
+    과제표 = "".join(과제줄) or \
+        "<tr><td colspan='5' class='muted'>읽은 과제가 없습니다.</td></tr>"
+
+    현황 = (
+        f"<table><tr><th style='width:150px'>원본 파일</th>"
+        f"<td><code>{html.escape(str(projectsmod.resolve_path(원본경로) or '(설정 안 됨)'))}"
+        f"</code> <span class='muted'>.env 의 CVTOOL_PROJECTS_JSON</span></td></tr>"
+        f"<tr><th>원본 과제</th><td>{len(항목)}개 · 필드 {len(필드)}종</td></tr>"
+        f"<tr><th>다듬은 파일</th><td><code>{html.escape(str(다듬))}</code></td></tr>"
+        + (f"<tr><th>지금 쓰는 것</th><td><b>다듬은 파일</b> — 과제 {메타['과제수']}개 · "
+           f"필드 {len(메타['필드'])}종 · {html.escape(메타['만든일시'])}"
+           + (f" ({html.escape(메타['만든이'])})" if 메타.get("만든이") else "")
+           + "</td></tr>"
+           if 메타 else
+           "<tr><th>지금 쓰는 것</th><td><b>원본 파일</b> — 아직 다듬지 않았습니다</td></tr>")
+        + "</table>"
+    )
+
+    오류 = f"<div class='warn'>{html.escape(error or 읽기오류)}</div>" \
+        if (error or 읽기오류) else ""
+    알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
+    저장바 = (
+        "<form method='post' action='/match/curate' id='curform' class='mergebar'>"
+        "<button type='submit'>고른 것만 남겨 저장</button>"
+        "<span class='muted'>원본은 그대로 두고 <b>다듬은 파일</b>을 새로 씁니다. "
+        "저장하면 매칭은 이 파일을 씁니다.</span></form>"
+        if 항목 else ""
+    )
+    지우기 = (
+        "<form method='post' action='/match/curate/reset' style='margin-top:10px'"
+        " onsubmit=\"return confirm('다듬은 파일을 지웁니다. 매칭은 다시 원본을 씁니다.')\">"
+        "<button class='danger'>다듬은 파일 지우기</button>"
+        "<span class='muted'> 원본 파일은 지워지지 않습니다.</span></form>"
+        if 메타 else ""
+    )
+    return _page(
+        "과제 파일 다듬기",
+        알림 + 오류
+        + "<div class='card'><h2>과제 파일</h2>" + 현황
+        + "<p class='muted'>원본에 매칭과 상관없는 항목이 많으면 여기서 걸러내세요. "
+        "프롬프트가 짧아지고 판단이 또렷해집니다.</p>"
+        + f"<p><a class='btn sec' href='/match'>과제 매칭으로</a></p>{지우기}</div>"
+        + 저장바
+        + f"<div class='card'><h2>1. 남길 정보 고르기 <span class='muted'>필드 {len(필드)}종"
+        "</span></h2>"
+        "<p class='muted'>채움 비율이 낮거나(작성자·문서버전 같은) 매칭과 상관없는 "
+        "필드는 빼세요.</p><div class='scroll'><table data-name='과제 필드'>"
+        "<tr><th>남길까</th><th>원본 필드명</th><th>채움</th><th>예시</th></tr>"
+        + 필드줄 + "</table></div></div>"
+        + f"<div class='card'><h2>2. 남길 과제 고르기 <span class='muted'>"
+        f"{len(과제줄)}개</span></h2>"
+        "<div class='scroll'><table data-name='과제 고르기'>"
+        "<tr><th style='width:34px'><input type='checkbox' title='전체 선택'"
+        " onclick=\"for(const c of this.closest('table')"
+        ".querySelectorAll('input[name=keys]'))"
+        "if(!c.closest('tr').classList.contains('hide'))c.checked=this.checked\"></th>"
+        "<th>부서</th><th>과제명</th><th>키워드</th><th>내용</th></tr>"
+        + 과제표 + "</table></div></div>",
+        me=me,
+    )
+
+
 def _match_page(me: User, error: str = "", msg: str = "") -> bytes:
     """과제 목록과 지원자별 1순위 매칭을 한 화면에서."""
     목록, 파일오류 = 과제목록()
-    경로 = projectsmod.resolve_path(settings.projects_json)
+    경로 = projectsmod.resolve_path(쓰는과제파일()[0])
     맨위 = store.top_matches()
     보이는과제 = auth.visible_project_ids(me)
     진행맵 = recruit.all()
@@ -1395,9 +1535,13 @@ def _match_page(me: User, error: str = "", msg: str = "") -> bytes:
                    if 진행맵.get(r.지원자_ID)
                    and 진행맵[r.지원자_ID].project_id in 보이는과제]
 
+    _쓰는것, 다듬음 = 쓰는과제파일()
     설정 = (
         "<table><tr><th style='width:150px'>과제 파일</th>"
-        f"<td><code>{html.escape(str(경로) if 경로 else '(설정 안 됨)')}</code></td></tr>"
+        f"<td><code>{html.escape(str(경로) if 경로 else '(설정 안 됨)')}</code>"
+        + (" <span class='pill p-완료'>다듬은 파일</span>" if 다듬음
+           else " <span class='pill p-대기중'>원본</span>")
+        + "</td></tr>"
         f"<tr><th>읽은 과제</th><td>{len(목록)}개</td></tr>"
         f"<tr><th>맞춰본 지원자</th><td>{store.matched_count()}명 "
         f"/ 전체 {len(records)}명</td></tr>"
@@ -1450,7 +1594,11 @@ def _match_page(me: User, error: str = "", msg: str = "") -> bytes:
         + "<div class='card'><h2>과제 파일</h2>" + 설정
         + "<p class='muted'>경로는 <code>.env</code> 의 "
         "<code>CVTOOL_PROJECTS_JSON</code> 으로 정합니다. 상대경로는 "
-        "<b>CV-parser 폴더 기준</b>입니다.</p></div>"
+        "<b>CV-parser 폴더 기준</b>입니다.</p>"
+        + ("<p><a class='btn' href='/match/curate'>과제 파일 다듬기</a>"
+           "<span class='muted'> 원본에서 매칭에 쓸 과제·정보만 골라 둡니다.</span></p>"
+           if can(me, "지원자_등록") else "")
+        + "</div>"
         + f"<div class='card'><h2>연구 과제 {len(목록)}개</h2><div class='scroll'>"
         "<table data-name='연구 과제'><tr><th>번호</th><th>과제명</th><th>키워드</th>"
         "<th>담당</th><th>설명</th></tr>" + 과제줄 + "</table></div></div>"
@@ -2966,6 +3114,12 @@ class Handler(BaseHTTPRequestHandler):
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 extra={"Content-Disposition": f'attachment; filename="recruit_{stamp}.xlsx"'},
             )
+        if path == "/match/curate":
+            if not can(me, "지원자_등록"):
+                return self._deny("과제 파일을 다듬는 건 채용담당자 이상만 할 수 있습니다.")
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            return self._send(_curate_page(me, (params.get("err") or [""])[0],
+                                           (params.get("msg") or [""])[0]))
         if path == "/match":
             if not can(me, "지원자_조회"):
                 return self._deny()
@@ -3230,6 +3384,48 @@ class Handler(BaseHTTPRequestHandler):
             보임 = ", ".join(바뀐것[:5]) + (" 외" if len(바뀐것) > 5 else "")
             return self._redirect("/recruit?msg=" + urllib.parse.quote(
                 f"{len(바뀐것)}건 저장했습니다 — {보임}"))
+
+        if path == "/match/curate":
+            if not can(me, "지원자_등록"):
+                return self._deny()
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            고른키 = set(data.get("keys") or [])
+            고른필드 = set(data.get("fields") or [])
+            if not 고른키:
+                return self._redirect("/match/curate?err=" + urllib.parse.quote(
+                    "남길 과제를 하나 이상 고르세요."))
+            try:
+                항목 = projectsmod.raw_items(projectsmod.read_json(settings.projects_json))
+            except projectsmod.ProjectsError as exc:
+                return self._redirect("/match/curate?err="
+                                      + urllib.parse.quote(str(exc)))
+            고른것 = projectsmod.curate(항목, 고른키, 고른필드)
+            if not 고른것:
+                return self._redirect("/match/curate?err=" + urllib.parse.quote(
+                    "고른 조건으로 남는 과제가 없습니다. 필드를 더 고르세요."))
+            원본 = projectsmod.resolve_path(settings.projects_json)
+            저장위치 = projectsmod.save_curated(
+                다듬은파일(), 고른것, 출처=str(원본 or ""), 만든이=me.아이디,
+            )
+            과제목록(다시=True)
+            audit.record(me.아이디, "과제", str(저장위치), 항목="과제 파일 다듬기",
+                         새값=f"과제 {len(고른것)}개 · 필드 {len(고른필드)}종")
+            return self._redirect("/match/curate?msg=" + urllib.parse.quote(
+                f"과제 {len(고른것)}개를 남겨 저장했습니다. 이제 매칭은 이 파일을 씁니다. "
+                f"이미 맞춰본 지원자는 '과제 매칭' 에서 다시 돌리세요."))
+
+        if path == "/match/curate/reset":
+            if not can(me, "지원자_등록"):
+                return self._deny()
+            다듬 = 다듬은파일()
+            있었나 = 다듬.is_file()
+            다듬.unlink(missing_ok=True)
+            과제목록(다시=True)
+            if 있었나:
+                audit.record(me.아이디, "과제", str(다듬), 비고="다듬은 과제 파일 삭제")
+            return self._redirect("/match/curate?msg=" + urllib.parse.quote(
+                "다듬은 파일을 지웠습니다. 매칭은 다시 원본을 씁니다."
+                if 있었나 else "지울 파일이 없습니다."))
 
         if path == "/match/one":
             if not can(me, "지원자_등록"):

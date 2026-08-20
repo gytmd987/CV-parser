@@ -67,6 +67,9 @@ class Settings:
     # 과제 정보 JSON 경로. 상대경로는 **저장소 폴더 기준**으로 푼다
     # (CV-parser 에서 `cd ../과제정보` 로 가는 곳이면 `../과제정보/과제.json`).
     projects_json: str = _env("CVTOOL_PROJECTS_JSON", "")
+    # 원본에서 필요한 과제·필드만 골라 저장하는 파일. 비우면 데이터 폴더에 만든다.
+    # 이 파일이 있으면 매칭은 **원본 대신 이 파일**을 쓴다.
+    projects_curated: str = _env("CVTOOL_PROJECTS_CURATED", "")
     # LLM 에 한 번에 넣을 과제 수. 넘으면 임베딩으로 먼저 좁힌다.
     match_top: int = int(_env("CVTOOL_MATCH_TOP", "8"))
     # CV 를 분석한 뒤 매칭까지 자동으로 돌릴지. 과제 파일이 있을 때만 뜻이 있다.

@@ -26,14 +26,37 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 _이름_후보 = ("과제명", "과제_명", "이름", "제목", "name", "title",
            "project_name", "projectName", "project", "subject")
-_번호_후보 = ("과제번호", "과제_번호", "번호", "id", "code", "project_id",
+_번호_후보 = ("과제번호", "과제_번호", "번호", "코드", "id", "code", "project_id",
            "projectId", "project_code", "key")
 _설명_후보 = ("설명", "개요", "내용", "요약", "목표", "description", "summary",
            "detail", "details", "overview", "abstract", "goal", "objective")
-_키워드_후보 = ("키워드", "분야", "연구분야", "기술", "keywords", "tags", "field",
-             "fields", "areas", "tech", "technologies", "skills")
+_키워드_후보 = ("키워드", "분야", "연구분야", "기술", "keywords", "keywords_kr",
+             "keywords_en", "tags", "field", "fields", "areas", "tech",
+             "technologies", "skills")
 _담당_후보 = ("담당", "담당자", "책임자", "부서", "팀", "owner", "manager",
-           "department", "team", "pi")
+           "department", "team", "pi", "dep_name", "dept_name", "depName")
+
+#: 사내 과제 파일에서 자주 보이는 필드 이름 -> 사람이 읽을 이름.
+#: 모르는 필드도 버리지 않지만, 아는 것은 한글 이름으로 붙여야 LLM 이 덜 헷갈린다.
+FIELD_LABELS = {
+    "dep_name": "부서",
+    "project_name": "과제명",
+    "core_tech": "핵심 기술",
+    "deliverable": "산출물",
+    "challenge": "기술적 난제",
+    "background": "배경",
+    "milestones": "마일스톤",
+    "expected_impact": "기대 효과",
+    "keywords_kr": "키워드(국문)",
+    "keywords_en": "키워드(영문)",
+    "budget": "예산",
+    "period": "기간",
+    "owner": "담당",
+}
+
+
+def label_of(필드: str) -> str:
+    return FIELD_LABELS.get(필드, 필드)
 
 
 def resolve_path(raw: str) -> Path | None:
@@ -85,13 +108,15 @@ def _첫값(원본: dict, 후보: tuple[str, ...]) -> str:
 
 
 def _목록값(원본: dict, 후보: tuple[str, ...]) -> list[str]:
+    """후보 필드를 **전부** 모은다 (keywords_kr 과 keywords_en 이 따로 있다)."""
+    모은것: list[str] = []
     for k in 후보:
         v = 원본.get(k)
         if isinstance(v, list):
-            return [str(x).strip() for x in v if str(x).strip()]
-        if isinstance(v, str) and v.strip():
-            return [x.strip() for x in v.replace(";", ",").split(",") if x.strip()]
-    return []
+            모은것 += [str(x).strip() for x in v if str(x).strip()]
+        elif isinstance(v, str) and v.strip():
+            모은것 += [x.strip() for x in v.replace(";", ",").split(",") if x.strip()]
+    return list(dict.fromkeys(모은것))
 
 
 def _평탄화(값, 깊이: int = 0) -> str:
@@ -135,7 +160,7 @@ def to_project(원본: dict, 기본키: str = "") -> Project | None:
             continue
         글 = _평탄화(v)
         if 글:
-            나머지.append(f"{k}: {글}")
+            나머지.append(f"{label_of(k)}: {글}")
     if 나머지:
         설명 = (설명 + "\n" if 설명 else "") + "\n".join(나머지)
 
@@ -221,3 +246,172 @@ def load(path: str | Path | None) -> list[Project]:
             f"{'/'.join(_이름_후보[:5])} 중에 있어야 합니다."
         )
     return 나온것
+
+
+# ---------------------------------------------------------------------------
+# 과제 파일 다듬기 — 필요한 과제·필드만 남겨 따로 저장한다
+# ---------------------------------------------------------------------------
+# 원본 과제 파일에는 매칭에 쓸모없는 항목이 많다. 그걸 그대로 LLM 에 밀어 넣으면
+# 프롬프트만 길어지고 판단이 흐려진다. 그래서 **사람이 한 번 골라** 다듬은 파일을
+# 만들고, 매칭은 그 파일을 쓴다. 원본은 건드리지 않는다.
+
+#: 다듬은 파일에 항상 남기는 필드 (이게 없으면 과제를 알아볼 수 없다)
+ALWAYS_KEEP = tuple(_이름_후보)
+
+
+def read_json(path: str | Path | None):
+    """과제 파일을 읽어 JSON 그대로 돌려준다. 문제가 있으면 ProjectsError."""
+    p = resolve_path(str(path)) if path else None
+    if p is None:
+        raise ProjectsError(
+            "과제 파일 경로가 비어 있습니다. .env 에 CVTOOL_PROJECTS_JSON 을 넣으세요."
+        )
+    if not p.exists():
+        raise ProjectsError(f"과제 파일이 없습니다: {p}")
+    if not p.is_file():
+        raise ProjectsError(f"파일이 아닙니다: {p}")
+    try:
+        raw = p.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ProjectsError(
+            f"UTF-8 로 읽히지 않습니다 ({p}). 파일 인코딩을 확인하세요: {exc}"
+        ) from exc
+    except OSError as exc:
+        raise ProjectsError(f"과제 파일을 읽지 못했습니다: {exc}") from exc
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ProjectsError(
+            f"JSON 형식이 아닙니다 ({p}) — {exc.lineno}번째 줄: {exc.msg}"
+        ) from exc
+
+
+def raw_items(data) -> list[tuple[str, dict]]:
+    """어떤 모양이든 (기본키, 원본 사전) 목록으로 편다."""
+    if isinstance(data, list):
+        return [("", x) for x in data if isinstance(x, dict)]
+    if not isinstance(data, dict):
+        return []
+    for k in ("projects", "과제", "과제목록", "items", "data", "list", "result"):
+        v = data.get(k)
+        if isinstance(v, list):
+            return [("", x) for x in v if isinstance(x, dict)]
+        if isinstance(v, dict):
+            return [(str(kk), vv) for kk, vv in v.items() if isinstance(vv, dict)]
+    if data and all(isinstance(v, dict) for v in data.values()):
+        return [(str(k), v) for k, v in data.items()]
+    return [("", data)]
+
+
+def item_key(기본키: str, 원본: dict) -> str:
+    """화면에서 고를 때와 저장할 때 **같은 키**를 쓰기 위한 계산.
+
+    두 곳에서 따로 계산하면 고른 과제가 저장에서 빠지는 사고가 난다.
+    """
+    return 기본키 or _첫값(원본, _번호_후보) or _첫값(원본, _이름_후보)
+
+
+@dataclass
+class FieldInfo:
+    이름: str
+    라벨: str
+    채운수: int
+    전체수: int
+    예시: str
+
+    @property
+    def 비율(self) -> int:
+        return round(100 * self.채운수 / self.전체수) if self.전체수 else 0
+
+    @property
+    def 필수(self) -> bool:
+        return self.이름 in ALWAYS_KEEP
+
+
+def field_stats(항목: list[tuple[str, dict]]) -> list[FieldInfo]:
+    """원본에 어떤 필드가 있고 얼마나 채워져 있는지. 처음 나온 순서를 지킨다."""
+    순서: list[str] = []
+    채운수: dict[str, int] = {}
+    예시: dict[str, str] = {}
+    for _키, 원본 in 항목:
+        for k, v in 원본.items():
+            if k not in 채운수:
+                순서.append(k)
+                채운수[k] = 0
+                예시[k] = ""
+            글 = _평탄화(v)
+            if 글:
+                채운수[k] += 1
+                if not 예시[k]:
+                    예시[k] = 글[:120]
+    전체 = len(항목)
+    return [FieldInfo(k, label_of(k), 채운수[k], 전체, 예시[k]) for k in 순서]
+
+
+def curate(항목: list[tuple[str, dict]], 고른키: set[str] | None,
+           고른필드: set[str] | None) -> list[dict]:
+    """고른 과제 × 고른 필드만 남긴다.
+
+    이름 필드는 고르지 않아도 남긴다 — 없으면 과제를 알아볼 수 없다.
+    """
+    나온것: list[dict] = []
+    for 기본키, 원본 in 항목:
+        키 = item_key(기본키, 원본)
+        if 고른키 is not None and 키 not in 고른키:
+            continue
+        남길것 = {}
+        for k, v in 원본.items():
+            if 고른필드 is None or k in 고른필드 or k in ALWAYS_KEEP:
+                if _평탄화(v):
+                    남길것[k] = v
+        if not 남길것:
+            continue
+        if 기본키 and not any(k in 남길것 for k in _번호_후보):
+            남길것["과제번호"] = 기본키          # 사전 키로만 있던 번호를 살려 둔다
+        나온것.append(남길것)
+    return 나온것
+
+
+def save_curated(path: str | Path, 과제들: list[dict], *, 출처: str = "",
+                 만든이: str = "") -> Path:
+    """다듬은 과제 파일을 쓴다. 읽을 때는 그냥 `load()` 로 읽힌다."""
+    from .timeutil import now_kst
+
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    본문 = {
+        "_설명": "지원자 관리 도구가 만든 파일입니다. 원본에서 고른 과제·필드만 담겨 있습니다.",
+        "_출처": 출처,
+        "_만든일시": now_kst().strftime("%Y-%m-%d %H:%M:%S"),
+        "_만든이": 만든이,
+        "projects": 과제들,
+    }
+    p.write_text(json.dumps(본문, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        from .fsutil import secure_file
+
+        secure_file(p)
+    except Exception:  # noqa: BLE001 - 권한 설정 실패가 저장을 막으면 안 된다
+        pass
+    return p
+
+
+def curated_meta(path: str | Path) -> dict:
+    """다듬은 파일의 만든 정보. 없으면 빈 사전."""
+    p = Path(path)
+    if not p.is_file():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        "출처": data.get("_출처", ""),
+        "만든일시": data.get("_만든일시", ""),
+        "만든이": data.get("_만든이", ""),
+        "과제수": len(data.get("projects") or []),
+        "필드": sorted({k for p_ in (data.get("projects") or [])
+                      if isinstance(p_, dict) for k in p_}),
+    }
