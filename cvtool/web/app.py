@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import html
 import json
 import os
@@ -264,6 +265,12 @@ header{background:#1b1f24;color:#fff;padding:12px 20px;display:flex;gap:18px;ali
 header a{color:#cbd5e1;text-decoration:none;font-weight:600}
 header .brand{color:#fff;font-weight:700;margin-right:6px;padding-right:14px;border-right:1px solid #3a4149}
 header a:hover{color:#fff}
+/* 지금 보고 있는 탭. 어두운 머리줄에 밝은 칸이라 한눈에 구분된다.
+   색만으로 알려주지 않고 배경·글자색·굵기가 함께 바뀐다. */
+header a.on{color:#1b1f24;background:#fff;border-radius:6px 6px 0 0;
+ padding:8px 12px;margin:-8px -2px -12px;font-weight:800;
+ box-shadow:inset 0 3px 0 var(--accent)}
+header a.on .pill{outline:1px solid #fecaca}
 header .sp{flex:1}
 main{padding:20px;max-width:1600px;margin:0 auto}
 .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:18px;margin-bottom:18px}
@@ -400,33 +407,61 @@ pre.rubric{background:#f6f7f9;border:1px solid var(--line);border-radius:6px;pad
 """
 
 
+#: 지금 처리 중인 요청 경로. 어느 탭에 불을 켤지 정하는 데만 쓴다.
+#: _page 를 부르는 곳이 마흔 군데라 인자를 하나 더 받게 하는 대신 여기 둔다.
+#: 요청마다 스레드가 따로라 값이 섞이지 않는다.
+현재경로: contextvars.ContextVar[str] = contextvars.ContextVar("현재경로", default="")
+
+#: (라벨, 주소, 이 탭에 속하는 경로들, 볼 수 있나)
+#: 소속 경로를 적어 두는 이유: 지원자 상세(/candidate)는 탭이 아니지만
+#: 인재 Pool 에서 들어간 화면이라 그 탭에 불이 켜져 있어야 한다.
+def _탭들(me: User | None, badge: str) -> list[tuple[str, str, tuple[str, ...]]]:
+    학회 = "/names?kind=" + urllib.parse.quote("학회·저널")
+    후보 = [
+        ("인재 Pool", "/", ("/", "/candidate", "/attachment", "/export.xlsx"),
+         can(me, "지원자_목록")),
+        ("채용 현황", "/recruit", ("/recruit",),
+         can(me, "채용현황_수정") or can(me, "지원자_조회")),
+        ("CV 업로드", "/upload", ("/upload",), can(me, "지원자_등록")),
+        ("과제 매칭", "/match", ("/match",),
+         bool(settings.projects_json) and can(me, "과제매칭_조회")),
+        ("메일", "/mail", ("/mail",), can(me, "메일_템플릿")),
+        (f"명칭 관리{badge}", 학회, ("/names",), can(me, "명칭_관리")),
+        ("부서·과제", "/org", ("/org",), can(me, "부서과제_관리")),
+        ("계정", "/users", ("/users",), can(me, "계정_현업추가")),
+        ("표 항목", "/fields", ("/fields",), can(me, "열_구성")),
+        ("변경 이력", "/history", ("/history",), can(me, "변경이력_조회")),
+    ]
+    return [(라벨, 주소, 소속) for 라벨, 주소, 소속, 보임 in 후보 if 보임]
+
+
+def _지금탭(경로: str, 소속: tuple[str, ...]) -> bool:
+    """이 경로가 그 탭에 속하나.
+
+    '/' 는 정확히 같을 때만이다. 안 그러면 모든 화면이 인재 Pool 이 된다.
+    """
+    for base in 소속:
+        if base == "/":
+            if 경로 == "/":
+                return True
+        elif 경로 == base or 경로.startswith(base + "/"):
+            return True
+    return False
+
+
 def _page(title: str, body: str, nav: bool = True, me: User | None = None) -> bytes:
     미분류 = registry.unclassified_count() if nav else 0
     badge = f' <span class="pill p-미분류">{미분류}</span>' if 미분류 else ""
-    링크 = []
-    if can(me, "지원자_목록"):
-        링크.append("<a href='/'>지원자</a>")
-    if can(me, "채용현황_수정") or can(me, "지원자_조회"):
-        링크.append("<a href='/recruit'>채용 현황</a>")
-    if can(me, "지원자_등록"):
-        링크.append("<a href='/upload'>CV 업로드</a>")
-    if settings.projects_json and can(me, "과제매칭_조회"):
-        링크.append("<a href='/match'>과제 매칭</a>")
-    if can(me, "메일_템플릿"):
-        링크.append("<a href='/mail'>메일</a>")
-    if can(me, "명칭_관리"):
-        링크.append(
-            "<a href='/names?kind=" + urllib.parse.quote("학회·저널")
-            + f"'>명칭 관리{badge}</a>"
-        )
-    if can(me, "부서과제_관리"):
-        링크.append("<a href='/org'>부서·과제</a>")
-    if can(me, "계정_현업추가"):
-        링크.append("<a href='/users'>계정</a>")
-    if can(me, "열_구성"):
-        링크.append("<a href='/fields'>표 항목</a>")
-    if can(me, "변경이력_조회"):
-        링크.append("<a href='/history'>변경 이력</a>")
+    경로 = 현재경로.get()
+    켜진것 = ""
+    for _라벨, 주소, 소속 in _탭들(me, badge):
+        if _지금탭(경로, 소속):
+            켜진것 = 주소
+            break
+    링크 = [
+        f"<a href='{주소}'{' class=on' if 주소 == 켜진것 else ''}>{라벨}</a>"
+        for 라벨, 주소, _소속 in _탭들(me, badge)
+    ]
     누구 = (
         f"<span class='muted' style='color:#94a3b8'>{html.escape(me.이름)} ({me.역할})</span> "
         if me else ""
@@ -586,7 +621,31 @@ def _editable(col: str) -> bool:
     )
 
 
-def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "") -> bytes:
+def _채용칸(cid: str, 시작함: bool, 고칠수있나: bool) -> str:
+    """인재 Pool 표의 '채용' 칸 — 지금 뽑고 있는 사람인지, 그리고 그 전환 단추.
+
+    단추는 표를 감싼 폼이 아니라 **표 밖의 폼**으로 보낸다(form 속성).
+    폼 안에 폼을 넣으면 브라우저가 안쪽을 통째로 버린다.
+    """
+    if 시작함:
+        배지 = "<span class='pill p-처리중'>채용 중</span>"
+        단추 = (
+            f"<button form='stopform' name='id' value='{html.escape(cid)}'"
+            " class='sec' style='padding:2px 8px;font-size:11.5px;margin-left:4px'"
+            ">내리기</button>" if 고칠수있나 else ""
+        )
+    else:
+        배지 = "<span class='pill p-대기중'>인재 Pool</span>"
+        단추 = (
+            f"<button form='startform' name='id' value='{html.escape(cid)}'"
+            " style='padding:2px 8px;font-size:11.5px;margin-left:4px'"
+            ">채용 시작</button>" if 고칠수있나 else ""
+        )
+    return 배지 + 단추
+
+
+def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "",
+               msg: str = "") -> bytes:
     records = store.list_filtered(q, review_only, 년도)
     전체 = store.count()
     만료 = store.expired_count()
@@ -617,6 +676,8 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
     사용자값맵 = store.custom_map()
     관리값맵 = store.meta_map()
     수정가능 = can(me, "지원자_수정")
+    채용중 = recruit.started()
+    채용가능 = can(me, "채용현황_수정")
     이름표 = 라벨(COLS)
     head = "".join(f"<th>{html.escape(이름표[c])}</th>" for c in COLS)
     body_rows = []
@@ -626,6 +687,7 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
         cells = [
             f"<td><input type='checkbox' name='ids' value='{html.escape(cid)}'></td>",
             f"<td><a href='/candidate?id={urllib.parse.quote(cid)}'>상세</a></td>",
+            f"<td>{_채용칸(cid, cid in 채용중, 채용가능)}</td>",
         ]
         for c in COLS:
             if c in MANAGE_COLUMNS:
@@ -651,16 +713,26 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
                 cells.append(f"<td class='{cls.strip()}' title='{v}'>{v}</td>")
         body_rows.append("<tr>" + "".join(cells) + "</tr>")
 
+    묶음단추 = (
+        "<button formaction='/candidates/start'>선택한 사람 채용 시작</button> "
+        "<button formaction='/candidates/stop' class='sec'>채용 현황에서 내리기</button> "
+        if 채용가능 else ""
+    )
     if records:
+        # 줄마다 있는 단추는 이 표 **밖의** 폼으로 보낸다. 폼 안에 폼을 넣으면
+        # 브라우저가 안쪽을 버려서 엉뚱한 동작이 실행된다 (전에 그랬다).
         table = f"""
-        <form method='post' action='/candidates/delete'
-              onsubmit="return confirm('선택한 지원자를 삭제합니다. 되돌릴 수 없습니다.')">
-          <p><button type='submit' class='danger'>선택 삭제</button>
-             <span class='muted'>체크한 지원자를 지웁니다.</span></p>
+        <form method='post' action='/candidates/start' id='startform'></form>
+        <form method='post' action='/candidates/stop' id='stopform'></form>
+        <form method='post' action='/candidates/delete'>
+          <p>{묶음단추}<button type='submit' class='danger'
+               onclick="return confirm('선택한 지원자를 삭제합니다. 되돌릴 수 없습니다.')"
+               >선택 삭제</button>
+             <span class='muted'>체크한 사람에게 적용합니다. </span></p>
           <div class='scroll'><table>
             <tr><th><input type='checkbox' onclick="for(const c of
                 this.closest('table').querySelectorAll('input[name=ids]'))c.checked=this.checked">
-            </th><th></th>{head}</tr>
+            </th><th></th><th>채용</th>{head}</tr>
             {''.join(body_rows)}
           </table></div>
         </form>"""
@@ -681,11 +753,12 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
         f"<a href='/upload'>진행 상황 보기 →</a></div>" if 처리중 else ""
     )
 
+    알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
     return _page(
-        "지원자",
-        f"""{''.join(warns)}{처리중알림}
+        "인재 Pool",
+        f"""{알림}{''.join(warns)}{처리중알림}
         <div class='card'>
-          <h2>지원자 {len(records)}명{f' / 전체 {전체}명' if len(records) != 전체 else ''}</h2>
+          <h2>인재 Pool {len(records)}명{f' / 전체 {전체}명' if len(records) != 전체 else ''}<span class='muted'> · 채용 중 {len(채용중)}명</span></h2>
           <form method='get' action='/' style='margin-bottom:12px'>
             <input type='text' name='q' value='{html.escape(q)}' placeholder='이름·소속·학교·파일명 검색'>
             <select name='year'><option value=''>전체 년도</option>{연도선택}</select>
@@ -1106,7 +1179,7 @@ def 추가열(구분: str) -> list[str]:
 
 
 def 지원자열(registry_=None) -> list[str]:
-    """지원자 목록·엑셀에 나갈 수 있는 열 전부 (숨김·순서 적용 전).
+    """인재 Pool·엑셀에 나갈 수 있는 열 전부 (숨김·순서 적용 전).
 
     '채용 현황' 으로 만든 추가 열은 여기 안 들어간다 — 그건 채용 현황 표 몫이다.
     """
@@ -1746,7 +1819,7 @@ def _upload_page(me: User) -> bytes:
             <span class='muted'>여러 개를 한 번에 고를 수 있습니다 ({가능}).</span>
           </form>
           <p class='muted'>분석은 뒤에서 돌아갑니다. 끝나면 아래 현황에 뜨고
-          <a href='/'>지원자 목록</a>에 줄이 생깁니다.</p>
+          <a href='/'>인재 Pool</a>에 줄이 생깁니다.</p>
         </div>
         <div class='card'><h2>CV 없이 지원자 추가</h2>
           <form method='post' action='/candidate/new'>
@@ -1860,8 +1933,29 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "") -> bytes:
         else html.escape(년도)
     )
 
+    진행 = recruit.get(지원자_ID)
+    if 진행.시작함:
+        채용줄 = (
+            f"<span class='pill p-처리중'>채용 중</span> "
+            f"<span class='muted'>{html.escape(진행.채용시작일시)} 시작</span>"
+            + ("<form method='post' action='/candidates/stop' style='display:inline'>"
+               f"<input type='hidden' name='id' value='{html.escape(지원자_ID)}'>"
+               "<button class='sec' style='margin-left:8px'>채용 현황에서 내리기</button>"
+               "</form>" if can(me, "채용현황_수정") else "")
+        )
+    else:
+        채용줄 = (
+            "<span class='pill p-대기중'>인재 Pool</span> "
+            "<span class='muted'>아직 채용 절차를 시작하지 않았습니다</span>"
+            + ("<form method='post' action='/candidates/start' style='display:inline'>"
+               f"<input type='hidden' name='id' value='{html.escape(지원자_ID)}'>"
+               "<button style='margin-left:8px'>채용 시작</button></form>"
+               if can(me, "채용현황_수정") else "")
+        )
+
     관리 = (
-        f"<tr><th style='width:170px'>등록 년도</th><td>{년도폼}</td></tr>"
+        f"<tr><th style='width:170px'>채용</th><td>{채용줄}</td></tr>"
+        f"<tr><th>등록 년도</th><td>{년도폼}</td></tr>"
         f"<tr><th>원본 파일명</th><td>{html.escape(meta.get('원본_파일명') or '-')}</td></tr>"
         f"<tr><th>등록 일시</th><td>{html.escape(meta.get('등록일시') or '-')}</td></tr>"
         f"<tr><th>원본 파일 보관</th><td>{'예' if meta.get('원본보유') else '아니오'}</td></tr>"
@@ -2832,7 +2926,10 @@ def _recruit_rows(me: User, sort: str = ""):
     부서명 = {d["id"]: d["이름"] for d in auth.departments()}
     과제명 = {p["id"]: p["이름"] for p in auth.projects()}
 
-    records = store.list_all()
+    # **채용을 시작한 사람만** 채용 현황에 올라온다. 인재 Pool 에 등록만 된
+    # 사람까지 여기 있으면, 지금 뽑고 있는 사람이 몇 명인지 알 수가 없다.
+    시작한사람 = recruit.started()
+    records = [r for r in store.list_all() if r.지원자_ID in 시작한사람]
     if 보이는과제 is not None:
         records = [
             r for r in records
@@ -2881,7 +2978,7 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
       - **저장 버튼은 맨 위 하나뿐이다.** 여러 사람 상태를 바꾸고 한 번에 저장한다.
       - **지원자 정보 열은 여기서 못 고친다.** 채용 상태를 보는 화면이라
         지원자 정보까지 고칠 수 있으면 실수로 덮어쓰기 쉽다.
-        고칠 일이 있으면 지원자 목록이나 상세 화면에서 한다.
+        고칠 일이 있으면 인재 Pool 이나 상세 화면에서 한다.
     """
     records, 진행맵, 값 = _recruit_rows(me, sort)
     보이는과제 = auth.visible_project_ids(me)
@@ -2981,7 +3078,7 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
                 cls = " class='flag'" if p and p.탈락 else ""
                 cells.append(f"<td{cls}>{v}</td>")
             else:
-                # 지원자 정보 열은 보기만 한다 (고치려면 지원자 목록/상세에서)
+                # 지원자 정보 열은 보기만 한다 (고치려면 인재 Pool/상세에서)
                 cells.append(f"<td title='{v}'>{v}</td>")
         링크 = f"<td><a href='/candidate?id={urllib.parse.quote(cid)}'>상세</a></td>"
         묶음 = " class='dup'" if p and p.탈락 else ""
@@ -2998,7 +3095,7 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
     if not (수정가능 or 담당자):
         안내 += " 보기 전용입니다."
     else:
-        안내 += " 지원자 정보 열은 여기서 고칠 수 없습니다 (지원자 목록에서 고치세요)."
+        안내 += " 지원자 정보 열은 여기서 고칠 수 없습니다 (인재 Pool 에서 고치세요)."
     열이름칸 = "".join(
         f"<input type='hidden' form='recruitform' name='사용자열_{n}'"
         f" value='{html.escape(c)}'>" for c, n in 열번호.items()
@@ -3015,14 +3112,24 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
         "<a class='btn sec' href='/recruit/columns'>표 열 구성</a> "
         if can(me, "열_구성") else ""
     )
+    빈화면 = (
+        "<p class='muted'>여기에는 <b>채용을 시작한 사람만</b> 나옵니다. "
+        + ("<a href='/'>인재 Pool</a> 에서 `채용 시작` 을 누르세요.</p>"
+           if can(me, "지원자_목록") else "채용담당자가 시작하면 보입니다.</p>")
+    )
     표 = (
         f"<div class='scroll'><table data-name='채용현황'><tr>{머리}</tr>{''.join(rows)}</table></div>"
-        if rows else "<p class='muted'>표시할 지원자가 없습니다.</p>"
+        if rows else 빈화면
+    )
+    # 표가 비어 있을 때는 빈 화면 안내가 같은 말을 하므로 두 번 쓰지 않는다.
+    출처 = (
+        " <a href='/'>인재 Pool</a> 에서 <b>채용 시작</b>을 누른 사람만 여기 올라옵니다."
+        if rows and can(me, "지원자_목록") else ""
     )
     return _page(
         "채용 현황",
         f"""{알림}{오류}<div class='card'><h2>채용 현황 <span class='muted'>{len(records)}명</span></h2>
-        <p class='muted'>{안내}</p>
+        <p class='muted'>{안내}{출처}</p>
         <p>{열구성}<a class='btn' href='/recruit/export.xlsx'>엑셀(.xlsx) 다운로드</a></p>
         {저장바}{표}</div>
         <script>var 과제표 = {과제표};{_RECRUIT_JS}</script>""",
@@ -3059,7 +3166,7 @@ def _recruit_columns_page(me: User) -> bytes:
 
 #: 열이 어디에 쓰이는지 — 표 항목 탭에서 한눈에 보이게 적어 둔다.
 COLUMN_GROUP_NOTE = {
-    "지원자 정보": "지원자 목록 · 엑셀 내려받기",
+    "지원자 정보": "인재 Pool · 엑셀 내려받기",
     "관리 정보": "언제 등록했고 원본이 무엇인지. 표에서는 보기만 합니다.",
     "채용 현황": "채용 현황 표. 어떤 열을 쓸지는 [표 열 구성] 에서 고릅니다.",
 }
@@ -3219,7 +3326,7 @@ def _fields_page(me: User, error: str = "", msg: str = "") -> bytes:
         " style='width:280px'>"
         "<button type='submit'>추가</button></form>"
         "<p class='muted'><b>구분</b>을 고르면 그 표에 붙습니다 — "
-        "<b>지원자 정보</b>는 지원자 목록·엑셀에, <b>채용 현황</b>은 채용 현황 표에. "
+        "<b>지원자 정보</b>는 인재 Pool·엑셀에, <b>채용 현황</b>은 채용 현황 표에. "
         "유형에 따라 입력칸이 달라지고 형식이 강제됩니다. "
         "<b>값은 사람이 채웁니다</b> — LLM 이 자동으로 채우지 않습니다.</p></div>"
 
@@ -3302,8 +3409,14 @@ class Handler(BaseHTTPRequestHandler):
         return self.rfile.read(length) if length else b""
 
     # -- GET ----------------------------------------------------------------
-    def do_GET(self) -> None:  # noqa: N802
+    def _경로기억(self) -> str:
+        """지금 요청 경로를 기억해 둔다 (탭에 불 켜는 데 쓴다)."""
         path = urllib.parse.urlparse(self.path).path
+        현재경로.set(path)
+        return path
+
+    def do_GET(self) -> None:  # noqa: N802
+        path = self._경로기억()
 
         if path == "/login":
             return self._send(_login_page())
@@ -3325,6 +3438,7 @@ class Handler(BaseHTTPRequestHandler):
                     q=(params.get("q") or [""])[0],
                     review_only=bool(params.get("review")),
                     년도=(params.get("year") or [""])[0],
+                    msg=(params.get("msg") or [""])[0],
                 )
             )
         if path == "/upload":
@@ -3523,7 +3637,7 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- POST ---------------------------------------------------------------
     def do_POST(self) -> None:  # noqa: N802
-        path = urllib.parse.urlparse(self.path).path
+        path = self._경로기억()
 
         if path == "/login":
             data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
@@ -4462,6 +4576,39 @@ class Handler(BaseHTTPRequestHandler):
                     recruit.delete(cid)      # 채용 현황에 유령 줄이 남지 않게
                     audit.record(me.아이디, "지원자", cid, 비고="지원자 삭제")
             return self._redirect("/")
+
+        if path in ("/candidates/start", "/candidates/stop"):
+            # 인재 Pool 에 있는 사람을 채용 현황으로 올리고 내린다.
+            # 줄마다 있는 단추는 id 하나, 묶음 단추는 ids 여럿을 보낸다.
+            if not can(me, "채용현황_수정"):
+                return self._deny("채용 시작은 채용담당자 이상만 할 수 있습니다.")
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            ids = (data.get("ids") or []) + [
+                i for i in (data.get("id") or []) if i
+            ]
+            시작 = path.endswith("/start")
+            보이는 = auth.visible_project_ids(me)
+            한것: list[str] = []
+            for cid in dict.fromkeys(ids):
+                if store.get(cid) is None:
+                    continue
+                if 보이는 is not None and recruit.get(cid).project_id not in 보이는:
+                    continue
+                바뀜 = (recruit.start(cid, me.아이디) if 시작
+                      else recruit.stop(cid, me.아이디))
+                if 바뀜:
+                    한것.append(cid)
+                    audit.record(me.아이디, "채용현황", cid, 항목="채용 절차",
+                                 이전값="" if 시작 else "채용 중",
+                                 새값="채용 중" if 시작 else "",
+                                 비고="채용 시작" if 시작 else "채용 현황에서 내림")
+            if not 한것:
+                return self._redirect("/?msg=" + urllib.parse.quote(
+                    "고를 사람을 먼저 체크하세요." if not ids else "이미 그 상태입니다."))
+            말 = (f"{len(한것)}명 채용을 시작했습니다. 채용 현황에서 이어서 관리하세요."
+                 if 시작 else f"{len(한것)}명을 채용 현황에서 내렸습니다. "
+                             "진행 상황은 지우지 않았습니다.")
+            return self._redirect("/?msg=" + urllib.parse.quote(말))
 
         if path == "/candidates/purge":
             if not can(me, "지원자_삭제"):

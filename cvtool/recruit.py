@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS recruit (
     project_id  INTEGER,
     비고         TEXT DEFAULT '',
     갱신일시      TEXT DEFAULT '',
-    갱신자        TEXT DEFAULT ''
+    갱신자        TEXT DEFAULT '',
+    채용시작일시   TEXT DEFAULT ''   -- 비면 인재 Pool 에만 있는 사람
 );
 CREATE TABLE IF NOT EXISTS stages (
     지원자_ID    TEXT NOT NULL,
@@ -71,7 +72,13 @@ class Progress:
     비고: str = ""
     갱신일시: str = ""
     갱신자: str = ""
+    채용시작일시: str = ""
     단계상태: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def 시작함(self) -> bool:
+        """채용 절차를 시작한 사람인가. 아니면 인재 Pool 에만 있다."""
+        return bool(self.채용시작일시)
 
     @property
     def 최종상태(self) -> str:
@@ -112,9 +119,34 @@ class RecruitStore:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
+        self._migrate()
         self._conn.commit()
         for suffix in ("", "-wal", "-shm"):
             secure_file(Path(str(self.path) + suffix))
+
+    def _migrate(self) -> None:
+        """예전 DB 에 없던 열을 붙인다.
+
+        채용시작일시가 없던 시절에는 인재 Pool 에 있는 사람이 모두 채용 현황에
+        나왔다. 그때 이미 손댄 사람(부서·과제 배정, 비고, 단계 상태)은 채용을
+        시작한 것으로 봐야 화면에서 갑자기 사라지지 않는다.
+        """
+        있는열 = {r["name"] for r in self._conn.execute("PRAGMA table_info(recruit)")}
+        if "채용시작일시" in 있는열:
+            return
+        self._conn.execute("ALTER TABLE recruit ADD COLUMN 채용시작일시 TEXT DEFAULT ''")
+        지금 = now_kst().strftime("%Y-%m-%d %H:%M:%S")
+        # 단계 상태만 있고 recruit 줄이 없는 사람도 있다 (줄은 손댈 때 생긴다).
+        self._conn.execute(
+            "INSERT OR IGNORE INTO recruit (지원자_ID) SELECT DISTINCT 지원자_ID"
+            " FROM stages WHERE 상태 != ''"
+        )
+        self._conn.execute(
+            "UPDATE recruit SET 채용시작일시=? WHERE 부서_id IS NOT NULL"
+            " OR project_id IS NOT NULL OR 비고 != ''"
+            " OR 지원자_ID IN (SELECT 지원자_ID FROM stages WHERE 상태 != '')",
+            (지금,),
+        )
 
     # -- 조회 -------------------------------------------------------------
     def get(self, 지원자_ID: str) -> Progress:
@@ -129,6 +161,7 @@ class RecruitStore:
                 비고=row["비고"] or "",
                 갱신일시=row["갱신일시"] or "",
                 갱신자=row["갱신자"] or "",
+                채용시작일시=row["채용시작일시"] or "",
             )
             if row
             else Progress(지원자_ID=지원자_ID)
@@ -149,6 +182,7 @@ class RecruitStore:
                 비고=row["비고"] or "",
                 갱신일시=row["갱신일시"] or "",
                 갱신자=row["갱신자"] or "",
+                채용시작일시=row["채용시작일시"] or "",
             )
         for r in self._conn.execute("SELECT 지원자_ID, 단계, 상태 FROM stages"):
             out.setdefault(r["지원자_ID"], Progress(지원자_ID=r["지원자_ID"]))
@@ -163,6 +197,43 @@ class RecruitStore:
             " 갱신자=excluded.갱신자",
             (지원자_ID, now_kst().strftime("%Y-%m-%d %H:%M:%S"), 사용자),
         )
+
+    def start(self, 지원자_ID: str, 사용자: str) -> bool:
+        """채용 절차를 시작한다. 이미 시작했으면 False.
+
+        인재 Pool 에 등록만 된 사람과 실제로 뽑고 있는 사람을 나눈다.
+        채용 현황 표에는 **시작한 사람만** 올라온다.
+        """
+        if self.get(지원자_ID).시작함:
+            return False
+        self._touch(지원자_ID, 사용자)
+        self._conn.execute(
+            "UPDATE recruit SET 채용시작일시=? WHERE 지원자_ID=?",
+            (now_kst().strftime("%Y-%m-%d %H:%M:%S"), 지원자_ID),
+        )
+        self._conn.commit()
+        return True
+
+    def stop(self, 지원자_ID: str, 사용자: str) -> bool:
+        """채용 현황에서 내린다. **진행 상황은 지우지 않는다** — 다시 시작하면
+        그대로 이어진다. 사람 판단으로 지운 기록을 시스템이 날리면 안 된다.
+        """
+        if not self.get(지원자_ID).시작함:
+            return False
+        self._touch(지원자_ID, 사용자)
+        self._conn.execute(
+            "UPDATE recruit SET 채용시작일시='' WHERE 지원자_ID=?", (지원자_ID,)
+        )
+        self._conn.commit()
+        return True
+
+    def started(self) -> set[str]:
+        """채용을 시작한 지원자 ID."""
+        return {
+            r["지원자_ID"] for r in self._conn.execute(
+                "SELECT 지원자_ID FROM recruit WHERE 채용시작일시 != ''"
+            )
+        }
 
     def set_stage(self, 지원자_ID: str, 단계: str, 상태: str, 사용자: str) -> str:
         """단계 상태를 바꾸고 이전 상태를 돌려준다."""

@@ -79,6 +79,8 @@ POST_정책 = {
     "/candidate/year": 거부,
     "/candidates/delete": 거부,
     "/candidates/purge": 거부,
+    "/candidates/start": 허용,       # 현업은 자기 과제 지원자만 (라우트에서 거른다)
+    "/candidates/stop": 허용,
     "/fields": 거부,
     "/fields/add": 거부,
     "/fields/columns": 거부,
@@ -116,12 +118,18 @@ POST_정책 = {
 }
 
 
+def _찾기(덩어리: str) -> set[str]:
+    """`if path == "..."` 와 `if path in ("...", "...")` 를 모두 잡는다."""
+    찾은것 = set(re.findall(r'if path == "([^"]+)"', 덩어리))
+    for 묶음 in re.findall(r'if path in \(([^)]*)\)', 덩어리):
+        찾은것 |= set(re.findall(r'"([^"]+)"', 묶음))
+    return 찾은것
+
+
 def _routes() -> tuple[set[str], set[str]]:
     src = APP.read_text(encoding="utf-8")
     g, p = src.index("def do_GET"), src.index("def do_POST")
-    문법 = r'if path == "([^"]+)"'
-    return (set(re.findall(문법, src[g:p])),
-            set(re.findall(문법, src[p:])) | {"/api/cell"})
+    return _찾기(src[g:p]), _찾기(src[p:]) | {"/api/cell"}
 
 
 def test_every_get_route_is_classified():

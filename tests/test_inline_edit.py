@@ -97,6 +97,13 @@ def cid(web):
     return (after - before).pop()
 
 
+@pytest.fixture
+def 채용cid(web, cid):
+    """채용을 시작한 지원자. 채용 현황 표에는 이런 사람만 올라온다."""
+    web.module.recruit.start(cid, "admin")
+    return cid
+
+
 # --- 기본 열 ----------------------------------------------------------------
 def test_edit_cell_saves(web, cid):
     code, res = web.cell(id=cid, 항목="한글_이름", 새값="홍길동", 이전값="")
@@ -243,7 +250,7 @@ def test_logged_out_cell_edit_returns_json(web, cid):
     assert code == 401 and res["ok"] is False
 
 
-def test_recruit_table_does_not_edit_candidate_fields(web, cid):
+def test_recruit_table_does_not_edit_candidate_fields(web, 채용cid):
     """채용 현황은 채용 상태만 고친다. 지원자 정보를 여기서 고치면 실수로 덮어쓴다."""
     page = web.get("/recruit")
     assert "data-col=" not in page
@@ -399,10 +406,10 @@ def test_recruit_save_is_recorded_in_history(web, cid, org):
     assert any(e.항목 == "전화 면접" and e.새값 == "불합격" for e in 이력)
 
 
-def test_recruit_has_separate_dept_and_project_columns(web, cid, org):
+def test_recruit_has_separate_dept_and_project_columns(web, 채용cid, org):
     page = web.get("/recruit")
-    assert f"name='부서_{cid}'" in page
-    assert f"name='과제_{cid}'" in page
+    assert f"name='부서_{채용cid}'" in page
+    assert f"name='과제_{채용cid}'" in page
     assert "syncProjects" in page          # 부서를 바꾸면 과제 목록이 따라온다
 
 
@@ -571,7 +578,7 @@ def test_fields_page_lists_recruit_and_management_columns(web):
         assert col in page, col
 
 
-def test_recruit_column_can_be_renamed(web, cid):
+def test_recruit_column_can_be_renamed(web, 채용cid):
     """표 항목 탭에서 바꾼 이름이 채용 현황 표 머리글에 나와야 한다."""
     web.post("/fields/columns", col=["최종상태"], label_1="합격 여부", order_1="")
     page = web.get("/recruit")
@@ -642,16 +649,32 @@ def test_field_worker_sees_only_the_recruit_tab(현업):
     c, _did, _pid = 현업
     머리 = c.get("/recruit").split("<main>", 1)[0]
     assert "href='/recruit'" in 머리
-    for 없어야할것 in ("href='/'>", "href='/history'", "href='/upload'", "href='/mail'",
+    for 없어야할것 in ("<a href='/'", "href='/history'", "href='/upload'", "href='/mail'",
                    "href='/users'", "href='/org'", "href='/fields'"):
         assert 없어야할것 not in 머리, 없어야할것
 
 
 def test_home_is_not_a_duplicate_of_the_applicant_tab(web):
-    """제목과 '지원자' 탭이 같은 곳으로 가서 헷갈렸다. 제목은 이름일 뿐이다."""
+    """제목과 '인재 Pool' 탭이 같은 곳으로 가서 헷갈렸다. 제목은 이름일 뿐이다."""
     머리 = web.get("/").split("<main>", 1)[0]
     assert "<span class='brand'>지원자 관리</span>" in 머리
-    assert 머리.count("href='/'>") == 1          # '지원자' 탭 하나뿐
+    assert 머리.count("<a href='/'") == 1        # '인재 Pool' 탭 하나뿐
+
+
+def test_the_current_tab_is_marked(web):
+    """지금 어느 탭을 보고 있는지 눈에 보여야 한다."""
+    for 경로, 라벨 in (("/", "인재 Pool"), ("/recruit", "채용 현황"),
+                    ("/fields", "표 항목"), ("/history", "변경 이력")):
+        머리 = web.get(경로).split("<main>", 1)[0]
+        켜진것 = [조각.split(">", 1)[1].split("<", 1)[0]
+               for 조각 in 머리.split("<a ")[1:] if 조각.startswith("href=") and "class=on" in 조각.split(">", 1)[0]]
+        assert 켜진것 == [라벨], (경로, 켜진것)
+
+
+def test_a_detail_screen_keeps_its_tab_lit(web, cid):
+    """지원자 상세는 탭이 아니지만 인재 Pool 에서 들어간 화면이다."""
+    머리 = web.get("/candidate?id=" + urllib.parse.quote(cid)).split("<main>", 1)[0]
+    assert "<a href='/' class=on>인재 Pool</a>" in 머리
 
 
 def test_field_worker_lands_on_recruit(현업):
@@ -711,7 +734,7 @@ def test_department_delete_button_is_not_swallowed(web, org):
 
 
 # --- 형식 검사를 건드리지 않는 선에서는 고칠 수 있다 -------------------------------
-def test_stage_statuses_can_be_edited(web):
+def test_stage_statuses_can_be_edited(web, 채용cid):
     """단계에서 고를 수 있는 상태는 추출 스키마와 무관하니 고칠 수 있어야 한다."""
     web.post("/recruit/statuses", choices="진행중 | 합격 | 불합격 | 보류 | 1차 통과")
     assert "1차 통과" in web.module.recruit.statuses()
@@ -767,7 +790,7 @@ def test_custom_field_scope_is_recorded(web):
     assert 구분맵["면접관 메모"] == "채용 현황"
 
 
-def test_recruit_scoped_custom_column_is_editable_there(web, cid):
+def test_recruit_scoped_custom_column_is_editable_there(web, 채용cid):
     web.post("/fields/add", name="면접 일정", type="텍스트", scope="채용 현황")
     현재 = web.module.recruit.columns()
     web.post("/recruit/columns", col=[*현재, "면접 일정"], order="")
@@ -775,8 +798,8 @@ def test_recruit_scoped_custom_column_is_editable_there(web, cid):
     assert "사용자열_" in page                       # 열 이름을 폼에 실어 보낸다
     n = page.split("name='사용자열_", 1)[1].split("'", 1)[0]
     web.post("/recruit/save", **{f"사용자열_{n}": "면접 일정",
-                                 f"사용자_{n}_{cid}": "2026-09-01 14:00"})
-    assert web.module.store.custom_values(cid).get("면접 일정") == "2026-09-01 14:00"
+                                 f"사용자_{n}_{채용cid}": "2026-09-01 14:00"})
+    assert web.module.store.custom_values(채용cid).get("면접 일정") == "2026-09-01 14:00"
 
 
 def test_custom_field_can_be_renamed_without_losing_values(web, cid):
@@ -802,3 +825,91 @@ def test_mail_placeholder_notes_explain_the_derived_ones(web):
     tid = web.module.mailing.templates()[-1].id
     page = web.get(f"/mail/template?id={tid}")
     assert "한글_이름, 비어 있으면 영문_이름" in page
+
+
+# --- 인재 Pool → 채용 현황 ------------------------------------------------------
+def test_pool_candidate_is_not_in_the_recruit_table(web, cid):
+    """등록만 된 사람은 인재 Pool 에만 있다. 채용 현황은 뽑고 있는 사람만."""
+    assert cid in web.get("/")
+    assert cid not in web.get("/recruit")
+
+
+def test_starting_recruitment_moves_them_over(web, cid):
+    web.post("/candidates/start", id=cid)
+    assert cid in web.get("/recruit")
+    assert web.module.recruit.get(cid).시작함
+
+
+def test_stopping_keeps_the_progress(web, cid):
+    """내려도 진행 상황은 지우지 않는다 — 다시 올리면 그대로 이어진다."""
+    web.post("/candidates/start", id=cid)
+    web.module.recruit.set_stage(cid, "서류 검토", "합격", "admin")
+    web.post("/candidates/stop", id=cid)
+    assert cid not in web.get("/recruit")
+    assert web.module.recruit.get(cid).단계상태["서류 검토"] == "합격"
+    web.post("/candidates/start", id=cid)
+    assert cid in web.get("/recruit")
+
+
+def test_bulk_start_from_the_pool(web):
+    ids = []
+    for _ in range(2):
+        before = {r.지원자_ID for r in web.module.store.list_all()}
+        web.post("/candidate/new")
+        ids.append(({r.지원자_ID for r in web.module.store.list_all()} - before).pop())
+    web.post("/candidates/start", ids=ids)
+    현황 = web.get("/recruit")
+    assert all(i in 현황 for i in ids)
+
+
+def test_pool_table_shows_the_recruit_state(web, cid):
+    page = web.get("/")
+    assert "채용 시작" in page and "인재 Pool" in page
+    web.post("/candidates/start", id=cid)
+    assert "채용 중" in web.get("/")
+
+
+def test_start_buttons_are_not_nested_forms(web, cid):
+    """폼 안에 폼을 넣으면 브라우저가 안쪽을 버려 엉뚱한 동작이 실행된다."""
+    page = web.get("/")
+    본문 = page.split("<main>", 1)[1]
+    시작폼 = 본문.index("id='startform'")
+    삭제폼 = 본문.index("action='/candidates/delete'")
+    assert 시작폼 < 삭제폼            # 줄 단추용 폼이 표 폼 **밖에** 먼저 온다
+
+
+def test_field_worker_cannot_start_someone_elses_candidate(web, 현업, cid):
+    c, _d, _p = 현업
+    코드, _ = c.post_raw("/candidates/start", id=cid)
+    assert 코드 in (200, 303)                       # 권한은 있지만
+    assert not web.module.recruit.get(cid).시작함    # 배정 안 된 사람은 안 바뀐다
+
+
+def test_existing_progress_counts_as_started_after_upgrade(tmp_path):
+    """예전 DB 를 열면, 이미 손댄 사람은 채용 중으로 남아야 한다."""
+    import sqlite3
+
+    from cvtool.recruit import RecruitStore
+
+    db = tmp_path / "recruit.db"
+    con = sqlite3.connect(db)                       # 채용시작일시 없던 시절 모양
+    con.executescript("""
+        CREATE TABLE recruit (지원자_ID TEXT PRIMARY KEY, 부서_id INTEGER,
+            project_id INTEGER, 비고 TEXT DEFAULT '', 갱신일시 TEXT DEFAULT '',
+            갱신자 TEXT DEFAULT '');
+        CREATE TABLE stages (지원자_ID TEXT, 단계 TEXT, 상태 TEXT DEFAULT '',
+            갱신일시 TEXT DEFAULT '', 갱신자 TEXT DEFAULT '',
+            PRIMARY KEY (지원자_ID, 단계));
+        INSERT INTO recruit (지원자_ID, project_id) VALUES ('CV-OLD1', 3);
+        INSERT INTO recruit (지원자_ID) VALUES ('CV-OLD2');
+        INSERT INTO stages VALUES ('CV-OLD3', '서류 검토', '합격', '', '');
+    """)
+    con.commit()
+    con.close()
+
+    r = RecruitStore(db)
+    시작한사람 = r.started()
+    assert "CV-OLD1" in 시작한사람          # 과제 배정이 있었다
+    assert "CV-OLD3" in 시작한사람          # 단계 상태가 있었다
+    assert "CV-OLD2" not in 시작한사람      # 아무것도 없던 줄은 인재 Pool 로
+    r.close()
