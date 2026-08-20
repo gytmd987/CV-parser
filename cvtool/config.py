@@ -63,6 +63,15 @@ class Settings:
     # 켜면 재업로드 없이 재분석할 수 있지만 CV 전문이 DB 에 남는다.
     store_cv_text: bool = _env("CVTOOL_STORE_CV_TEXT", "0").lower() in ("1", "true", "yes")
 
+    # --- 연구 과제 매칭 ---
+    # 과제 정보 JSON 경로. 상대경로는 **저장소 폴더 기준**으로 푼다
+    # (CV-parser 에서 `cd ../과제정보` 로 가는 곳이면 `../과제정보/과제.json`).
+    projects_json: str = _env("CVTOOL_PROJECTS_JSON", "")
+    # LLM 에 한 번에 넣을 과제 수. 넘으면 임베딩으로 먼저 좁힌다.
+    match_top: int = int(_env("CVTOOL_MATCH_TOP", "8"))
+    # CV 를 분석한 뒤 매칭까지 자동으로 돌릴지. 과제 파일이 있을 때만 뜻이 있다.
+    match_auto: bool = _env("CVTOOL_MATCH_AUTO", "1").lower() not in ("0", "false", "no", "")
+
     # --- 사내 메일 API ---
     # 토큰·ID 는 코드에 두지 않는다. .env 로만 넣는다.
     mail_api_url: str = _env("MAIL_API_URL", _env("CVTOOL_MAIL_API_URL", ""))

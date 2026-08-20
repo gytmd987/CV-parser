@@ -47,6 +47,18 @@ CREATE TABLE IF NOT EXISTS custom_fields (
     만든이       TEXT DEFAULT '',
     만든일시      TEXT DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS matches (
+    지원자_ID    TEXT NOT NULL,
+    과제키        TEXT NOT NULL,
+    과제명        TEXT DEFAULT '',
+    점수         INTEGER DEFAULT 0,
+    사유         TEXT DEFAULT '',
+    근거         TEXT DEFAULT '',
+    순위         INTEGER DEFAULT 0,
+    판단일시      TEXT DEFAULT '',
+    PRIMARY KEY (지원자_ID, 과제키)
+);
+CREATE INDEX IF NOT EXISTS matches_cand ON matches (지원자_ID);
 CREATE TABLE IF NOT EXISTS column_config (
     열이름        TEXT PRIMARY KEY,   -- 기본 열·추가 열 공통
     표시이름      TEXT DEFAULT '',    -- 비면 열이름 그대로
@@ -157,6 +169,7 @@ class CandidateStore:
                 (self.files_dir / att["저장명"]).unlink(missing_ok=True)
             self._conn.execute("DELETE FROM attachments WHERE 지원자_ID=?", (cid,))
             self._conn.execute("DELETE FROM custom_values WHERE 지원자_ID=?", (cid,))
+            self._conn.execute("DELETE FROM matches WHERE 지원자_ID=?", (cid,))
             for 남은 in self.files_of(cid):
                 남은.unlink(missing_ok=True)
 
@@ -377,6 +390,53 @@ class CandidateStore:
              now_kst().strftime("%Y-%m-%d %H:%M:%S")),
         )
         self._conn.commit()
+
+    # -- 과제 매칭 ----------------------------------------------------------
+    def save_matches(self, 지원자_ID: str, matches) -> None:
+        """이 지원자의 과제 매칭 결과를 통째로 갈아 끼운다.
+
+        과제 목록이 바뀌면 옛 결과는 의미가 없으므로 남기지 않는다.
+        """
+        from .timeutil import now_kst
+
+        now = now_kst().strftime("%Y-%m-%d %H:%M:%S")
+        self._conn.execute("DELETE FROM matches WHERE 지원자_ID=?", (지원자_ID,))
+        for 순위, m in enumerate(matches, start=1):
+            self._conn.execute(
+                "INSERT INTO matches (지원자_ID,과제키,과제명,점수,사유,근거,순위,판단일시)"
+                " VALUES (?,?,?,?,?,?,?,?)",
+                (지원자_ID, m.과제키, m.과제명, m.점수, m.사유,
+                 "\n".join(m.근거), 순위, now),
+            )
+        self._conn.commit()
+
+    def matches(self, 지원자_ID: str) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT * FROM matches WHERE 지원자_ID=? ORDER BY 순위", (지원자_ID,)
+        )
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["근거"] = [x for x in (d.get("근거") or "").split("\n") if x.strip()]
+            out.append(d)
+        return out
+
+    def top_matches(self) -> dict[str, dict]:
+        """지원자별 1순위 과제. 표에 열로 낼 때 쓴다."""
+        rows = self._conn.execute(
+            "SELECT * FROM matches WHERE 순위=1"
+        )
+        return {r["지원자_ID"]: dict(r) for r in rows}
+
+    def matched_count(self) -> int:
+        return self._conn.execute(
+            "SELECT COUNT(DISTINCT 지원자_ID) c FROM matches"
+        ).fetchone()["c"]
+
+    def clear_matches(self) -> int:
+        cur = self._conn.execute("DELETE FROM matches")
+        self._conn.commit()
+        return cur.rowcount
 
     # -- 열 설정 (기본 열 + 추가 열 공통) -----------------------------------
     def column_config(self) -> dict[str, dict]:

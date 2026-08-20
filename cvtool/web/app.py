@@ -59,6 +59,8 @@ from ..names import (
     observe_record,
 )
 from ..mailing import MailStore, Template, html_to_text, render
+from ..matching import candidate_profile, match as match_projects
+from .. import projects as projectsmod
 from ..clients import mailer as mailapi
 from ..recruit import RECRUIT_COLUMNS, STAGES, STATUSES, RecruitStore
 from .multipart import parse_multipart
@@ -88,6 +90,59 @@ auth = AuthStore(DATA_DIR / "admin.db")
 recruit = RecruitStore(DATA_DIR / "recruit.db")
 audit = AuditLog(DATA_DIR / "audit.db")
 mailing = MailStore(DATA_DIR / "mail.db", DATA_DIR / "mail_files")
+
+
+_projects_cache: dict = {"mtime": None, "path": None, "목록": [], "오류": ""}
+
+
+def 과제목록(다시: bool = False) -> tuple[list, str]:
+    """(과제 목록, 오류 메시지). 파일이 바뀌면 자동으로 다시 읽는다."""
+    경로 = settings.projects_json
+    if not 경로:
+        return [], ""
+    풀린것 = projectsmod.resolve_path(경로)
+    mtime = 풀린것.stat().st_mtime if 풀린것 and 풀린것.is_file() else None
+    if (다시 or _projects_cache["path"] != str(풀린것)
+            or _projects_cache["mtime"] != mtime):
+        try:
+            _projects_cache["목록"] = projectsmod.load(경로)
+            _projects_cache["오류"] = ""
+        except projectsmod.ProjectsError as exc:
+            _projects_cache["목록"] = []
+            _projects_cache["오류"] = str(exc)
+        _projects_cache["path"] = str(풀린것)
+        _projects_cache["mtime"] = mtime
+    return _projects_cache["목록"], _projects_cache["오류"]
+
+
+def 매칭실행(rec, *, 사용자: str = "") -> tuple[int, str]:
+    """지원자 한 명을 과제와 맞춰 보고 저장한다. (매칭 수, 오류 메시지)"""
+    목록, 오류 = 과제목록()
+    if 오류:
+        return 0, 오류
+    if not 목록:
+        return 0, ""
+    profile = candidate_profile(rec, registry)
+    try:
+        결과 = match_projects(profile, 목록, top=settings.match_top,
+                            embed_client=_embed_client())
+    except Exception as exc:  # noqa: BLE001 - 매칭이 실패해도 지원자는 남아야 한다
+        return 0, f"{type(exc).__name__}: {exc}"
+    store.save_matches(rec.지원자_ID, 결과)
+    if 사용자 and 결과:
+        audit.record(사용자, "지원자", rec.지원자_ID, 항목="과제 매칭",
+                     새값=f"{결과[0].과제명} {결과[0].점수}점")
+    return len(결과), ""
+
+
+def _embed_client():
+    """임베딩은 있으면 쓰고 없으면 만다 (후보 좁히기에만 쓴다)."""
+    try:
+        from ..clients.embedding import EmbeddingClient
+
+        return EmbeddingClient()
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def bootstrap_admin() -> str | None:
@@ -151,8 +206,19 @@ def _worker() -> None:
                 rec.검토_필요 = "Y"
 
             store.save(rec, 원문_텍스트=text, 저장_파일명=저장_파일명, 지문=fp, 중복_메모=메모)
+
+            # 과제 매칭. 실패해도 지원자 등록은 이미 끝났으니 메모만 남긴다.
+            매칭메모 = ""
+            if settings.match_auto and settings.projects_json:
+                개수, 매칭오류 = 매칭실행(rec)
+                if 매칭오류:
+                    매칭메모 = f" / 과제 매칭 실패: {매칭오류}"
+                elif 개수:
+                    최고 = store.matches(rec.지원자_ID)[0]
+                    매칭메모 = f" / 과제: {최고['과제명']} {최고['점수']}점"
+
             state = "중복의심" if 후보 else ("검토필요" if rec.검토_필요 == "Y" else "완료")
-            _set_status(filename, state, rec.검토_사유)
+            _set_status(filename, state, (rec.검토_사유 or "") + 매칭메모)
         except Exception as exc:  # noqa: BLE001 - 워커가 죽으면 안 된다
             _set_status(filename, "실패", f"{type(exc).__name__}: {exc}")
             traceback.print_exc()
@@ -318,6 +384,8 @@ def _page(title: str, body: str, nav: bool = True, me: User | None = None) -> by
         링크.append("<a href='/recruit'>채용 현황</a>")
     if can(me, "지원자_등록"):
         링크.append("<a href='/upload'>CV 업로드</a>")
+    if settings.projects_json and can(me, "지원자_조회"):
+        링크.append("<a href='/match'>과제 매칭</a>")
     if can(me, "메일_템플릿"):
         링크.append("<a href='/mail'>메일</a>")
     if can(me, "명칭_관리"):
@@ -1304,6 +1372,97 @@ def _볼수있나(me: User, 지원자_ID: str) -> bool:
     return recruit.get(지원자_ID).project_id in 보이는
 
 
+def _점수색(점수: int) -> str:
+    if 점수 >= 80:
+        return "p-완료"
+    if 점수 >= 60:
+        return "p-처리중"
+    if 점수 >= 40:
+        return "p-검토필요"
+    return "p-대기중"
+
+
+def _match_page(me: User, error: str = "", msg: str = "") -> bytes:
+    """과제 목록과 지원자별 1순위 매칭을 한 화면에서."""
+    목록, 파일오류 = 과제목록()
+    경로 = projectsmod.resolve_path(settings.projects_json)
+    맨위 = store.top_matches()
+    보이는과제 = auth.visible_project_ids(me)
+    진행맵 = recruit.all()
+    records = store.list_all()
+    if 보이는과제 is not None:
+        records = [r for r in records
+                   if 진행맵.get(r.지원자_ID)
+                   and 진행맵[r.지원자_ID].project_id in 보이는과제]
+
+    설정 = (
+        "<table><tr><th style='width:150px'>과제 파일</th>"
+        f"<td><code>{html.escape(str(경로) if 경로 else '(설정 안 됨)')}</code></td></tr>"
+        f"<tr><th>읽은 과제</th><td>{len(목록)}개</td></tr>"
+        f"<tr><th>맞춰본 지원자</th><td>{store.matched_count()}명 "
+        f"/ 전체 {len(records)}명</td></tr>"
+        f"<tr><th>자동 매칭</th><td>{'켜짐' if settings.match_auto else '꺼짐'} "
+        "<span class='muted'>(CVTOOL_MATCH_AUTO)</span></td></tr></table>"
+    )
+    과제줄 = "".join(
+        f"<tr><td>{html.escape(p.번호 or p.키)}</td><td><b>{html.escape(p.이름)}</b></td>"
+        f"<td>{html.escape(', '.join(p.키워드))}</td>"
+        f"<td>{html.escape(p.담당)}</td>"
+        f"<td style='white-space:normal' class='muted'>{html.escape(p.설명[:160])}"
+        f"{'…' if len(p.설명) > 160 else ''}</td></tr>"
+        for p in 목록
+    ) or "<tr><td colspan='5' class='muted'>읽은 과제가 없습니다.</td></tr>"
+
+    지원자줄 = []
+    for rec in records:
+        m = 맨위.get(rec.지원자_ID)
+        이름 = rec.한글_이름 or rec.영문_이름 or rec.지원자_ID
+        지원자줄.append(
+            f"<tr><td><a href='/candidate?id={urllib.parse.quote(rec.지원자_ID)}'>"
+            f"{html.escape(이름)}</a></td>"
+            + (f"<td><b>{html.escape(m['과제명'])}</b></td>"
+               f"<td><span class='pill {_점수색(m['점수'])}'>{m['점수']}점</span></td>"
+               f"<td style='white-space:normal'>{html.escape(m['사유'])}</td>"
+               f"<td class='muted'>{html.escape(m['판단일시'])}</td>"
+               if m else
+               "<td colspan='4' class='muted'>아직 맞춰보지 않았습니다.</td>")
+            + "</tr>"
+        )
+    지원자표 = "".join(지원자줄) or \
+        "<tr><td colspan='5' class='muted'>지원자가 없습니다.</td></tr>"
+
+    오류 = f"<div class='warn'>{html.escape(error or 파일오류)}</div>" \
+        if (error or 파일오류) else ""
+    알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
+    실행 = (
+        "<form method='post' action='/match/all' class='mergebar'"
+        " onsubmit=\"return confirm('아직 안 맞춰본 지원자를 전부 맞춰 봅니다. "
+        "사람이 많으면 시간이 걸립니다. 진행할까요?')\">"
+        "<button type='submit'>안 맞춰본 지원자 맞춰보기</button>"
+        "<label class='muted'><input type='checkbox' name='again' value='1'> "
+        "이미 맞춰본 사람도 다시</label>"
+        "<span class='muted'>과제 파일을 고쳤으면 다시 돌리세요.</span></form>"
+        if can(me, "지원자_등록") and 목록 else ""
+    )
+    return _page(
+        "과제 매칭",
+        알림 + 오류
+        + "<div class='card'><h2>과제 파일</h2>" + 설정
+        + "<p class='muted'>경로는 <code>.env</code> 의 "
+        "<code>CVTOOL_PROJECTS_JSON</code> 으로 정합니다. 상대경로는 "
+        "<b>CV-parser 폴더 기준</b>입니다.</p></div>"
+        + f"<div class='card'><h2>연구 과제 {len(목록)}개</h2><div class='scroll'>"
+        "<table data-name='연구 과제'><tr><th>번호</th><th>과제명</th><th>키워드</th>"
+        "<th>담당</th><th>설명</th></tr>" + 과제줄 + "</table></div></div>"
+        + f"<div class='card'><h2>지원자별 1순위 <span class='muted'>"
+        f"{len(records)}명</span></h2>" + 실행
+        + "<div class='scroll'><table data-name='지원자별 과제 매칭'>"
+        "<tr><th>지원자</th><th>1순위 과제</th><th>점수</th><th>판단 사유</th>"
+        "<th>판단 일시</th></tr>" + 지원자표 + "</table></div></div>",
+        me=me,
+    )
+
+
 def _busy_count() -> int:
     with _status_lock:
         return sum(1 for s in _status.values() if s["state"] in ("대기중", "처리중"))
@@ -1453,6 +1612,39 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "") -> bytes:
     if 중복:
         관리 += f"<tr><th>중복 후보</th><td class='flag' style='white-space:normal'>{html.escape(중복)}</td></tr>"
 
+    매칭 = store.matches(지원자_ID)
+    매칭카드 = ""
+    if settings.projects_json:
+        if 매칭:
+            줄 = "".join(
+                f"<tr><td>{m['순위']}</td><td><b>{html.escape(m['과제명'])}</b>"
+                f"<br><span class='muted'>{html.escape(m['과제키'])}</span></td>"
+                f"<td><span class='pill {_점수색(m['점수'])}'>{m['점수']}점</span></td>"
+                f"<td style='white-space:normal'>{html.escape(m['사유'])}"
+                + ("<br><span class='muted'>근거: "
+                   + html.escape(" · ".join(m["근거"])) + "</span>" if m["근거"] else "")
+                + "</td></tr>"
+                for m in 매칭
+            )
+            안내 = f"<p class='muted'>{html.escape(매칭[0]['판단일시'])} 기준</p>"
+        else:
+            줄 = "<tr><td colspan='4' class='muted'>아직 맞춰보지 않았습니다.</td></tr>"
+            안내 = ""
+        다시 = (
+            "<form method='post' action='/match/one' style='display:inline'>"
+            f"<input type='hidden' name='id' value='{html.escape(지원자_ID)}'>"
+            "<button type='submit'>과제와 맞춰보기</button></form>"
+            if can(me, "지원자_등록") else ""
+        )
+        매칭카드 = (
+            "<div class='card'><h2>연구 과제 매칭</h2>" + 안내
+            + f"<p>{다시} <span class='muted'>CV 에 적힌 전공·연구·경력을 회사 과제와 "
+            "맞춰 봅니다. 사람이 확인할 <b>판단 사유</b>가 함께 나옵니다.</span></p>"
+            "<div class='scroll'><table data-name='과제 매칭'>"
+            "<tr><th style='width:44px'>순위</th><th>과제</th><th style='width:80px'>점수</th>"
+            "<th>판단 사유</th></tr>" + 줄 + "</table></div></div>"
+        )
+
     메일기록 = mailing.history(지원자_ID)
     메일행 = "".join(
         f"<tr><td>{html.escape(m['보낸일시'])}</td>"
@@ -1540,232 +1732,9 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "") -> bytes:
         <div class='card'><h2>추출 결과 {'(칸을 고치고 저장을 누르세요)' if 수정가능 else ''}</h2>
           <table>{''.join(항목행)}</table></div>
         {사용자카드}
+        {매칭카드}
         {첨부카드}
         {메일카드}
-        <div class='card'><h2>변경 이력</h2><div class='scroll'>
-          <table><tr><th>일시</th><th>사용자</th><th>내용</th></tr>{이력행}</table>
-        </div></div>""",
-        me=me,
-    )
-
-
-def _busy_count() -> int:
-    with _status_lock:
-        return sum(1 for s in _status.values() if s["state"] in ("대기중", "처리중"))
-
-
-def _upload_page(me: User) -> bytes:
-    """CV 업로드 전용 화면.
-
-    예전에는 지원자 목록 맨 위에 업로드 상자가 붙어 있어서, 표를 보러 올 때마다
-    쓰지도 않는 상자가 화면을 차지했다. 탭으로 뺐다.
-    """
-    보관 = "켜짐 (재분석 가능)" if settings.store_cv_text else "꺼짐 (재분석하려면 재업로드 필요)"
-    가능 = ", ".join(sorted(SUPPORTED_SUFFIXES))
-    등록가능 = can(me, "지원자_등록")
-    if not 등록가능:
-        본문 = "<div class='card'><h2>CV 업로드</h2><p>업로드 권한이 없습니다.</p></div>"
-    else:
-        본문 = f"""
-        <div class='card'><h2>CV 업로드</h2>
-          <form method='post' action='/upload' enctype='multipart/form-data'>
-            <p><input type='file' name='files' multiple accept='{가능}'></p>
-            <button type='submit'>업로드 후 분석</button>
-            <span class='muted'>여러 개를 한 번에 고를 수 있습니다 ({가능}).</span>
-          </form>
-          <p class='muted'>분석은 뒤에서 돌아갑니다. 끝나면 아래 현황에 뜨고
-          <a href='/'>지원자 목록</a>에 줄이 생깁니다.</p>
-        </div>
-        <div class='card'><h2>CV 없이 지원자 추가</h2>
-          <form method='post' action='/candidate/new'>
-            <button type='submit' class='sec'>빈 지원자 만들기</button>
-            <span class='muted'>다른 지원서로 지원한 경우. 빈 칸을 직접 채웁니다.</span>
-          </form>
-        </div>
-        <div class='card'><h2>보관 설정</h2>
-          <p class='muted'>원문 텍스트 보관: <b>{보관}</b> ·
-          보관 기간 {settings.retention_months}개월
-          (0 = 무제한) · 설정은 <code>.env</code> 에서 바꿉니다.</p>
-        </div>"""
-    return _page("CV 업로드", 본문 + _status_table(), me=me)
-
-
-def _candidate_page(지원자_ID: str, me: User, error: str = "") -> bytes:
-    rec = store.get(지원자_ID)
-    if rec is None:
-        return _page("없음", "<div class='card'>해당 지원자를 찾을 수 없습니다.</div>")
-    meta = store.meta(지원자_ID) or {}
-    row = rec.to_row(registry)
-    수정가능 = can(me, "지원자_수정")
-
-    def 입력칸(항목: str, 값: str) -> str:
-        if 항목 in REGISTRY_FIELDS:
-            종류 = NAME_COLUMNS[항목]
-            현재 = registry.display(종류, 값) if 값 else ""
-            보기 = [""] + [n.표시명 for n in registry.list_all(종류)]
-            opts = "".join(
-                f"<option value='{html.escape(o)}'{' selected' if o == 현재 else ''}>"
-                f"{html.escape(o) or '(빈칸)'}</option>"
-                for o in dict.fromkeys(보기)
-            )
-            return f"<select name='새값'>{opts}</select>"
-        spec = field_spec(항목)
-        if spec.입력 == "select":
-            opts = "".join(
-                f"<option value='{html.escape(o)}'{' selected' if o == 값 else ''}>"
-                f"{html.escape(o) or '(빈칸)'}</option>"
-                for o in spec.선택지
-            )
-            return f"<select name='새값'>{opts}</select>"
-        도움 = f" placeholder='{html.escape(spec.도움말)}'" if spec.도움말 else ""
-        return f"<input type='text' name='새값' value='{html.escape(값)}' style='width:260px'{도움}>"
-
-    항목행 = []
-    for c in table_columns(registry):
-        값 = str(row.get(c, "") or "")
-        보기 = html.escape(값) or "<span class='muted'>-</span>"
-        if not 수정가능 or c in READONLY_FIELDS or c.startswith("1저자_해외논문_"):
-            항목행.append(
-                f"<tr><th style='width:170px'>{html.escape(c)}</th>"
-                f"<td style='white-space:normal;max-width:none'>{보기}</td></tr>"
-            )
-            continue
-        원본값 = str(getattr(rec, c, "") or "")
-        항목행.append(
-            f"<tr><th style='width:170px'>{html.escape(c)}</th>"
-            f"<td style='white-space:normal;max-width:none'>"
-            f"<form method='post' action='/candidate/edit' style='display:flex;gap:6px'>"
-            f"<input type='hidden' name='id' value='{html.escape(지원자_ID)}'>"
-            f"<input type='hidden' name='항목' value='{html.escape(c)}'>"
-            f"<input type='hidden' name='이전값' value='{html.escape(원본값)}'>"
-            f"{입력칸(c, 원본값)}<button type='submit'>저장</button></form></td></tr>"
-        )
-
-    사용자열 = store.fields()
-    사용자값 = store.custom_values(지원자_ID)
-    사용자행 = []
-    for f in 사용자열:
-        이름, 값 = f["이름"], 사용자값.get(f["이름"], "")
-        if not 수정가능:
-            사용자행.append(
-                f"<tr><th style='width:170px'>{html.escape(이름)}</th>"
-                f"<td>{html.escape(값) or '<span class=muted>-</span>'}</td></tr>"
-            )
-            continue
-        spec = custom_field_spec(f)
-        if spec.입력 == "select":
-            opts = "".join(
-                f"<option value='{html.escape(o)}'{' selected' if o == 값 else ''}>"
-                f"{html.escape(o) or '(빈칸)'}</option>" for o in spec.선택지
-            )
-            칸 = f"<select name='새값'>{opts}</select>"
-        else:
-            칸 = (
-                f"<input type='text' name='새값' value='{html.escape(값)}'"
-                f" style='width:260px' placeholder='{html.escape(spec.도움말)}'>"
-            )
-        사용자행.append(
-            f"<tr><th style='width:170px'>{html.escape(이름)}"
-            f"<br><span class='muted'>{html.escape(f['유형'])}</span></th>"
-            f"<td><form method='post' action='/candidate/custom' style='display:flex;gap:6px'>"
-            f"<input type='hidden' name='id' value='{html.escape(지원자_ID)}'>"
-            f"<input type='hidden' name='항목' value='{html.escape(이름)}'>"
-            f"{칸}<button type='submit'>저장</button></form></td></tr>"
-        )
-    사용자카드 = (
-        f"<div class='card'><h2>추가 항목</h2><table>{''.join(사용자행)}</table></div>"
-        if 사용자열 else ""
-    )
-
-    년도 = store.year_of(지원자_ID)
-    년도폼 = (
-        f"<form method='post' action='/candidate/year' style='display:flex;gap:6px'>"
-        f"<input type='hidden' name='id' value='{html.escape(지원자_ID)}'>"
-        f"<input type='text' name='년도' value='{html.escape(년도)}' style='width:90px'"
-        f" placeholder='YYYY'><button type='submit'>저장</button></form>"
-        if 수정가능
-        else html.escape(년도)
-    )
-
-    관리 = (
-        f"<tr><th style='width:170px'>등록 년도</th><td>{년도폼}</td></tr>"
-        f"<tr><th>원본 파일명</th><td>{html.escape(meta.get('원본_파일명') or '-')}</td></tr>"
-        f"<tr><th>등록 일시</th><td>{html.escape(meta.get('등록일시') or '-')}</td></tr>"
-        f"<tr><th>원본 파일 보관</th><td>{'예' if meta.get('원본보유') else '아니오'}</td></tr>"
-    )
-    중복 = store.duplicate_note(지원자_ID)
-    if 중복:
-        관리 += f"<tr><th>중복 후보</th><td class='flag' style='white-space:normal'>{html.escape(중복)}</td></tr>"
-
-    이력 = audit.for_target("지원자", 지원자_ID)
-    이력행 = "".join(
-        f"<tr><td>{html.escape(e.일시)}</td><td>{html.escape(e.사용자)}</td>"
-        f"<td style='white-space:normal'>{html.escape(e.summary())}</td></tr>"
-        for e in 이력
-    ) or "<tr><td colspan=3 class='muted'>아직 수정 내역이 없습니다.</td></tr>"
-
-    원본있음 = meta.get("원본보유")
-    원본버튼 = (
-        f"<a class='btn' href='/candidate/file?id={urllib.parse.quote(지원자_ID)}'>원본 다운로드</a> "
-        if 원본있음 else ""
-    )
-    재분석 = (
-        "<form method='post' action='/candidate/reanalyze' style='display:inline'>"
-        f"<input type='hidden' name='id' value='{html.escape(지원자_ID)}'>"
-        "<button type='submit'>다시 분석</button></form> "
-        if 원본있음 and 수정가능 else ""
-    )
-    삭제 = (
-        "<form method='post' action='/candidate/delete' style='display:inline'"
-        " onsubmit=\"return confirm('이 지원자를 삭제합니다. 되돌릴 수 없습니다.')\">"
-        f"<input type='hidden' name='id' value='{html.escape(지원자_ID)}'>"
-        "<button type='submit' class='danger'>삭제</button></form> "
-        if can(me, "지원자_삭제") else ""
-    )
-    오류 = f"<div class='warn'>{html.escape(error)}</div>" if error else ""
-
-    첨부목록 = "".join(
-        f"<li><a href='/attachment?id={a['id']}'>{html.escape(a['파일명'])}</a>"
-        f" <span class='muted'>{html.escape(a['올린일시'])} · {html.escape(a['올린이'] or '-')}</span>"
-        + (
-            " <form method='post' action='/attachment/delete' style='display:inline'"
-            " onsubmit=\"return confirm('첨부파일을 삭제합니다.')\">"
-            f"<input type='hidden' name='id' value='{a['id']}'>"
-            f"<input type='hidden' name='cid' value='{html.escape(지원자_ID)}'>"
-            "<button class='danger'>삭제</button></form>"
-            if 수정가능 else ""
-        )
-        + "</li>"
-        for a in store.attachments(지원자_ID)
-    ) or "<li class='muted'>첨부파일 없음</li>"
-    올리기 = (
-        "<form method='post' action='/attachment/add' enctype='multipart/form-data'"
-        " style='display:flex;gap:8px;margin-top:10px'>"
-        f"<input type='hidden' name='id' value='{html.escape(지원자_ID)}'>"
-        "<input type='file' name='files' multiple>"
-        "<button type='submit'>첨부 추가</button></form>"
-        if 수정가능 else ""
-    )
-    첨부카드 = (
-        f"<div class='card'><h2>첨부파일</h2><ul>{첨부목록}</ul>{올리기}"
-        "<p class='muted'>CV 원본과 별개로 자기소개서·포트폴리오 등을 붙일 수 있습니다. "
-        "지원자를 삭제하면 함께 지워집니다.</p></div>"
-    )
-
-    return _page(
-        f"지원자 {rec.한글_이름 or rec.지원자_ID}",
-        f"""{오류}
-        <div class='card'>
-          <h2>{html.escape(rec.한글_이름 or '(이름 미상)')}
-              <span class='muted'>{html.escape(rec.지원자_ID)}</span></h2>
-          <p>{원본버튼}{재분석}{삭제}<a class='btn sec' href='/'>목록으로</a></p>
-          {'<p class=muted>수정 권한이 없어 읽기 전용입니다.</p>' if not 수정가능 else ''}
-        </div>
-        <div class='card'><h2>관리 정보</h2><table>{관리}</table></div>
-        <div class='card'><h2>추출 결과 {'(칸을 고치고 저장을 누르세요)' if 수정가능 else ''}</h2>
-          <table>{''.join(항목행)}</table></div>
-        {사용자카드}
-        {첨부카드}
         <div class='card'><h2>변경 이력</h2><div class='scroll'>
           <table><tr><th>일시</th><th>사용자</th><th>내용</th></tr>{이력행}</table>
         </div></div>""",
@@ -2997,6 +2966,12 @@ class Handler(BaseHTTPRequestHandler):
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 extra={"Content-Disposition": f'attachment; filename="recruit_{stamp}.xlsx"'},
             )
+        if path == "/match":
+            if not can(me, "지원자_조회"):
+                return self._deny()
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            return self._send(_match_page(me, (params.get("err") or [""])[0],
+                                          (params.get("msg") or [""])[0]))
         if path == "/mail":
             if not can(me, "메일_템플릿"):
                 return self._deny()
@@ -3255,6 +3230,47 @@ class Handler(BaseHTTPRequestHandler):
             보임 = ", ".join(바뀐것[:5]) + (" 외" if len(바뀐것) > 5 else "")
             return self._redirect("/recruit?msg=" + urllib.parse.quote(
                 f"{len(바뀐것)}건 저장했습니다 — {보임}"))
+
+        if path == "/match/one":
+            if not can(me, "지원자_등록"):
+                return self._deny()
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            cid = (data.get("id") or [""])[0]
+            뒤로 = f"/candidate?id={urllib.parse.quote(cid)}"
+            rec = store.get(cid)
+            if rec is None:
+                return self._redirect("/")
+            개수, 오류 = 매칭실행(rec, 사용자=me.아이디)
+            if 오류:
+                return self._redirect(f"{뒤로}&err=" + urllib.parse.quote(오류))
+            return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(
+                f"과제 {개수}건과 맞춰봤습니다." if 개수 else "맞춰볼 과제가 없습니다."))
+
+        if path == "/match/all":
+            if not can(me, "지원자_등록"):
+                return self._deny()
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            다시 = bool(data.get("again"))
+            목록, 파일오류 = 과제목록(다시=True)
+            if 파일오류:
+                return self._redirect("/match?err=" + urllib.parse.quote(파일오류))
+            이미 = set() if 다시 else set(store.top_matches())
+            한것, 실패, 첫오류 = 0, 0, ""
+            for rec in store.list_all():
+                if rec.지원자_ID in 이미:
+                    continue
+                개수, 오류 = 매칭실행(rec, 사용자=me.아이디)
+                if 오류:
+                    실패 += 1
+                    첫오류 = 첫오류 or 오류
+                elif 개수:
+                    한것 += 1
+            조각 = [f"{한것}명을 과제와 맞춰봤습니다"]
+            if 실패:
+                조각.append(f"{실패}명 실패 ({첫오류[:80]})")
+            if not 한것 and not 실패:
+                조각 = ["새로 맞춰볼 지원자가 없습니다"]
+            return self._redirect("/match?msg=" + urllib.parse.quote(" / ".join(조각)))
 
         if path == "/mail/template/add":
             if not can(me, "메일_템플릿"):
