@@ -32,6 +32,19 @@ ATTACHMENT_SUFFIXES = {
 #: 첨부 한 개 최대 크기(바이트). 메일 서버가 대개 여기서 막힌다.
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 
+#: 이미 HTML 로 쓰인 본문인지 가늠하는 흔적
+_LOOKS_HTML_RE = re.compile(
+    r"</?(p|br|div|span|font|b|i|u|strong|em|table|tr|td|ul|ol|li|img|a)\b",
+    re.IGNORECASE,
+)
+
+#: execCommand 가 남기는 옛 태그. 메일 클라이언트마다 해석이 달라 인라인 스타일로 바꾼다.
+_FONT_SIZE_RE = re.compile(r"<font([^>]*?)\ssize=[\"\']?([1-7])[\"\']?([^>]*)>",
+                           re.IGNORECASE)
+#: <font size=N> 의 N 을 실제 크기로. 메일에서 눈에 보이는 값이어야 한다.
+_FONT_SIZE_PT = {"1": "8pt", "2": "10pt", "3": "12pt", "4": "14pt",
+                 "5": "18pt", "6": "24pt", "7": "32pt"}
+
 _TAG_RE = re.compile(r"<[^>]+>")
 _BR_RE = re.compile(r"<br\s*/?>|</tr>|</li>", re.IGNORECASE)
 _PARA_RE = re.compile(r"</p>|</div>|</table>", re.IGNORECASE)
@@ -46,6 +59,32 @@ def html_to_text(html_본문: str) -> str:
                       ("&gt;", ">"), ("&quot;", '"'), ("&#39;", "'")):
         s = s.replace(엔티티, 글자)
     return re.sub(r"\n{3,}", "\n\n", s).strip()
+
+
+def looks_like_html(본문: str) -> bool:
+    return bool(_LOOKS_HTML_RE.search(본문 or ""))
+
+
+def text_to_html(본문: str) -> str:
+    """글자로 쓰인 본문을 HTML 로. 줄바꿈이 살아야 한다."""
+    from html import escape
+
+    return escape(본문 or "").replace("\n", "<br>")
+
+
+def modernize(본문: str) -> str:
+    """옛 <font size=N> 을 인라인 스타일로 바꾼다.
+
+    메일 클라이언트는 <style> 블록을 지우는 경우가 많아 **인라인 스타일**이 가장
+    안전하다. <font> 는 클라이언트마다 크기 해석이 달라 결과가 들쭉날쭉하다.
+    """
+    def 바꾸기(m: re.Match) -> str:
+        앞, 크기, 뒤 = m.group(1) or "", m.group(2), m.group(3) or ""
+        나머지 = (앞 + 뒤).strip()
+        스타일 = f"font-size:{_FONT_SIZE_PT.get(크기, '12pt')}"
+        return f"<font {나머지} style='{스타일}'>".replace("  ", " ")
+
+    return _FONT_SIZE_RE.sub(바꾸기, 본문 or "")
 
 
 def split_addresses(raw: str) -> list[str]:
@@ -163,7 +202,7 @@ class MailStore:
     def _add_missing_columns(self) -> None:
         """예전 DB 에 없던 열을 붙인다."""
         for 표, 열들 in (
-            ("templates", (("참조", "''"), ("본문형식", "'TEXT'"))),
+            ("templates", (("참조", "''"), ("본문형식", "'HTML'"))),
             ("sent", (("참조", "''"), ("첨부", "''"))),
         ):
             있는열 = {r["name"] for r in self._conn.execute(f"PRAGMA table_info({표})")}
@@ -172,6 +211,30 @@ class MailStore:
                     self._conn.execute(
                         f"ALTER TABLE {표} ADD COLUMN {열} TEXT DEFAULT {기본}"
                     )
+        self._upgrade_bodies_to_html()
+
+    def _upgrade_bodies_to_html(self) -> None:
+        """본문을 전부 HTML 로 맞춘다.
+
+        편집기가 꾸미기 전용(HTML)인데 본문형식이 TEXT 로 남아 있으면, 애써 꾸민
+        글이 **태그가 그대로 보이는 메일**로 나간다. 실제로 그 사고가 났다.
+
+        이미 HTML 로 쓰인 본문은 그대로 두고, 순수한 글자만 줄바꿈을 살려 HTML 로
+        바꾼다. 옛 <font size=N> 은 인라인 스타일로 옮긴다.
+        """
+        rows = self._conn.execute(
+            "SELECT id, 본문, 본문형식 FROM templates"
+        ).fetchall()
+        for row in rows:
+            본문 = row["본문"] or ""
+            형식 = (row["본문형식"] or "").upper()
+            새본문 = 본문 if (형식 == "HTML" or looks_like_html(본문)) else text_to_html(본문)
+            새본문 = modernize(새본문)
+            if 새본문 != 본문 or 형식 != "HTML":
+                self._conn.execute(
+                    "UPDATE templates SET 본문=?, 본문형식='HTML' WHERE id=?",
+                    (새본문, row["id"]),
+                )
 
     # -- 템플릿 -------------------------------------------------------------
     def add_template(self, 이름: str, 제목: str = "", 본문: str = "",

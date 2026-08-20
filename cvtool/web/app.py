@@ -59,7 +59,7 @@ from ..names import (
     observe_record,
 )
 from ..mailing import MailStore, Template, html_to_text, render
-from ..clients import mail as mailapi
+from ..clients import mailer as mailapi
 from ..recruit import RECRUIT_COLUMNS, STAGES, STATUSES, RecruitStore
 from .multipart import parse_multipart
 
@@ -247,39 +247,56 @@ th.filtered::after{content:' (추림)';font-size:10px;color:var(--accent)}
 #colmenu .cm-allrow{padding-left:8px}
 td.sel{background:#bfdbfe !important;outline:1px solid #2563eb;outline-offset:-1px}
 .rt{border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#fff}
-.rt-bar{display:flex;flex-wrap:wrap;gap:3px;align-items:center;padding:6px;
+.rt-bar{display:flex;flex-wrap:wrap;gap:2px;align-items:center;padding:6px;
  background:#f3f4f6;border-bottom:1px solid var(--line)}
 .rt-bar button{background:#fff;color:var(--txt);border:1px solid var(--line);
- padding:4px 8px;font-size:13px;min-width:30px}
+ padding:4px 7px;font-size:13px;min-width:29px;border-radius:5px}
 .rt-bar button:hover{background:#eff6ff;border-color:var(--accent)}
+.rt-bar button.rt-drop{display:inline-flex;align-items:center;gap:4px;justify-content:space-between}
+.rt-bar button.rt-drop span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rt-bar button.rt-drop i{font-style:normal;font-size:9px;color:var(--muted)}
 .rt-bar button.rt-var{background:var(--accent);color:#fff;border-color:var(--accent)}
-.rt-bar select{padding:4px 6px;font-size:13px}
-.rt-bar label{display:inline-flex;align-items:center;gap:3px;font-size:12px;
- color:var(--muted);border:1px solid var(--line);border-radius:6px;padding:2px 6px;
+.rt-bar button.rt-var i{color:#fff}
+.rt-bar .rt-sep{width:1px;height:20px;background:var(--line);margin:0 4px}
+.rt-bar .rt-ink{display:inline-block;padding:0 3px;border-radius:3px;font-weight:700}
+.rt-bar label.btnlike{display:inline-flex;align-items:center;font-size:13px;
+ color:var(--txt);border:1px solid var(--line);border-radius:5px;padding:4px 7px;
  background:#fff;cursor:pointer}
-.rt-bar label.btnlike:hover{background:#eff6ff}
-.rt-bar input[type=color]{width:26px;height:22px;padding:0;border:0;background:none;
- cursor:pointer}
-.rt-body{min-height:320px;max-height:60vh;overflow:auto;padding:14px 16px;
- font:14px/1.7 "맑은 고딕",system-ui,sans-serif;outline:none}
+.rt-bar label.btnlike:hover{background:#eff6ff;border-color:var(--accent)}
+.rt-body{min-height:340px;max-height:60vh;overflow:auto;padding:16px 18px;
+ font:12pt/1.7 "맑은 고딕",system-ui,sans-serif;outline:none}
 .rt-body:focus{box-shadow:inset 0 0 0 2px #bfdbfe}
 .rt-body table{width:auto}
 .rt-body img{max-width:100%}
-#varmenu{position:absolute;z-index:120;background:#fff;border:1px solid var(--line);
- border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.16);padding:6px;width:280px;
- font-size:13px}
-#varmenu .vm-head{padding:4px 8px;color:var(--muted)}
-#varmenu .vm-q{width:100%;margin:4px 0;padding:6px 8px;font-size:13px}
-#varmenu .vm-list{max-height:300px;overflow:auto}
-#varmenu .vm-group{font-weight:700;color:var(--accent);padding:8px 8px 3px;
+#rtdrop{position:absolute;z-index:120;background:#fff;border:1px solid var(--line);
+ border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.16);padding:5px;font-size:13px;
+ max-height:340px;overflow:auto;min-width:120px}
+#rtdrop > button{display:block;width:100%;text-align:left;background:none;border:0;
+ color:var(--txt);padding:5px 9px;border-radius:5px;font-size:13px;cursor:pointer}
+#rtdrop > button:hover{background:#eff6ff}
+#rtdrop .rt-swatch{display:grid;grid-template-columns:repeat(5,22px);gap:4px;padding:4px}
+#rtdrop .rt-swatch button{width:22px;height:22px;border:1px solid var(--line);
+ border-radius:4px;padding:0;cursor:pointer}
+#rtdrop .rt-pick{display:flex;align-items:center;gap:6px;padding:6px 6px 2px;
+ color:var(--muted);border-top:1px solid var(--line);margin-top:4px;cursor:pointer}
+#rtdrop .rt-grid{display:grid;grid-template-columns:repeat(6,18px);gap:3px;padding:5px}
+#rtdrop .rt-grid i{width:18px;height:16px;border:1px solid var(--line);border-radius:2px;
+ background:#fff;cursor:pointer}
+#rtdrop .rt-grid i.on{background:#bfdbfe;border-color:var(--accent)}
+#rtdrop .rt-gridlabel{text-align:center;color:var(--muted);padding:2px 0 4px}
+#rtdrop.varmenu{width:280px}
+#rtdrop .vm-head{padding:4px 8px;color:var(--muted)}
+#rtdrop .vm-q{width:100%;margin:4px 0;padding:6px 8px;font-size:13px}
+#rtdrop .vm-list{max-height:260px;overflow:auto}
+#rtdrop .vm-group{font-weight:700;color:var(--accent);padding:8px 8px 3px;
  border-top:1px solid var(--line);margin-top:4px}
-#varmenu .vm-group:first-child{border-top:0;margin-top:0}
-#varmenu .vm-item{display:block;width:100%;text-align:left;background:none;
+#rtdrop .vm-group:first-child{border-top:0;margin-top:0}
+#rtdrop .vm-item{display:block;width:100%;text-align:left;background:none;
  color:var(--txt);padding:5px 8px;border-radius:6px;font-size:13px}
-#varmenu .vm-item:hover{background:#eff6ff}
-#varmenu .hide{display:none}
+#rtdrop .vm-item:hover{background:#eff6ff}
+#rtdrop .hide{display:none}
 .mailbody{border:1px solid var(--line);border-radius:8px;padding:14px 16px;
- background:#fff;max-height:420px;overflow:auto}
+ background:#fff;max-height:420px;overflow:auto;font:12pt/1.7 "맑은 고딕",sans-serif}
 .mailbody img{max-width:100%}
 #toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#1b1f24;
  color:#fff;padding:10px 16px;border-radius:8px;opacity:0;pointer-events:none;
@@ -964,68 +981,226 @@ def 라벨(열들: list[str]) -> dict[str, str]:
     return store.labels(열들)
 
 
-#: 메일 본문 편집기 — 표준 라이브러리만 쓰는 환경이라 외부 에디터를 못 쓴다.
-#: contenteditable + execCommand 는 낡았지만 **파일 하나 없이 어디서나 돈다**.
-#: 폐쇄망에서 CDN 을 못 받는 것보다 이쪽이 낫다.
+#: 메일 본문 편집기.
+#: 폐쇄망이라 외부 에디터를 못 받는다. contenteditable + execCommand 로 만들되,
+#: 예전 판의 두 가지 고질병을 구조적으로 없앴다.
+#:   1) 도구 모음에 native <select> 를 쓰면 포커스가 편집기에서 빠져나가서,
+#:      커서 위치를 저장했다 되돌리는 방식이 필요했고 그게 들쭉날쭉했다.
+#:      -> 전부 커스텀 단추로 바꾸고 mousedown 을 막아 **포커스를 아예 안 잃는다.**
+#:   2) execCommand('fontSize') 는 1~7 만 받아 <font size=N> 을 남긴다.
+#:      -> 7 로 표시해 두고 곧바로 <span style="font-size:12pt"> 로 바꿔치기한다.
+#:      메일 클라이언트는 <style> 을 지우므로 **인라인 스타일**이 가장 안전하다.
 _MAIL_JS = r"""
 var RT = {editor: null, subject: null, last: null, range: null};
 
 function rtInit(){
   RT.editor = document.getElementById('rtbody');
-  RT.subject = document.querySelector('input[name=subject]');
   if(!RT.editor) return;
+  RT.subject = document.querySelector('input[name=subject]');
   RT.last = RT.editor;
-  // focus 는 넣지 않는다 — rtRestore() 안의 focus() 가 되돌리려던 위치를 덮어쓴다
+  try { document.execCommand('styleWithCSS', false, true); } catch(e) {}
+
   ['keyup','mouseup','input'].forEach(function(ev){
-    RT.editor.addEventListener(ev, function(){ RT.last = RT.editor; rtSaveRange(); });
+    RT.editor.addEventListener(ev, function(){ RT.last = RT.editor; rtSave(); });
+  });
+  document.addEventListener('selectionchange', function(){
+    if(document.activeElement === RT.editor) rtSave();
   });
   if(RT.subject) RT.subject.addEventListener('focus', function(){ RT.last = RT.subject; });
-  // 도구 단추를 눌러도 커서를 잃지 않게 한다
-  document.querySelectorAll('.rt-bar button, .rt-bar select, .rt-bar label')
-    .forEach(function(el){
-      el.addEventListener('mousedown', function(e){
-        if(el.tagName === 'BUTTON') e.preventDefault();
-      });
-    });
+
+  // 도구를 눌러도 커서를 잃지 않게 한다 (이게 편집이 들쭉날쭉하던 원인)
+  document.querySelector('.rt-bar').addEventListener('mousedown', function(e){
+    if(e.target.closest('input[type=color], input[type=file]')) return;
+    e.preventDefault();
+  });
+
+  RT.editor.addEventListener('paste', rtPaste);
+  RT.editor.addEventListener('input', function(){
+    markDirty(document.getElementById('bodyfield'));
+  });
   var form = RT.editor.closest('form');
   if(form) form.addEventListener('submit', function(){
     document.getElementById('bodyfield').value = RT.editor.innerHTML;
   });
-  RT.editor.addEventListener('input', function(){ markDirty(document.getElementById('bodyfield')); });
 }
 
-function rtSaveRange(){
+function rtSave(){
   var s = window.getSelection();
   if(s.rangeCount && RT.editor.contains(s.anchorNode)) RT.range = s.getRangeAt(0);
 }
-function rtRestore(){
-  var r = RT.range;               // focus() 가 저장된 위치를 건드릴 수 있어 먼저 붙든다
+function rtFocus(){
+  if(document.activeElement === RT.editor) return;
+  var r = RT.range;                       // focus() 가 저장된 위치를 건드릴 수 있다
   RT.editor.focus();
-  if(r){
+  if(r && RT.editor.contains(r.startContainer)){
     var s = window.getSelection();
     s.removeAllRanges();
     s.addRange(r);
   }
 }
 function rtCmd(cmd, val){
-  rtRestore();
+  rtFocus();
   document.execCommand(cmd, false, val || null);
-  rtSaveRange();
+  rtSave();
+  markDirty(document.getElementById('bodyfield'));
 }
 function rtInsert(html){
-  rtRestore();
+  rtFocus();
   document.execCommand('insertHTML', false, html);
-  rtSaveRange();
+  rtSave();
+  markDirty(document.getElementById('bodyfield'));
 }
-function rtLink(){
-  var url = prompt('링크 주소를 넣으세요', 'https://');
-  if(url) rtCmd('createLink', url);
+
+// --- 글씨 크기: execCommand 의 1~7 을 실제 pt 로 바꿔친다 ----------------------
+function rtFontSize(pt, label){
+  rtFocus();
+  document.execCommand('styleWithCSS', false, false);
+  document.execCommand('fontSize', false, '7');      // 7 을 표시로 쓴다
+  document.execCommand('styleWithCSS', false, true);
+  var 표시들 = Array.prototype.slice.call(RT.editor.querySelectorAll('font[size="7"]'));
+  var 마지막 = null;
+  표시들.forEach(function(f){
+    var s = document.createElement('span');
+    s.style.fontSize = pt;
+    while(f.firstChild) s.appendChild(f.firstChild);
+    f.parentNode.replaceChild(s, f);
+    마지막 = s;
+  });
+  if(마지막){                                        // 이어서 칠 수 있게 커서를 둔다
+    var r = document.createRange();
+    r.selectNodeContents(마지막);
+    var sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(r);
+    rtSave();
+  }
+  var btn = document.getElementById('rt-size-btn');
+  if(btn && label) btn.firstChild.textContent = label;
+  markDirty(document.getElementById('bodyfield'));
 }
-function rtTable(){
-  var 행 = parseInt(prompt('줄 수', '3'), 10);
-  var 열 = parseInt(prompt('칸 수', '3'), 10);
-  if(!행 || !열 || 행 < 1 || 열 < 1) return;
-  var s = "<table style='border-collapse:collapse;width:100%'>";
+function rtFontName(name){
+  rtCmd('fontName', name);
+  var btn = document.getElementById('rt-font-btn');
+  if(btn) btn.firstChild.textContent = name;
+}
+
+// --- 붙여넣기 정리 ------------------------------------------------------------
+function rtPaste(e){
+  var dt = e.clipboardData;
+  if(!dt) return;
+  var html = dt.getData('text/html');
+  if(!html){ return; }                                // 글자만이면 그대로 둔다
+  e.preventDefault();
+  var box = document.createElement('div');
+  box.innerHTML = html
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<(style|script|meta|link)[\s\S]*?<\/\1>/gi, '')
+    .replace(/<(style|meta|link)[^>]*>/gi, '');
+  box.querySelectorAll('*').forEach(function(el){
+    ['class','id','lang','align'].forEach(function(a){ el.removeAttribute(a); });
+    if(el.hasAttribute('style')){
+      var 남길것 = ['color','background-color','font-size','font-family','font-weight',
+                  'font-style','text-decoration','text-align'];
+      var 새 = 남길것.map(function(k){
+        var v = el.style.getPropertyValue(k);
+        return v ? k + ':' + v : '';
+      }).filter(Boolean).join(';');
+      if(새) el.setAttribute('style', 새); else el.removeAttribute('style');
+    }
+  });
+  rtInsert(box.innerHTML);
+}
+
+// --- 공통 드롭다운 -----------------------------------------------------------
+function rtDrop(btn, html, onPick){
+  var old = document.getElementById('rtdrop');
+  if(old){
+    var 같은것 = old.dataset.owner === btn.id;
+    old.remove();
+    if(같은것) return;
+  }
+  var m = document.createElement('div');
+  m.id = 'rtdrop';
+  m.dataset.owner = btn.id || '';
+  m.innerHTML = html;
+  document.body.appendChild(m);
+  var r = btn.getBoundingClientRect();
+  m.style.left = Math.min(r.left, window.innerWidth - m.offsetWidth - 12) + 'px';
+  m.style.top = (r.bottom + window.scrollY + 3) + 'px';
+  m.addEventListener('mousedown', function(e){ e.preventDefault(); });
+  m.addEventListener('click', function(e){
+    var it = e.target.closest('[data-v]');
+    if(!it) return;
+    onPick(it.dataset.v, it.dataset.label || it.textContent.trim(), it);
+    if(!it.dataset.keep) m.remove();
+  });
+  return m;
+}
+document.addEventListener('click', function(e){
+  var m = document.getElementById('rtdrop');
+  if(m && !m.contains(e.target) && !(e.target.closest && e.target.closest('.rt-drop')))
+    m.remove();
+});
+document.addEventListener('keydown', function(e){
+  if(e.key !== 'Escape') return;
+  var m = document.getElementById('rtdrop');
+  if(m) m.remove();
+});
+
+function rtFontMenu(btn){
+  var 목록 = window.rtFonts || [];
+  rtDrop(btn, 목록.map(function(f){
+    return "<button type='button' data-v=\"" + f + "\" style=\"font-family:'" + f
+      + "'\">" + f + "</button>";
+  }).join(''), function(v){ rtFontName(v); });
+}
+function rtSizeMenu(btn){
+  var 목록 = window.rtSizes || [];
+  rtDrop(btn, 목록.map(function(s){
+    return "<button type='button' data-v='" + s + "' style='font-size:"
+      + Math.min(parseInt(s, 10) * 1.2, 26) + "px'>" + s + "</button>";
+  }).join(''), function(v){ rtFontSize(v, v); });
+}
+function rtColorMenu(btn, cmd){
+  var 색 = ['#000000','#404040','#808080','#b0b0b0','#ffffff',
+           '#b91c1c','#ea580c','#ca8a04','#15803d','#0e7490',
+           '#1d4ed8','#4f46e5','#7c3aed','#be185d','#78350f',
+           '#fee2e2','#ffedd5','#fef9c3','#dcfce7','#dbeafe'];
+  var html = "<div class='rt-swatch'>" + 색.map(function(c){
+    return "<button type='button' data-v='" + c + "' style='background:" + c
+      + "' title='" + c + "'></button>";
+  }).join('') + "</div>"
+    + "<label class='rt-pick'>직접 고르기"
+    + "<input type='color' onchange=\"rtCmd('" + cmd + "', this.value)\"></label>";
+  rtDrop(btn, html, function(v){ rtCmd(cmd, v); });
+}
+function rtTableMenu(btn){
+  var html = "<div class='rt-grid'>";
+  for(var r = 1; r <= 6; r++){
+    for(var c = 1; c <= 6; c++){
+      html += "<i data-v='" + r + "x" + c + "' data-r='" + r + "' data-c='" + c + "'></i>";
+    }
+  }
+  html += "</div><div class='rt-gridlabel'>표 크기를 고르세요</div>";
+  var m = rtDrop(btn, html, function(v){
+    var 조각 = v.split('x');
+    rtTable(parseInt(조각[0], 10), parseInt(조각[1], 10));
+  });
+  if(!m) return;
+  var 라벨 = m.querySelector('.rt-gridlabel');
+  m.addEventListener('mouseover', function(e){
+    var it = e.target.closest('i[data-v]');
+    if(!it) return;
+    var R = +it.dataset.r, C = +it.dataset.c;
+    라벨.textContent = R + ' × ' + C;
+    m.querySelectorAll('i').forEach(function(cell){
+      cell.classList.toggle('on', +cell.dataset.r <= R && +cell.dataset.c <= C);
+    });
+  });
+}
+function rtTable(행, 열){
+  if(!행 || !열) return;
+  var s = "<table style='border-collapse:collapse;width:100%;font-size:11pt'>";
   for(var r = 0; r < 행; r++){
     s += '<tr>';
     for(var c = 0; c < 열; c++){
@@ -1036,13 +1211,17 @@ function rtTable(){
   s += '</table><p><br></p>';
   rtInsert(s);
 }
+function rtLink(){
+  var url = prompt('링크 주소를 넣으세요', 'https://');
+  if(url) rtCmd('createLink', url);
+}
 function rtImage(input){
   var f = input.files && input.files[0];
   input.value = '';
   if(!f) return;
   if(f.size > 1024 * 1024){
     alert('그림이 너무 큽니다 (' + Math.round(f.size / 1024) + 'KB).\n'
-      + '본문에 넣는 그림은 1MB 까지만 됩니다. 큰 파일은 첨부로 붙이세요.');
+      + '본문에 넣는 그림은 1MB 까지입니다. 큰 파일은 첨부로 붙이세요.');
     return;
   }
   var fr = new FileReader();
@@ -1054,13 +1233,8 @@ function rtImage(input){
 
 // --- 자리표시자 고르기 --------------------------------------------------------
 function rtVars(btn){
-  var old = document.getElementById('varmenu');
-  if(old){ old.remove(); return; }
   var 묶음 = window.자리표시자 || [];
-  var m = document.createElement('div');
-  m.id = 'varmenu';
-  m.innerHTML =
-    "<div class='vm-head'>넣을 자리에 커서를 두고 고르세요</div>"
+  var html = "<div class='vm-head'>넣을 자리에 커서를 두고 고르세요</div>"
     + "<input type='text' class='vm-q' placeholder='이름으로 찾기'>"
     + "<div class='vm-list'>"
     + 묶음.map(function(g){
@@ -1071,12 +1245,23 @@ function rtVars(btn){
             }).join('');
       }).join('')
     + "</div>";
-  document.body.appendChild(m);
-  var r = btn.getBoundingClientRect();
-  m.style.left = Math.min(r.left, window.innerWidth - 300) + 'px';
-  m.style.top = (r.bottom + window.scrollY + 4) + 'px';
+  var m = rtDrop(btn, html, function(v){
+    var 넣을것 = '{{' + v + '}}';
+    if(RT.last === RT.subject && RT.subject){
+      var s = RT.subject.selectionStart, e = RT.subject.selectionEnd;
+      RT.subject.value = RT.subject.value.slice(0, s) + 넣을것
+        + RT.subject.value.slice(e);
+      RT.subject.focus();
+      RT.subject.selectionStart = RT.subject.selectionEnd = s + 넣을것.length;
+      markDirty(RT.subject);
+    } else {
+      rtInsert(넣을것);
+    }
+  });
+  if(!m) return;
+  m.classList.add('varmenu');
   var q = m.querySelector('.vm-q');
-  q.focus();
+  q.addEventListener('mousedown', function(e){ e.stopPropagation(); });
   q.addEventListener('input', function(){
     var 찾기 = q.value.trim().toLowerCase();
     m.querySelectorAll('.vm-item').forEach(function(b){
@@ -1091,30 +1276,8 @@ function rtVars(btn){
       g.classList.toggle('hide', !보임);
     });
   });
-  m.addEventListener('mousedown', function(ev){
-    if(ev.target.classList.contains('vm-item')) ev.preventDefault();
-  });
-  m.addEventListener('click', function(ev){
-    if(!ev.target.classList.contains('vm-item')) return;
-    var v = '{{' + ev.target.dataset.v + '}}';
-    if(RT.last === RT.subject && RT.subject){
-      var s = RT.subject.selectionStart, e = RT.subject.selectionEnd;
-      RT.subject.value = RT.subject.value.slice(0, s) + v + RT.subject.value.slice(e);
-      RT.subject.focus();
-      RT.subject.selectionStart = RT.subject.selectionEnd = s + v.length;
-      markDirty(RT.subject);
-    } else {
-      rtInsert(v);
-      markDirty(document.getElementById('bodyfield'));
-    }
-    m.remove();
-  });
+  setTimeout(function(){ q.focus(); }, 0);
 }
-document.addEventListener('click', function(ev){
-  var m = document.getElementById('varmenu');
-  if(m && !m.contains(ev.target) && !(ev.target.closest && ev.target.closest('.rt-var')))
-    m.remove();
-});
 document.addEventListener('DOMContentLoaded', rtInit);
 """
 
@@ -1788,6 +1951,13 @@ def _mail_page(me: User, error: str = "", msg: str = "") -> bytes:
             f"<div class='warn'>메일 설정이 비어 있어 보낼 수 없습니다: "
             f"<b>{html.escape(', '.join(빠진것))}</b> — <code>.env</code> 를 확인하세요.</div>"
         )
+    설정경고 += (
+        f"<p class='muted'>발송 구현: <b>{html.escape(mailapi.IMPL_NAME)}</b>"
+        + ("" if getattr(mailapi, "LOCAL", False) else
+           " · 서버에 맞춘 구현을 쓰려면 <code>cvtool/clients/mail_local.py</code> 로 두세요"
+           " (git 이 건드리지 않습니다)")
+        + "</p>"
+    )
 
     탈락배지 = "<span class='pill p-미분류'>탈락 메일</span>"
     rows = "".join(
@@ -1865,45 +2035,55 @@ def _mail_template_page(tid: int, me: User, error: str = "", msg: str = "") -> b
         if 모르는것 else ""
     )
 
-    글꼴 = ["맑은 고딕", "굴림", "바탕", "돋움", "Arial", "Times New Roman", "Courier New"]
-    글꼴옵션 = "".join(f"<option value=\'{f}\'>{f}</option>" for f in 글꼴)
-    크기옵션 = "".join(
-        f"<option value='{v}'>{이름}</option>"
-        for v, 이름 in (("1", "아주 작게"), ("2", "작게"), ("3", "보통"),
-                      ("4", "크게"), ("5", "더 크게"), ("6", "아주 크게"))
-    )
+    글꼴 = [
+        "맑은 고딕", "굴림", "굴림체", "돋움", "돋움체", "바탕", "바탕체", "궁서",
+        "나눔고딕", "나눔명조", "함초롬바탕",
+        "Arial", "Helvetica", "Verdana", "Tahoma", "Trebuchet MS",
+        "Times New Roman", "Georgia", "Courier New", "Consolas",
+    ]
+    크기 = ["8pt", "9pt", "10pt", "11pt", "12pt", "14pt", "16pt", "18pt",
+          "20pt", "24pt", "28pt", "32pt", "36pt", "48pt"]
 
     def 단추(cmd: str, 표시: str, 도움말: str) -> str:
         return (f"<button type='button' title='{도움말}'"
                 f" onclick=\"rtCmd('{cmd}')\">{표시}</button>")
 
+    def 드롭(btn_id: str, 라벨: str, 함수: str, 도움말: str, 너비: str = "") -> str:
+        스타일 = f" style='min-width:{너비}'" if 너비 else ""
+        return (f"<button type='button' class='rt-drop' id='{btn_id}'"
+                f" title='{도움말}' onclick='{함수}(this)'{스타일}>"
+                f"<span>{라벨}</span><i>▾</i></button>")
+
     도구 = (
-        f"<select title='글꼴' onchange=\"rtCmd('fontName', this.value)\">"
-        f"<option value=''>글꼴</option>{글꼴옵션}</select>"
-        f"<select title='크기' onchange=\"rtCmd('fontSize', this.value)\">"
-        f"<option value=''>크기</option>{크기옵션}</select>"
-        + 단추("bold", "<b>가</b>", "굵게")
-        + 단추("italic", "<i>가</i>", "기울임")
-        + 단추("underline", "<u>가</u>", "밑줄")
+        드롭("rt-font-btn", "맑은 고딕", "rtFontMenu", "글꼴", "104px")
+        + 드롭("rt-size-btn", "12pt", "rtSizeMenu", "글씨 크기", "62px")
+        + "<span class='rt-sep'></span>"
+        + 단추("bold", "<b>가</b>", "굵게 (Ctrl+B)")
+        + 단추("italic", "<i>가</i>", "기울임 (Ctrl+I)")
+        + 단추("underline", "<u>가</u>", "밑줄 (Ctrl+U)")
         + 단추("strikeThrough", "<s>가</s>", "취소선")
-        + "<label title='글자색'>글자<input type='color' value='#1b1f24'"
-          " onchange=\"rtCmd('foreColor', this.value)\"></label>"
-        + "<label title='배경색'>배경<input type='color' value='#ffff00'"
-          " onchange=\"rtCmd('hiliteColor', this.value)\"></label>"
-        + 단추("justifyLeft", "≡", "왼쪽")
-        + 단추("justifyCenter", "☰", "가운데")
-        + 단추("justifyRight", "≣", "오른쪽")
+        + 드롭("rt-fore-btn", "<span class='rt-ink' style='color:#b91c1c'>가</span>",
+              "rtColorMenuFore", "글자색")
+        + 드롭("rt-back-btn", "<span class='rt-ink' style='background:#fef08a'>가</span>",
+              "rtColorMenuBack", "배경색")
+        + "<span class='rt-sep'></span>"
+        + 단추("justifyLeft", "≡", "왼쪽 정렬")
+        + 단추("justifyCenter", "☰", "가운데 정렬")
+        + 단추("justifyRight", "≣", "오른쪽 정렬")
         + 단추("insertUnorderedList", "•", "글머리 기호")
         + 단추("insertOrderedList", "1.", "번호 매기기")
+        + 단추("outdent", "⇤", "내어쓰기")
+        + 단추("indent", "⇥", "들여쓰기")
+        + "<span class='rt-sep'></span>"
         + "<button type='button' title='링크' onclick='rtLink()'>링크</button>"
-        + "<button type='button' title='표 넣기' onclick='rtTable()'>표</button>"
+        + 드롭("rt-table-btn", "표", "rtTableMenu", "표 넣기")
         + "<label title='그림 넣기' class='btnlike'>그림"
           "<input type='file' accept='image/*' style='display:none'"
           " onchange='rtImage(this)'></label>"
         + 단추("removeFormat", "지우기", "꾸미기 지우기")
         + "<span style='flex:1'></span>"
-        + "<button type='button' class='rt-var' onclick='rtVars(this)'>"
-          "＋ 자리표시자</button>"
+        + "<button type='button' class='rt-drop rt-var' id='rt-var-btn'"
+          " onclick='rtVars(this)'>＋ 자리표시자</button>"
     )
 
     첨부 = mailing.attachments(tpl.id)
@@ -1922,6 +2102,8 @@ def _mail_template_page(tid: int, me: User, error: str = "", msg: str = "") -> b
     알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
     오류 = f"<p class='flag'>{html.escape(error)}</p>" if error else ""
     변수JSON = json.dumps([[이름, 항목] for 이름, 항목 in 묶음], ensure_ascii=False)
+    글꼴JSON = json.dumps(글꼴, ensure_ascii=False)
+    크기JSON = json.dumps(크기, ensure_ascii=False)
 
     return _page(
         f"{tpl.이름} 템플릿",
@@ -1969,8 +2151,15 @@ def _mail_template_page(tid: int, me: User, error: str = "", msg: str = "") -> b
         "<tr><th>파일</th><th>크기</th><th>붙인 일시</th><th></th></tr>"
         + 첨부행 + "</table></div>"
         "<p class='muted'>본문에 넣는 그림은 <b>그림</b> 단추를 쓰세요(1MB 까지). "
-        "큰 파일은 여기에 붙입니다.</p></div>"
-        f"<script>window.자리표시자 = {변수JSON};{_MAIL_JS}</script>",
+        "큰 파일은 여기에 붙입니다.</p>"
+        "<div class='warn' style='margin-top:8px'>본문에 <b>박아 넣은 그림</b>은 "
+        "Outlook 등 일부 메일 프로그램이 <b>차단해서 안 보일 수 있습니다</b>. "
+        "꼭 봐야 하는 그림이면 여기 <b>첨부로도 함께</b> 붙여 두세요.</div></div>"
+        f"<script>window.자리표시자 = {변수JSON};"
+f"window.rtFonts = {글꼴JSON};window.rtSizes = {크기JSON};"
+f"function rtColorMenuFore(b){{rtColorMenu(b, 'foreColor');}}"
+f"function rtColorMenuBack(b){{rtColorMenu(b, 'hiliteColor');}}"
+f"{_MAIL_JS}</script>",
         me=me,
     )
 

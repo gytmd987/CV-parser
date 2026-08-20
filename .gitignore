@@ -239,3 +239,13 @@ resumes/
 *.dump
 *.sql.gz
 extracted/
+
+# 서버에 맞춘 메일 API 구현. 이 파일이 있으면 mail.py 대신 쓰인다.
+# git 이 건드리지 않으므로 pull 해도 덮어써지지 않는다.
+cvtool/clients/mail_local.py
+
+# 개인정보가 든 로컬 데이터
+.env
+*.db
+*.db-wal
+*.db-shm

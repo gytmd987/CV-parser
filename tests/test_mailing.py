@@ -307,8 +307,11 @@ def test_html_to_text_for_previews():
     assert html_to_text("<b>가</b>&nbsp;나") == "가 나"
 
 
-def test_old_text_templates_keep_working(tmp_path):
-    """본문형식 열이 없던 DB 는 TEXT 로 열려야 한다 (HTML 로 잘못 보내면 안 됨)."""
+def test_old_text_templates_become_html(tmp_path):
+    """편집기가 HTML 전용인데 형식이 TEXT 로 남아 태그가 글자로 나가는 사고가 있었다.
+
+    열 때 HTML 로 올려주되, 글자로 쓰인 본문은 줄바꿈을 살려 바꾼다.
+    """
     import sqlite3
 
     path = tmp_path / "m.db"
@@ -328,7 +331,8 @@ def test_old_text_templates_keep_working(tmp_path):
 
     ms = MailStore(path)
     옛것 = ms.template_by_name("옛것")
-    assert 옛것.html is False and 옛것.참조 == ""
+    assert 옛것.html is True and 옛것.참조 == ""
+    assert 옛것.본문 == "본문"
 
 
 # --- 진짜로 나가는지 (가짜 API 를 띄워서 확인) ---------------------------------
@@ -403,3 +407,81 @@ def test_api_error_becomes_a_readable_message(monkeypatch):
     with pytest.raises(mailapi.MailError) as exc:
         mailapi.send("a@b.com", "제목", "본문")
     assert "연결하지 못했습니다" in str(exc.value)
+
+
+# --- 꾸민 본문이 글자로 나가던 사고 ---------------------------------------------
+def test_rich_body_marked_text_is_upgraded(tmp_path):
+    """편집기로 꾸몄는데 형식이 TEXT 면 받는 사람에게 <font ...> 가 글자로 보인다."""
+    path = tmp_path / "m.db"
+    ms = MailStore(path)
+    tid = ms.add_template("옛것", "제목", "본문")
+    ms._conn.execute(
+        "UPDATE templates SET 본문=?, 본문형식='TEXT' WHERE id=?",
+        ('안녕하세요 <font size="1">작은글씨</font>', tid),
+    )
+    ms._conn.commit()
+    ms.close()
+
+    다시 = MailStore(path)
+    t = 다시.template(tid)
+    assert t.html is True
+    assert "<font" in t.본문 and "&lt;font" not in t.본문      # 두 번 이스케이프하지 않는다
+    assert "font-size:8pt" in t.본문                          # 옛 size=1 을 실제 크기로
+
+
+def test_plain_text_body_keeps_its_line_breaks(tmp_path):
+    path = tmp_path / "m.db"
+    ms = MailStore(path)
+    tid = ms.add_template("글자만", "제목", "")
+    ms._conn.execute("UPDATE templates SET 본문=?, 본문형식='TEXT' WHERE id=?",
+                     ("첫줄\n둘째줄 & <꺾쇠>", tid))
+    ms._conn.commit()
+    ms.close()
+
+    t = MailStore(path).template(tid)
+    assert t.본문 == "첫줄<br>둘째줄 &amp; &lt;꺾쇠&gt;"
+
+
+def test_modernize_turns_font_size_into_inline_style():
+    from cvtool.mailing import modernize
+
+    나온것 = modernize('<font size="5">크게</font>')
+    assert "font-size:18pt" in 나온것
+
+
+def test_modernize_keeps_other_attributes():
+    from cvtool.mailing import modernize
+
+    나온것 = modernize('<font color="#ff0000" size="3">글</font>')
+    assert 'color="#ff0000"' in 나온것 and "font-size:12pt" in 나온것
+
+
+def test_looks_like_html_detects_markup():
+    from cvtool.mailing import looks_like_html
+
+    assert looks_like_html("<p>가</p>") and looks_like_html("가<br>나")
+    assert not looks_like_html("그냥 글자입니다")
+
+
+def test_everything_is_html_now(ms):
+    """TEXT 로 새로 만들 길이 없어야 한다 — 그래야 같은 사고가 안 난다."""
+    tid = ms.add_template("새것", "제목", "<p>본문</p>")
+    assert ms.template(tid).html is True
+
+
+# --- 구현 갈아끼우기 ------------------------------------------------------------
+def test_mailer_falls_back_to_the_default_implementation():
+    """서버 전용 mail_local.py 가 없으면 기본 mail.py 를 쓴다."""
+    from cvtool.clients import mailer
+
+    assert mailer.IMPL_NAME.startswith("mail")
+    for 이름 in ("send", "build_url", "build_payload", "missing_settings", "MailError"):
+        assert hasattr(mailer, 이름), 이름
+
+
+def test_mail_local_is_ignored_by_git():
+    """서버에서 고친 구현이 git pull 로 덮어써지면 안 된다."""
+    from pathlib import Path
+
+    무시목록 = Path(".gitignore").read_text(encoding="utf-8")
+    assert "cvtool/clients/mail_local.py" in 무시목록
