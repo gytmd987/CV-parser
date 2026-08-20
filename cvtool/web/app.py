@@ -47,7 +47,7 @@ from ..ingestion.parsers import UnsupportedFormat, extract_text
 from ..normalize import MULTI_SEP
 from ..schemas import NAME_COLUMNS, TIER_COLUMN_PREFIX
 from ..schemas import columns as table_columns
-from ..store import CUSTOM_TYPES, SUPPORTED_SUFFIXES, CandidateStore
+from ..store import CUSTOM_SCOPES, CUSTOM_TYPES, SUPPORTED_SUFFIXES, CandidateStore
 from ..timeutil import now_kst
 from ..dedup import fingerprint, find_duplicates
 from ..names import (
@@ -62,7 +62,13 @@ from ..mailing import MailStore, Template, html_to_text, render
 from ..matching import SCORE_RUBRIC, candidate_profile, match as match_projects
 from .. import projects as projectsmod
 from ..clients import mailer as mailapi
-from ..recruit import RECRUIT_COLUMNS, STAGES, STATUSES, RecruitStore
+from ..recruit import (
+    FIXED_STATUSES,
+    RECRUIT_COLUMNS,
+    STAGES,
+    STATUSES,
+    RecruitStore,
+)
 from .multipart import parse_multipart
 
 DATA_DIR = Path(os.environ.get("CVTOOL_DATA_DIR", Path.home() / ".cvtool"))
@@ -404,7 +410,7 @@ def _page(title: str, body: str, nav: bool = True, me: User | None = None) -> by
         링크.append("<a href='/recruit'>채용 현황</a>")
     if can(me, "지원자_등록"):
         링크.append("<a href='/upload'>CV 업로드</a>")
-    if settings.projects_json and can(me, "지원자_조회"):
+    if settings.projects_json and can(me, "과제매칭_조회"):
         링크.append("<a href='/match'>과제 매칭</a>")
     if can(me, "메일_템플릿"):
         링크.append("<a href='/mail'>메일</a>")
@@ -1074,24 +1080,38 @@ def _tsv_to_xlsx(tsv: str) -> bytes:
 MANAGE_COLUMNS = ("등록년도", "등록일시", "원본_파일명", "보관_만료일")
 
 
-def 열목록(registry_=None) -> list[tuple[str, str]]:
-    """이 시스템이 아는 **모든 열**을 (구분, 열이름) 으로 돌려준다.
+def 열목록(registry_=None) -> list[tuple[str, str, bool]]:
+    """이 시스템이 아는 **모든 열**을 (구분, 열이름, 추가한열인가) 로 돌려준다.
 
     표 항목 탭이 이걸 그대로 보여준다. 지원자 정보 열만 관리할 수 있으면
     채용 현황 열 이름을 못 바꾸고, 관리 정보 열은 아예 표에 못 올린다.
+
+    추가한 열도 **어느 표에 속하는지**를 달고 그 묶음 안에 들어간다.
+    직접 만든 '면접 평점' 이 지원자 정보인지 채용 현황인지 모르면, 어느 표에서
+    찾아야 하는지도 알 수 없다.
     """
     reg = registry_ or registry
-    out = [("지원자 정보", c) for c in table_columns(reg)]
-    out += [("관리 정보", c) for c in MANAGE_COLUMNS]
-    out += [("채용 현황", c) for c in RECRUIT_COLUMNS]
-    out += [("추가한 열", c) for c in store.field_names()]
+    out: list[tuple[str, str, bool]] = []
+    out += [("지원자 정보", c, False) for c in table_columns(reg)]
+    out += [("지원자 정보", c, True) for c in 추가열("지원자 정보")]
+    out += [("관리 정보", c, False) for c in MANAGE_COLUMNS]
+    out += [("채용 현황", c, False) for c in RECRUIT_COLUMNS]
+    out += [("채용 현황", c, True) for c in 추가열("채용 현황")]
     return out
 
 
+def 추가열(구분: str) -> list[str]:
+    """그 묶음에 속하는 추가한 열 이름."""
+    return store.field_names(구분)
+
+
 def 지원자열(registry_=None) -> list[str]:
-    """지원자 목록·엑셀에 나갈 수 있는 열 전부 (숨김·순서 적용 전)."""
+    """지원자 목록·엑셀에 나갈 수 있는 열 전부 (숨김·순서 적용 전).
+
+    '채용 현황' 으로 만든 추가 열은 여기 안 들어간다 — 그건 채용 현황 표 몫이다.
+    """
     return (list(table_columns(registry_ or registry)) + list(MANAGE_COLUMNS)
-            + store.field_names())
+            + 추가열("지원자 정보"))
 
 
 #: 관리 정보 중 처음에는 접어 두는 열. 표가 넓어지기만 하고 평소엔 안 본다.
@@ -1381,8 +1401,11 @@ function rtVars(btn){
     + 묶음.map(function(g){
         return "<div class='vm-group'>" + g[0] + "</div>"
           + g[1].map(function(v){
+              var 설명 = (window.자리표시자설명 || {})[v];
               return "<button type='button' class='vm-item' data-v='" + v + "'>"
-                + v + "</button>";
+                + v
+                + (설명 ? " <span class='muted'>— " + 설명 + "</span>" : "")
+                + "</button>";
             }).join('');
       }).join('')
     + "</div>";
@@ -1849,7 +1872,8 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "") -> bytes:
 
     매칭 = store.matches(지원자_ID)
     매칭카드 = ""
-    if settings.projects_json:
+    # 매칭 결과에는 회사 연구 과제 전체가 들어 있다. 현업에게는 보이면 안 된다.
+    if settings.projects_json and can(me, "과제매칭_조회"):
         보여줄수 = max(1, settings.match_show)
 
         def 매칭줄(m: dict) -> str:
@@ -2277,6 +2301,16 @@ def _mail_var_names() -> list[str]:
     return [v for _, 항목 in _mail_var_groups() for v in 항목]
 
 
+#: DB 열이 아니라 **여기서 만들어 내는** 자리표시자. 뭘로 채워지는지 화면에 적는다.
+#: 이걸 안 적어 두면 "이름 열이 없는데 {{이름}} 은 뭐냐" 는 질문이 계속 나온다.
+MAIL_VAR_NOTES = {
+    "이름": "한글_이름, 비어 있으면 영문_이름",
+    "부서": "채용 현황에서 배정한 부서",
+    "과제": "채용 현황에서 배정한 과제",
+    "최종상태": "단계 상태에서 계산 (예: 기술 면접 합격)",
+}
+
+
 def _mail_template_page(tid: int, me: User, error: str = "", msg: str = "") -> bytes:
     """메일 쓰듯이 꾸며서 작성한다 (글꼴·색·표·그림)."""
     tpl = mailing.template(tid)
@@ -2360,6 +2394,7 @@ def _mail_template_page(tid: int, me: User, error: str = "", msg: str = "") -> b
     알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
     오류 = f"<p class='flag'>{html.escape(error)}</p>" if error else ""
     변수JSON = json.dumps([[이름, 항목] for 이름, 항목 in 묶음], ensure_ascii=False)
+    설명JSON = json.dumps(MAIL_VAR_NOTES, ensure_ascii=False)
     글꼴JSON = json.dumps(글꼴, ensure_ascii=False)
     크기JSON = json.dumps(크기, ensure_ascii=False)
 
@@ -2385,6 +2420,13 @@ def _mail_template_page(tid: int, me: User, error: str = "", msg: str = "") -> b
         f"<div class='rt'><div class='rt-bar'>{도구}</div>"
         f"<div class='rt-body' id='rtbody' contenteditable='true'>{tpl.본문}</div></div>"
         f"<input type='hidden' name='body' id='bodyfield' data-orig=''>"
+        + "<p class='muted'>자리표시자는 대부분 <b>표의 열 이름</b> 그대로입니다"
+        " (<code>{{한글_이름}}</code> <code>{{박사_학교}}</code>). "
+        "DB 에 없는데 쓸 수 있는 것은 아래 넷뿐이고, 보낼 때 이렇게 채워집니다:"
+        "<br>"
+        + " · ".join(f"<code>{{{{{k}}}}}</code> = {html.escape(v)}"
+                     for k, v in MAIL_VAR_NOTES.items())
+        + "</p>"
         "<p><label><input type='checkbox' name='reject' value='1'"
         f"{' checked' if tpl.탈락메일 else ''}> <b>탈락 메일</b> — 이걸 받은 지원자에게는"
         " 이후 어떤 메일도 나가지 않습니다</label></p>"
@@ -2413,7 +2455,7 @@ def _mail_template_page(tid: int, me: User, error: str = "", msg: str = "") -> b
         "<div class='warn' style='margin-top:8px'>본문에 <b>박아 넣은 그림</b>은 "
         "Outlook 등 일부 메일 프로그램이 <b>차단해서 안 보일 수 있습니다</b>. "
         "꼭 봐야 하는 그림이면 여기 <b>첨부로도 함께</b> 붙여 두세요.</div></div>"
-        f"<script>window.자리표시자 = {변수JSON};"
+        f"<script>window.자리표시자 = {변수JSON};window.자리표시자설명 = {설명JSON};"
 f"window.rtFonts = {글꼴JSON};window.rtSizes = {크기JSON};"
 f"function rtColorMenuFore(b){{rtColorMenu(b, 'foreColor');}}"
 f"function rtColorMenuBack(b){{rtColorMenu(b, 'hiliteColor');}}"
@@ -2848,6 +2890,11 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
 
     표열 = store.arrange(recruit.columns())
     이름표 = 라벨(표열)
+    고를수있는상태 = recruit.statuses()
+    # '채용 현황' 으로 만든 추가 열은 **여기서** 고친다. 그 열의 자리가 여기니까.
+    채용사용자열 = {f["이름"]: f for f in store.fields()
+                if (f.get("구분") or "지원자 정보") == "채용 현황"}
+    열번호 = {c: n for n, c in enumerate(표열) if c in 채용사용자열}
     수정가능 = can(me, "채용현황_수정")
     담당자 = can(me, "지원자_수정")
 
@@ -2874,7 +2921,7 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
                 opts = "".join(
                     f"<option value='{html.escape(st)}'"
                     f"{' selected' if st == 값(rec, col) else ''}>{html.escape(st) or '-'}</option>"
-                    for st in STATUSES
+                    for st in 고를수있는상태
                 )
                 cells.append(
                     f"<td class='ctl'><select form='recruitform'"
@@ -2914,6 +2961,22 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
                     f" name='비고_{html.escape(cid)}' value='{v}' style='width:180px'"
                     f" data-orig='{v}' oninput='markDirty(this)'></td>"
                 )
+            elif col in 채용사용자열 and 수정가능:
+                spec = custom_field_spec(채용사용자열[col])
+                이름 = f"사용자_{열번호[col]}_{html.escape(cid)}"
+                if spec.입력 == "select":
+                    옵션 = "".join(
+                        f"<option{' selected' if o == 값(rec, col) else ''}>"
+                        f"{html.escape(o)}</option>" for o in spec.선택지
+                    )
+                    칸 = (f"<select form='recruitform' name='{이름}' data-orig='{v}'"
+                         f" onchange='markDirty(this)'>{옵션}</select>")
+                else:
+                    칸 = (f"<input type='text' form='recruitform' name='{이름}'"
+                         f" value='{v}' style='width:140px' data-orig='{v}'"
+                         f" oninput='markDirty(this)'"
+                         f" title='{html.escape(spec.도움말)}'>")
+                cells.append(f"<td class='ctl'>{칸}</td>")
             elif col == "최종상태":
                 cls = " class='flag'" if p and p.탈락 else ""
                 cells.append(f"<td{cls}>{v}</td>")
@@ -2936,9 +2999,14 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
         안내 += " 보기 전용입니다."
     else:
         안내 += " 지원자 정보 열은 여기서 고칠 수 없습니다 (지원자 목록에서 고치세요)."
+    열이름칸 = "".join(
+        f"<input type='hidden' form='recruitform' name='사용자열_{n}'"
+        f" value='{html.escape(c)}'>" for c, n in 열번호.items()
+    )
     저장바 = (
         "<form method='post' action='/recruit/save' id='recruitform' class='mergebar'>"
-        "<button type='submit'>고친 내용 저장</button>"
+        + 열이름칸
+        + "<button type='submit'>고친 내용 저장</button>"
         "<span class='muted'>여러 줄을 고친 뒤 <b>한 번만</b> 누르세요. "
         "고친 칸은 노랗게 표시됩니다.</span></form>"
         if rows and (수정가능 or 담당자) else ""
@@ -2964,7 +3032,7 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
 
 def _recruit_columns_page(me: User) -> bytes:
     """관리자가 채용 현황 표에 보일 열과 순서를 정한다."""
-    전체 = [c for _, c in 열목록()]
+    전체 = [c for _, c, _ in 열목록()]
     현재 = recruit.columns()
     항목 = "".join(
         f"<label style='display:block;padding:3px 0'>"
@@ -2991,11 +3059,34 @@ def _recruit_columns_page(me: User) -> bytes:
 
 #: 열이 어디에 쓰이는지 — 표 항목 탭에서 한눈에 보이게 적어 둔다.
 COLUMN_GROUP_NOTE = {
-    "지원자 정보": "지원자 목록 · 엑셀 내려받기. CV 에서 뽑아 채웁니다.",
+    "지원자 정보": "지원자 목록 · 엑셀 내려받기",
     "관리 정보": "언제 등록했고 원본이 무엇인지. 표에서는 보기만 합니다.",
     "채용 현황": "채용 현황 표. 어떤 열을 쓸지는 [표 열 구성] 에서 고릅니다.",
-    "추가한 열": "직접 만든 열. 값은 사람이 채웁니다.",
 }
+
+
+def _선택지편집(col: str, 지금: list[str], action: str, 고정: tuple[str, ...] = (),
+             도움말: str = "") -> str:
+    """선택지를 그 자리에서 고치는 작은 폼.
+
+    형식 검사·추출 스키마를 건드리지 않는 열에만 붙인다.
+    """
+    보임 = " | ".join(v for v in 지금 if v)
+    잠긴것 = (
+        "<br><span class='muted'>못 빼는 값: "
+        + html.escape(", ".join(v or "(빈칸)" for v in 고정)) + "</span>"
+        if 고정 else ""
+    )
+    return (
+        f"<form method='post' action='{action}' style='display:flex;gap:6px;"
+        "align-items:center;flex-wrap:wrap;margin-top:4px'>"
+        f"<input type='hidden' name='col' value='{html.escape(col)}'>"
+        f"<input type='text' name='choices' value='{html.escape(보임)}'"
+        " style='width:230px' placeholder='| 로 구분'>"
+        "<button type='submit' class='sec'>선택지 저장</button>"
+        + (f"<span class='muted'>{도움말}</span>" if 도움말 else "")
+        + f"</form>{잠긴것}"
+    )
 
 
 def _fields_page(me: User, error: str = "", msg: str = "") -> bytes:
@@ -3003,35 +3094,47 @@ def _fields_page(me: User, error: str = "", msg: str = "") -> bytes:
 
     예전에는 지원자 정보 열과 직접 추가한 열만 보였다. 그래서 채용 현황 열
     이름을 바꿀 수 없었고, 등록년도·원본 파일명 같은 관리 정보 열은 아예
-    표에 올릴 수도 없었다. 이제 네 묶음을 모두 보여준다.
+    표에 올릴 수도 없었다. 이제 세 묶음을 모두 보여주고, 추가한 열도 어느
+    묶음에 속하는지 달아서 그 자리에 끼워 넣는다.
 
-    다만 **입력 형식은 바꾸지 않는다.** 형식 검사와 추출 스키마가 그 열에
-    걸려 있어서, 여기서 바꾸면 이미 들어 있는 값과 어긋난다.
+    고칠 수 있는 것과 없는 것의 경계는 하나다 — **형식 검사와 추출 스키마.**
+    거기 걸려 있지 않은 것(단계 상태 목록, 추가한 열의 선택지·유형·이름)은
+    고칠 수 있고, 걸려 있는 것(지원자 정보 열의 선택지)은 못 고친다.
     """
     사용자열 = {f["이름"]: f for f in store.fields()}
     cfg = store.column_config()
     유형옵션 = "".join(f"<option>{t}</option>" for t in CUSTOM_TYPES)
+    구분옵션 = "".join(f"<option>{g}</option>" for g in CUSTOM_SCOPES)
     쓰는채용열 = set(recruit.columns())
+    지금상태 = recruit.statuses()
 
-    def 설명(구분: str, col: str) -> str:
-        if 구분 == "추가한 열":
+    def 설명(구분: str, col: str, 추가열: bool) -> str:
+        if 추가열:
             f = 사용자열[col]
-            선택지 = f["선택지"] or ""
-            return (f"{f['유형']}" + (f" · {html.escape(선택지)}" if 선택지 else "")
-                    + f"<br><span class='muted'>{html.escape(f['만든일시'])}"
-                    + (f" ({html.escape(f['만든이'])})" if f["만든이"] else "") + "</span>")
+            머리 = f"{f['유형']}"
+            꼬리 = (f"<br><span class='muted'>{html.escape(f['만든일시'])}"
+                  + (f" ({html.escape(f['만든이'])})" if f["만든이"] else "")
+                  + "</span>")
+            if f["유형"] == "선택":
+                고를것 = [o.strip() for o in (f["선택지"] or "").split("|") if o.strip()]
+                return 머리 + _선택지편집(col, 고를것, "/fields/choices") + 꼬리
+            return 머리 + 꼬리
         if 구분 == "관리 정보":
             return "<span class='muted'>자동 기록 (고치려면 지원자 상세 화면)</span>"
         if 구분 == "채용 현황":
             if col in STAGES:
-                return "선택 · " + html.escape(", ".join(v or "(빈칸)" for v in STATUSES))
+                return "선택" + _선택지편집(
+                    col, 지금상태, "/recruit/statuses", 고정=FIXED_STATUSES,
+                    도움말="네 단계가 같은 목록을 씁니다",
+                )
             if col in ("부서", "과제"):
-                return "<span class='muted'>조직에서 고른 값</span>"
+                return "<span class='muted'>조직에서 고른 값 (부서·과제 화면에서 관리)</span>"
             if col == "최종상태":
                 return "<span class='muted'>계산 결과 (단계 상태에서 정함)</span>"
             return "텍스트"
         if col in CHOICE_FIELDS:
-            return "선택 · " + html.escape(", ".join(v or "(빈칸)" for v in CHOICE_FIELDS[col]))
+            return ("선택 · " + html.escape(", ".join(v or "(빈칸)" for v in CHOICE_FIELDS[col]))
+                    + "<br><span class='muted'>추출 스키마에 걸려 있어 못 바꿉니다</span>")
         if col in REGISTRY_FIELDS:
             return "명칭 사전 " + html.escape(NAME_COLUMNS[col])
         if col.startswith(TIER_COLUMN_PREFIX):
@@ -3041,12 +3144,12 @@ def _fields_page(me: User, error: str = "", msg: str = "") -> bytes:
 
     전체 = 열목록()
     묶음수: dict[str, int] = {}
-    for 구분, _c in 전체:
+    for 구분, _c, _a in 전체:
         묶음수[구분] = 묶음수.get(구분, 0) + 1
 
     rows = []
     직전구분 = ""
-    for i, (구분, col) in enumerate(전체, start=1):
+    for i, (구분, col, 추가열) in enumerate(전체, start=1):
         if 구분 != 직전구분:
             직전구분 = 구분
             rows.append(
@@ -3055,23 +3158,36 @@ def _fields_page(me: User, error: str = "", msg: str = "") -> bytes:
                 f"{html.escape(COLUMN_GROUP_NOTE[구분])}</span></td></tr>"
             )
         c = cfg.get(col, {})
-        추가열 = 구분 == "추가한 열"
         숨김중 = c.get("숨김") or 기본숨김(col, cfg)
-        # 채용 현황 열은 [표 열 구성] 에서 안 고르면 애초에 표에 안 나온다.
         꼬리 = ""
         if 구분 == "채용 현황" and col not in 쓰는채용열:
             꼬리 = " <span class='muted'>(지금 표에 없음)</span>"
+        이름칸 = (
+            # 이름을 입력칸에만 두면 표의 찾기·복사가 못 잡는다. 글자로도 남긴다.
+            f"<div class='muted' style='font-size:11px'>{html.escape(col)}</div>"
+            f"<input type='text' form='colform' name='rename_{i}'"
+            f" value='{html.escape(col)}' style='width:150px'"
+            f" data-orig='{html.escape(col)}' oninput='markDirty(this)'>"
+            f"<select form='colform' name='scope_{i}' onchange='markDirty(this)'"
+            f" data-orig='{html.escape(사용자열[col].get('구분') or '지원자 정보')}'"
+            " style='width:110px;margin-top:3px'>"
+            + "".join(
+                f"<option{' selected' if g == (사용자열[col].get('구분') or '지원자 정보') else ''}>"
+                f"{g}</option>" for g in CUSTOM_SCOPES)
+            + "</select>"
+            if 추가열 else f"{html.escape(col)}{꼬리}"
+        )
         rows.append(
             f"<tr>"
-            f"<td>{html.escape(col)}{꼬리}</td>"
+            f"<td>{이름칸}</td>"
             f"<td><span class='pill {'p-완료' if 추가열 else 'p-대기중'}'>"
-            f"{html.escape(구분)}</span></td>"
-            f"<td style='white-space:normal'>{설명(구분, col)}</td>"
+            f"{'추가한 열' if 추가열 else html.escape(구분)}</span></td>"
+            f"<td style='white-space:normal'>{설명(구분, col, 추가열)}</td>"
             f"<td class='ctl'><input type='hidden' form='colform' name='col'"
             f" value='{html.escape(col)}'>"
             f"<input type='text' form='colform' name='label_{i}'"
             f" value='{html.escape(c.get('표시이름') or '')}'"
-            f" placeholder='{html.escape(col)}' style='width:170px'"
+            f" placeholder='{html.escape(col)}' style='width:150px'"
             f" data-orig='{html.escape(c.get('표시이름') or '')}' oninput='markDirty(this)'></td>"
             f"<td class='ctl'><input type='number' form='colform' name='order_{i}'"
             f" value='{c.get('순서') or ''}' placeholder='-' style='width:70px' min='0'"
@@ -3097,11 +3213,14 @@ def _fields_page(me: User, error: str = "", msg: str = "") -> bytes:
         + "<div class='card'><h2>열 추가</h2>" + 오류
         + "<form method='post' action='/fields/add' style='display:flex;gap:8px;flex-wrap:wrap'>"
         "<input type='text' name='name' placeholder='열 이름' required>"
+        f"<select name='scope'>{구분옵션}</select>"
         f"<select name='type'>{유형옵션}</select>"
         "<input type='text' name='choices' placeholder=\"선택지 (선택 유형만, | 로 구분)\""
         " style='width:280px'>"
         "<button type='submit'>추가</button></form>"
-        "<p class='muted'>유형에 따라 입력칸이 달라지고 형식이 강제됩니다. "
+        "<p class='muted'><b>구분</b>을 고르면 그 표에 붙습니다 — "
+        "<b>지원자 정보</b>는 지원자 목록·엑셀에, <b>채용 현황</b>은 채용 현황 표에. "
+        "유형에 따라 입력칸이 달라지고 형식이 강제됩니다. "
         "<b>값은 사람이 채웁니다</b> — LLM 이 자동으로 채우지 않습니다.</p></div>"
 
         + "<div class='card'><h2>표에 나갈 열 "
@@ -3115,8 +3234,9 @@ def _fields_page(me: User, error: str = "", msg: str = "") -> bytes:
         "<th class='ctl'>순서</th><th>숨김</th><th></th></tr>"
         + "".join(rows) + "</table></div>"
         "<p class='muted'>여기서 정한 이름·순서·숨김은 <b>화면과 엑셀에 함께</b> 적용됩니다. "
-        "<b>입력 형식은 바꾸지 않습니다</b> — 형식 검사와 추출 스키마가 걸려 있어서 "
-        "여기서 바꾸면 이미 들어 있는 값과 어긋납니다. 안 쓰는 열은 <b>숨김</b>으로 두세요.</p>"
+        "고칠 수 있는 것과 없는 것의 경계는 하나입니다 — <b>형식 검사와 추출 스키마</b>. "
+        "단계 상태 목록과 추가한 열의 선택지·유형·이름은 고칠 수 있고, 지원자 정보 열의 "
+        "선택지는 추출 스키마에 걸려 있어 못 고칩니다. 안 쓰는 열은 <b>숨김</b>으로 두세요.</p>"
         "</div>",
         me=me,
     )
@@ -3284,8 +3404,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(_curate_page(me, (params.get("err") or [""])[0],
                                            (params.get("msg") or [""])[0]))
         if path == "/match":
-            if not can(me, "지원자_조회"):
-                return self._deny()
+            if not can(me, "과제매칭_조회"):
+                return self._deny("과제 매칭은 채용담당자 이상만 볼 수 있습니다.")
             params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             return self._send(_match_page(me, (params.get("err") or [""])[0],
                                           (params.get("msg") or [""])[0]))
@@ -3521,7 +3641,34 @@ class Handler(BaseHTTPRequestHandler):
                                      이전값=이전, 새값=값들[0])
                         바뀐것.append(f"{이름맵.get(cid, cid)} 비고")
 
-            # 3) 부서 / 과제 (지원자 수정 권한이 있어야 배정할 수 있다)
+                # 3) '채용 현황' 으로 만든 추가 열
+                for 키, 열이름들 in data.items():
+                    if not 키.startswith("사용자열_"):
+                        continue
+                    n = 키[len("사용자열_"):]
+                    열이름 = 열이름들[0]
+                    정의 = store.field(열이름)
+                    if 정의 is None or (정의.get("구분") or "지원자 정보") != "채용 현황":
+                        continue
+                    앞머리 = f"사용자_{n}_"
+                    for k2, 값들2 in data.items():
+                        if not k2.startswith(앞머리):
+                            continue
+                        cid = k2[len(앞머리):]
+                        if not 볼수있나(cid):
+                            continue
+                        try:
+                            새값 = validate_custom(정의, 값들2[0])
+                        except ValidationError as exc:
+                            return self._redirect(
+                                "/recruit?err=" + urllib.parse.quote(str(exc)))
+                        이전 = store.set_custom(cid, 열이름, 새값)
+                        if 이전 != 새값:
+                            audit.record(me.아이디, "채용현황", cid, 항목=열이름,
+                                         이전값=이전, 새값=새값)
+                            바뀐것.append(f"{이름맵.get(cid, cid)} {열이름}")
+
+            # 4) 부서 / 과제 (지원자 수정 권한이 있어야 배정할 수 있다)
             if can(me, "지원자_수정"):
                 for key, 값들 in data.items():
                     if not key.startswith("부서_"):
@@ -3875,16 +4022,59 @@ class Handler(BaseHTTPRequestHandler):
             data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
             이름 = (data.get("name") or [""])[0]
             try:
+                구분 = (data.get("scope") or ["지원자 정보"])[0]
                 store.add_field(
                     이름,
                     (data.get("type") or ["텍스트"])[0],
                     (data.get("choices") or [""])[0],
                     만든이=me.아이디,
+                    구분=구분,
                 )
             except ValueError as exc:
                 return self._redirect("/fields?err=" + urllib.parse.quote(str(exc)))
-            audit.record(me.아이디, "표항목", 이름, 비고="열 추가")
+            audit.record(me.아이디, "표항목", 이름, 항목="구분", 새값=구분, 비고="열 추가")
             return self._redirect("/fields")
+
+        if path == "/fields/choices":
+            # 추가한 열의 선택지 고치기. 형식 검사·추출 스키마와 무관한 열이라
+            # 고칠 수 있다. 이미 쓰고 있는 값을 빼면 store 가 거부한다.
+            if not can(me, "열_구성"):
+                return self._deny("표 항목 설정은 관리자만 바꿀 수 있습니다.")
+            data = urllib.parse.parse_qs(
+                self._read_body().decode("utf-8", "replace"), keep_blank_values=True
+            )
+            col = (data.get("col") or [""])[0]
+            새선택지 = (data.get("choices") or [""])[0]
+            옛것 = store.field(col)
+            try:
+                store.update_field(col, 선택지=새선택지)
+            except ValueError as exc:
+                return self._redirect("/fields?err=" + urllib.parse.quote(str(exc)))
+            audit.record(me.아이디, "표항목", col, 항목="선택지",
+                         이전값=(옛것 or {}).get("선택지", ""), 새값=새선택지.strip())
+            return self._redirect("/fields?msg=" + urllib.parse.quote(
+                f"'{col}' 선택지를 바꿨습니다."))
+
+        if path == "/recruit/statuses":
+            # 단계에서 고를 수 있는 상태 목록. 네 단계가 같은 목록을 쓴다.
+            if not can(me, "열_구성"):
+                return self._deny("표 항목 설정은 관리자만 바꿀 수 있습니다.")
+            data = urllib.parse.parse_qs(
+                self._read_body().decode("utf-8", "replace"), keep_blank_values=True
+            )
+            목록 = [v.strip() for v in (data.get("choices") or [""])[0].split("|")]
+            try:
+                이전 = recruit.set_statuses(목록)
+            except ValueError as exc:
+                return self._redirect("/fields?err=" + urllib.parse.quote(str(exc)))
+            지금 = recruit.statuses()
+            if 지금 != 이전:
+                audit.record(me.아이디, "표항목", "단계 상태", 항목="선택지",
+                             이전값=" | ".join(x for x in 이전 if x),
+                             새값=" | ".join(x for x in 지금 if x))
+            return self._redirect("/fields?msg=" + urllib.parse.quote(
+                "단계 상태 목록을 바꿨습니다: "
+                + ", ".join(x or "(빈칸)" for x in 지금)))
 
         if path == "/fields/columns":
             if not can(me, "열_구성"):
@@ -3896,6 +4086,29 @@ class Handler(BaseHTTPRequestHandler):
             이전 = store.column_config()
             바뀐것: list[str] = []
             for i, col in enumerate(열들, start=1):
+                # 추가한 열은 이름과 구분(어느 표에 속하는지)까지 고칠 수 있다.
+                # 기본 열은 이 칸을 아예 안 그리므로 여기 걸리지 않는다.
+                옛필드 = store.field(col)
+                if 옛필드 is not None:
+                    새이름 = (data.get(f"rename_{i}") or [col])[0].strip()
+                    새구분 = (data.get(f"scope_{i}")
+                            or [옛필드.get("구분") or "지원자 정보"])[0]
+                    옛구분 = 옛필드.get("구분") or "지원자 정보"
+                    if 새이름 != col or 새구분 != 옛구분:
+                        try:
+                            store.update_field(col, 새이름=새이름, 구분=새구분)
+                        except ValueError as exc:
+                            return self._redirect(
+                                "/fields?err=" + urllib.parse.quote(str(exc)))
+                        if 새이름 != col:
+                            audit.record(me.아이디, "표항목", 새이름, 항목="열 이름",
+                                         이전값=col, 새값=새이름)
+                            바뀐것.append(f"{col}→{새이름}")
+                        if 새구분 != 옛구분:
+                            audit.record(me.아이디, "표항목", 새이름, 항목="구분",
+                                         이전값=옛구분, 새값=새구분)
+                            바뀐것.append(f"{새이름}(구분 {새구분})")
+                        col = 새이름
                 새라벨 = (data.get(f"label_{i}") or [""])[0].strip()
                 순서값 = (data.get(f"order_{i}") or [""])[0].strip()
                 숨김 = f"hide_{i}" in data
@@ -4273,6 +4486,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._redirect("/")
 
         if path == "/status/clear":
+            if not can(me, "지원자_등록"):
+                return self._deny()
             with _status_lock:
                 _status.clear()
             return self._redirect("/upload")

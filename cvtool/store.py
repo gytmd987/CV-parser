@@ -78,6 +78,10 @@ CREATE TABLE IF NOT EXISTS custom_values (
 #: 사용자 정의 열이 가질 수 있는 유형
 CUSTOM_TYPES = ("텍스트", "선택", "연월", "숫자")
 
+#: 추가한 열이 어느 표에 속하는지.
+#: '지원자 정보' 는 지원자 목록·엑셀에, '채용 현황' 은 채용 현황 표에 나간다.
+CUSTOM_SCOPES = ("지원자 정보", "채용 현황")
+
 # 나중에 추가된 열. 기존 DB 에도 없으면 붙인다.
 _ADDED_COLUMNS = {
     "원문_텍스트": "TEXT DEFAULT ''",
@@ -115,6 +119,7 @@ class CandidateStore:
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
         self._migrate()
+        self._custom_field_columns()
         self._matches_columns()
         self._conn.commit()
         # sqlite 가 만든 -wal/-shm 파일에도 같은 내용이 들어간다
@@ -384,7 +389,8 @@ class CandidateStore:
 
     # -- 사용자 정의 열 -----------------------------------------------------
     def add_field(
-        self, 이름: str, 유형: str = "텍스트", 선택지: str = "", 만든이: str = ""
+        self, 이름: str, 유형: str = "텍스트", 선택지: str = "", 만든이: str = "",
+        구분: str = "지원자 정보",
     ) -> None:
         """관리자가 웹에서 표에 열을 추가한다.
 
@@ -395,6 +401,8 @@ class CandidateStore:
             raise ValueError("열 이름을 입력하세요")
         if 유형 not in CUSTOM_TYPES:
             raise ValueError(f"유형은 {'/'.join(CUSTOM_TYPES)} 중 하나여야 합니다")
+        if 구분 not in CUSTOM_SCOPES:
+            raise ValueError(f"구분은 {'/'.join(CUSTOM_SCOPES)} 중 하나여야 합니다")
         from .schemas import COLUMNS
 
         if 이름 in COLUMNS:
@@ -407,14 +415,24 @@ class CandidateStore:
             "SELECT COALESCE(MAX(순서), 0) + 1 AS n FROM custom_fields"
         ).fetchone()["n"]
         self._conn.execute(
-            "INSERT INTO custom_fields (이름, 유형, 선택지, 순서, 만든이, 만든일시)"
-            " VALUES (?,?,?,?,?,?)",
+            "INSERT INTO custom_fields (이름, 유형, 선택지, 순서, 만든이, 만든일시, 구분)"
+            " VALUES (?,?,?,?,?,?,?)",
             (이름, 유형, (선택지 or "").strip(), 순서, 만든이,
-             now_kst().strftime("%Y-%m-%d %H:%M:%S")),
+             now_kst().strftime("%Y-%m-%d %H:%M:%S"), 구분),
         )
         self._conn.commit()
 
     # -- 과제 매칭 ----------------------------------------------------------
+    def _custom_field_columns(self) -> None:
+        """예전 DB 의 custom_fields 에 없던 열을 붙인다."""
+        있는열 = {r["name"] for r in self._conn.execute("PRAGMA table_info(custom_fields)")}
+        if "구분" not in 있는열:
+            self._conn.execute(
+                "ALTER TABLE custom_fields ADD COLUMN 구분 TEXT DEFAULT '지원자 정보'"
+            )
+            self._conn.execute("UPDATE custom_fields SET 구분='지원자 정보' WHERE 구분 IS NULL")
+        self._conn.commit()
+
     def _matches_columns(self) -> None:
         """예전 DB 에 없던 매칭 열을 붙인다."""
         있는열 = {r["name"] for r in self._conn.execute("PRAGMA table_info(matches)")}
@@ -542,8 +560,87 @@ class CandidateStore:
         ).fetchone()
         return dict(row) if row else None
 
-    def field_names(self) -> list[str]:
-        return [f["이름"] for f in self.fields()]
+    def field_names(self, 구분: str | None = None) -> list[str]:
+        """추가한 열 이름. 구분을 주면 그 묶음만."""
+        return [f["이름"] for f in self.fields()
+                if 구분 is None or (f.get("구분") or "지원자 정보") == 구분]
+
+    def update_field(self, 이름: str, *, 새이름: str | None = None,
+                     유형: str | None = None, 선택지: str | None = None,
+                     구분: str | None = None) -> dict:
+        """추가한 열의 이름·유형·선택지·구분을 고치고 **이전 내용**을 돌려준다.
+
+        형식 검사를 건드리지 않는 선에서만 허용한다:
+
+        - **유형 변경**은 이미 들어 있는 값이 새 유형에서도 전부 통과할 때만
+          된다. 안 그러면 표에 있는 값이 형식 검사를 못 넘기는 유령이 된다.
+        - **선택지 제거**는 그 선택지를 쓰고 있는 지원자가 없을 때만 된다.
+        - **이름 변경**은 들어 있던 값을 같이 옮긴다 (값을 잃지 않는다).
+        """
+        from .edit import ValidationError, custom_field_spec, validate_custom
+        from .schemas import COLUMNS
+
+        옛 = self.field(이름)
+        if 옛 is None:
+            raise ValueError(f"없는 열입니다: {이름}")
+        새것 = dict(옛)
+        if 유형 is not None:
+            if 유형 not in CUSTOM_TYPES:
+                raise ValueError(f"유형은 {'/'.join(CUSTOM_TYPES)} 중 하나여야 합니다")
+            새것["유형"] = 유형
+        if 선택지 is not None:
+            새것["선택지"] = (선택지 or "").strip()
+        if 구분 is not None:
+            if 구분 not in CUSTOM_SCOPES:
+                raise ValueError(f"구분은 {'/'.join(CUSTOM_SCOPES)} 중 하나여야 합니다")
+            새것["구분"] = 구분
+        if 새것["유형"] == "선택" and not 새것["선택지"]:
+            raise ValueError("'선택' 유형은 선택지를 하나 이상 적어야 합니다")
+
+        쓰는값 = [
+            r["값"] for r in self._conn.execute(
+                "SELECT 값 FROM custom_values WHERE 필드명=? AND 값 != ''", (이름,)
+            )
+        ]
+        걸린것: list[str] = []
+        for 값 in 쓰는값:
+            try:
+                validate_custom(새것, 값)
+            except ValidationError:
+                if 값 not in 걸린것:
+                    걸린것.append(값)
+        if 걸린것:
+            보임 = ", ".join(걸린것[:5]) + (" 외" if len(걸린것) > 5 else "")
+            raise ValueError(
+                f"이미 들어 있는 값이 새 형식을 못 넘깁니다: {보임} — "
+                "그 값들을 먼저 고치거나 선택지에 남겨 두세요."
+            )
+
+        옮길이름 = (새이름 or 이름).strip()
+        if not 옮길이름:
+            raise ValueError("열 이름을 입력하세요")
+        if 옮길이름 != 이름:
+            if 옮길이름 in COLUMNS:
+                raise ValueError(f"이미 있는 기본 열입니다: {옮길이름}")
+            if self.field(옮길이름):
+                raise ValueError(f"이미 있는 열입니다: {옮길이름}")
+
+        self._conn.execute(
+            "UPDATE custom_fields SET 이름=?, 유형=?, 선택지=?, 구분=? WHERE 이름=?",
+            (옮길이름, 새것["유형"], 새것["선택지"], 새것["구분"], 이름),
+        )
+        if 옮길이름 != 이름:
+            self._conn.execute(
+                "UPDATE custom_values SET 필드명=? WHERE 필드명=?", (옮길이름, 이름)
+            )
+            self._conn.execute(
+                "UPDATE column_config SET 열이름=? WHERE 열이름=?", (옮길이름, 이름)
+            )
+        self._conn.commit()
+        # custom_field_spec 은 화면이 쓰는 것과 같은 규칙이다. 여기서 한 번
+        # 불러 보는 것으로 새 설정이 실제로 입력칸을 만들 수 있는지 확인한다.
+        custom_field_spec(새것)
+        return 옛
 
     def delete_field(self, 이름: str) -> None:
         """열과 그 열에 들어 있던 값을 전부 지운다."""

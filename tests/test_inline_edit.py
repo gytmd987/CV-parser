@@ -708,3 +708,97 @@ def test_department_delete_button_is_not_swallowed(web, org):
     닫힘 = page.index("</form>", 이름폼)
     삭제폼 = page.index("action='/org/dept/delete'")
     assert 닫힘 < 삭제폼          # 삭제 폼이 이름 폼 **밖에** 있어야 한다
+
+
+# --- 형식 검사를 건드리지 않는 선에서는 고칠 수 있다 -------------------------------
+def test_stage_statuses_can_be_edited(web):
+    """단계에서 고를 수 있는 상태는 추출 스키마와 무관하니 고칠 수 있어야 한다."""
+    web.post("/recruit/statuses", choices="진행중 | 합격 | 불합격 | 보류 | 1차 통과")
+    assert "1차 통과" in web.module.recruit.statuses()
+    assert "1차 통과" in web.get("/recruit")
+
+
+def test_stage_statuses_keep_the_load_bearing_ones(web):
+    """합격·불합격은 최종상태와 탈락 판정이 쓰므로 뺄 수 없다."""
+    코드, 본문 = web.post("/recruit/statuses", choices="진행중 | 보류")
+    assert "뺄 수 없습니다" in 본문 or "뺄 수 없습니다" in web.get("/fields")
+    assert "합격" in web.module.recruit.statuses()
+
+
+def test_stage_status_in_use_cannot_be_removed(web, cid):
+    web.post("/recruit/statuses", choices="진행중 | 합격 | 불합격 | 보류 | 검토중")
+    web.module.recruit.set_stage(cid, "서류 검토", "검토중", "admin")
+    web.post("/recruit/statuses", choices="진행중 | 합격 | 불합격 | 보류")
+    assert "검토중" in web.module.recruit.statuses()      # 쓰고 있어서 안 빠진다
+    web.module.recruit.set_stage(cid, "서류 검토", "", "admin")
+    web.post("/recruit/statuses", choices="진행중 | 합격 | 불합격 | 보류")
+    assert "검토중" not in web.module.recruit.statuses()  # 이제 뺄 수 있다
+
+
+def test_builtin_choice_field_has_no_edit_form(web):
+    """지원자 정보 열의 선택지는 추출 스키마에 걸려 있어 못 고친다."""
+    page = web.get("/fields")
+    줄 = page.split("<td>현재_신분", 1)[1].split("</tr>", 1)[0]
+    assert "/fields/choices" not in 줄
+    assert "추출 스키마" in 줄
+
+
+def test_custom_choice_field_can_be_edited(web):
+    web.post("/fields/add", name="면접등급", type="선택", choices="A|B", scope="지원자 정보")
+    web.post("/fields/choices", col="면접등급", choices="A | B | C")
+    f = web.module.store.field("면접등급")
+    assert f["선택지"] == "A | B | C"
+
+
+def test_custom_choice_in_use_cannot_be_dropped(web, cid):
+    web.post("/fields/add", name="합숙여부", type="선택", choices="가능|불가", scope="지원자 정보")
+    web.post("/candidate/custom", id=cid, 항목="합숙여부", 새값="가능")
+    web.post("/fields/choices", col="합숙여부", choices="불가")
+    assert "가능" in web.module.store.field("합숙여부")["선택지"]
+
+
+def test_custom_field_scope_is_recorded(web):
+    web.post("/fields/add", name="면접관 메모", type="텍스트", scope="채용 현황")
+    f = web.module.store.field("면접관 메모")
+    assert f["구분"] == "채용 현황"
+    # 채용 현황 열은 지원자 표에 안 나오고 채용 현황 표 쪽에 붙는다
+    assert "면접관 메모" not in web.module.표열()
+    구분맵 = {c: g for g, c, _ in web.module.열목록()}
+    assert 구분맵["면접관 메모"] == "채용 현황"
+
+
+def test_recruit_scoped_custom_column_is_editable_there(web, cid):
+    web.post("/fields/add", name="면접 일정", type="텍스트", scope="채용 현황")
+    현재 = web.module.recruit.columns()
+    web.post("/recruit/columns", col=[*현재, "면접 일정"], order="")
+    page = web.get("/recruit")
+    assert "사용자열_" in page                       # 열 이름을 폼에 실어 보낸다
+    n = page.split("name='사용자열_", 1)[1].split("'", 1)[0]
+    web.post("/recruit/save", **{f"사용자열_{n}": "면접 일정",
+                                 f"사용자_{n}_{cid}": "2026-09-01 14:00"})
+    assert web.module.store.custom_values(cid).get("면접 일정") == "2026-09-01 14:00"
+
+
+def test_custom_field_can_be_renamed_without_losing_values(web, cid):
+    web.post("/fields/add", name="옛이름", type="텍스트", scope="지원자 정보")
+    web.post("/candidate/custom", id=cid, 항목="옛이름", 새값="지킬 값")
+    web.post("/fields/columns", col=["옛이름"], rename_1="새이름",
+             scope_1="지원자 정보", label_1="", order_1="")
+    assert web.module.store.field("옛이름") is None
+    assert web.module.store.custom_values(cid).get("새이름") == "지킬 값"
+
+
+def test_custom_field_type_change_is_refused_when_values_would_break(web, cid):
+    web.post("/fields/add", name="점수칸", type="텍스트", scope="지원자 정보")
+    web.post("/candidate/custom", id=cid, 항목="점수칸", 새값="아주 좋음")
+    with pytest.raises(ValueError):
+        web.module.store.update_field("점수칸", 유형="숫자")
+    assert web.module.store.field("점수칸")["유형"] == "텍스트"
+
+
+def test_mail_placeholder_notes_explain_the_derived_ones(web):
+    """{{이름}} 은 DB 열이 아니다. 뭘로 채워지는지 화면에 적혀 있어야 한다."""
+    코드, _ = web.post("/mail/template/add", name="설명확인")
+    tid = web.module.mailing.templates()[-1].id
+    page = web.get(f"/mail/template?id={tid}")
+    assert "한글_이름, 비어 있으면 영문_이름" in page

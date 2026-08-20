@@ -24,7 +24,12 @@ from .timeutil import now_kst
 STAGES = ("서류 검토", "전화 면접", "기술 면접", "HR 면접")
 
 #: 각 단계에서 고를 수 있는 상태. 빈 문자열은 '아직 시작 안 함'
+#: 처음 값일 뿐이고, 관리자가 `표 항목` 화면에서 바꿀 수 있다.
 STATUSES = ("", "진행중", "합격", "불합격", "보류")
+
+#: **바꿀 수 없는 상태.** 최종상태·탈락 판정·정렬이 이 값에 걸려 있다.
+#: 빈칸은 '아직 시작 안 함', 합격/불합격은 다음 단계로 갈지 끝났는지를 정한다.
+FIXED_STATUSES = ("", "합격", "불합격")
 
 #: 채용 현황 표에만 있는 열 (지원자 DB 열과 합쳐서 보여준다)
 RECRUIT_COLUMNS = ("부서", "과제", *STAGES, "최종상태", "비고")
@@ -50,6 +55,10 @@ CREATE TABLE IF NOT EXISTS view_columns (
     열이름       TEXT PRIMARY KEY,
     순서         INTEGER DEFAULT 99,
     표시         INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS stage_statuses (
+    순서         INTEGER PRIMARY KEY,
+    상태         TEXT NOT NULL
 );
 """
 
@@ -159,8 +168,11 @@ class RecruitStore:
         """단계 상태를 바꾸고 이전 상태를 돌려준다."""
         if 단계 not in STAGES:
             raise ValueError(f"없는 단계입니다: {단계}")
-        if 상태 not in STATUSES:
-            raise ValueError(f"상태는 {'/'.join(s or '(빈칸)' for s in STATUSES)} 중 하나여야 합니다")
+        고를수있는것 = self.statuses()
+        if 상태 not in 고를수있는것:
+            raise ValueError(
+                f"상태는 {'/'.join(s or '(빈칸)' for s in 고를수있는것)} 중 하나여야 합니다"
+            )
         이전 = self.get(지원자_ID).단계상태.get(단계, "")
         self._conn.execute(
             "INSERT INTO stages (지원자_ID, 단계, 상태, 갱신일시, 갱신자) VALUES (?,?,?,?,?)"
@@ -197,6 +209,53 @@ class RecruitStore:
         self._conn.execute("DELETE FROM recruit WHERE 지원자_ID=?", (지원자_ID,))
         self._conn.execute("DELETE FROM stages WHERE 지원자_ID=?", (지원자_ID,))
         self._conn.commit()
+
+    # -- 단계 상태 목록 (관리자) -------------------------------------------
+    def statuses(self) -> list[str]:
+        """각 단계에서 고를 수 있는 상태. 안 정했으면 기본값."""
+        rows = self._conn.execute(
+            "SELECT 상태 FROM stage_statuses ORDER BY 순서"
+        ).fetchall()
+        return [r["상태"] for r in rows] if rows else list(STATUSES)
+
+    def set_statuses(self, 목록: list[str]) -> list[str]:
+        """상태 목록을 바꾸고 이전 목록을 돌려준다.
+
+        합격·불합격·빈칸은 뺄 수 없다. 최종상태와 탈락 판정이 이 값을 보고
+        돌아가서, 이름이 바뀌면 이미 저장된 진행 상황이 통째로 뜻을 잃는다.
+        쓰고 있는 상태도 뺄 수 없다 — 빼면 그 사람 진행 상황이 사라진다.
+        """
+        깨끗한 = [""]
+        for 값 in 목록:
+            값 = (값 or "").strip()
+            if 값 and 값 not in 깨끗한:
+                깨끗한.append(값)
+        빠진고정 = [s for s in FIXED_STATUSES if s not in 깨끗한]
+        if 빠진고정:
+            raise ValueError(
+                "다음 상태는 뺄 수 없습니다: "
+                + ", ".join(s or "(빈칸)" for s in 빠진고정)
+                + " — 최종상태·탈락 판정이 이 값에 걸려 있습니다."
+            )
+        쓰는중 = {
+            r["상태"] for r in self._conn.execute(
+                "SELECT DISTINCT 상태 FROM stages WHERE 상태 != ''"
+            )
+        }
+        사라지는것 = sorted(쓰는중 - set(깨끗한))
+        if 사라지는것:
+            raise ValueError(
+                "지금 쓰고 있는 상태라 뺄 수 없습니다: " + ", ".join(사라지는것)
+                + " — 그 지원자들 상태를 먼저 바꾸세요."
+            )
+        이전 = self.statuses()
+        self._conn.execute("DELETE FROM stage_statuses")
+        for i, 상태 in enumerate(깨끗한):
+            self._conn.execute(
+                "INSERT INTO stage_statuses (순서, 상태) VALUES (?,?)", (i, 상태)
+            )
+        self._conn.commit()
+        return 이전
 
     # -- 표시 열 구성 (관리자) ---------------------------------------------
     def set_columns(self, 열목록: list[str]) -> None:
