@@ -1956,6 +1956,49 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "") -> bytes:
         if 사용자열 else ""
     )
 
+    # 논문·특허 목록 — 표의 '수' 열이 무엇을 세었는지 눈으로 볼 수 있어야 한다.
+    논문보기 = rec.papers_view(registry)
+    주저자배지 = "<span class='pill p-완료'>주저자</span>"
+    공저자배지 = "<span class='muted'>공저자</span>"
+    논문행 = "".join(
+        f"<tr><td>{주저자배지 if v['주저자'] else 공저자배지}</td>"
+        f"<td>{html.escape(v['유형'])}</td>"
+        f"<td style='white-space:normal'>{html.escape(v['표시명'])}</td>"
+        f"<td>{html.escape(v['연도'])}</td>"
+        f"<td>{html.escape(v['국내해외'])}</td>"
+        f"<td>{html.escape(v['등급'])}</td></tr>"
+        for v in 논문보기
+    )
+    특허행 = "".join(
+        f"<tr><td>{html.escape(pt.상태)}</td>"
+        f"<td style='white-space:normal'>{html.escape(pt.제목) or '-'}</td>"
+        f"<td>{html.escape(pt.연도)}</td><td>{html.escape(pt.번호)}</td></tr>"
+        for pt in rec.특허
+    )
+    센것 = {**rec.논문_수(registry), **rec.특허_수()}
+    실적카드 = ""
+    if 논문보기 or rec.특허:
+        실적카드 = (
+            "<div class='card'><h2>연구 실적 <span class='muted'>"
+            f"저널 {센것['저널_수']}편(주저자 {센것['저널_주저자_수']}) · "
+            f"학회 {센것['학회_수']}편(주저자 {센것['학회_주저자_수']}) · "
+            f"특허 등록 {센것['특허_등록_수']} / 출원 {센것['특허_출원_수']}"
+            "</span></h2>"
+            + ("<div class='scroll'><table data-name='논문'>"
+               "<tr><th style='width:80px'>저자</th><th style='width:60px'>유형</th>"
+               "<th>제출처</th><th style='width:60px'>연도</th>"
+               "<th style='width:70px'>국내해외</th><th style='width:80px'>등급</th></tr>"
+               + 논문행 + "</table></div>" if 논문보기 else "")
+            + ("<h2 style='margin-top:14px'>특허</h2><div class='scroll'>"
+               "<table data-name='특허'><tr><th style='width:70px'>상태</th><th>제목</th>"
+               "<th style='width:60px'>연도</th><th>번호</th></tr>"
+               + 특허행 + "</table></div>" if rec.특허 else "")
+            + "<p class='muted'>표의 <b>저널_수 · 학회_수 · 특허_등록_수</b> 열은 "
+              "여기 있는 것을 셉니다. 학회·저널 구분과 등급은 "
+              "<a href='/names?kind=" + urllib.parse.quote("학회·저널")
+            + "'>명칭 관리</a>에서 판별한 값을 씁니다.</p></div>"
+        )
+
     년도 = store.year_of(지원자_ID)
     년도폼 = (
         f"<form method='post' action='/candidate/year' style='display:flex;gap:6px'>"
@@ -2149,6 +2192,7 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "") -> bytes:
         <div class='card'><h2>추출 결과 {'(칸을 고치고 저장을 누르세요)' if 수정가능 else ''}</h2>
           <table>{''.join(항목행)}</table></div>
         {사용자카드}
+        {실적카드}
         {매칭카드}
         {첨부카드}
         {메일카드}

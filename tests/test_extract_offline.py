@@ -45,9 +45,18 @@ SECTION_REPLIES = {
         "석박통합_여부": False,
     },
     "research": {
-        "1저자_논문": [
-            {"제출처": "NeurIPS", "연도": "2024", "유형": "학회", "국내해외": "해외"},
-            {"제출처": "한국정보과학회 KCC", "연도": "2023", "유형": "학회", "국내해외": "국내"},
+        "논문": [
+            {"제출처": "NeurIPS", "연도": "2024", "유형": "학회", "국내해외": "해외",
+             "저자구분": "주저자"},
+            {"제출처": "한국정보과학회 KCC", "연도": "2023", "유형": "학회",
+             "국내해외": "국내", "저자구분": "주저자"},
+            {"제출처": "Nature Machine Intelligence", "연도": "2025", "유형": "저널",
+             "국내해외": "해외", "저자구분": "공저자"},
+        ],
+        "특허": [
+            {"제목": "무언가 하는 방법", "상태": "등록", "연도": "2024"},
+            {"제목": "다른 방법", "상태": "출원", "연도": "2025"},
+            {"제목": "세번째", "상태": "출원", "연도": "2025"},
         ],
         "연구분야_키워드": ["컴퓨터비전", "멀티모달"],
     },
@@ -90,7 +99,7 @@ def _guess_section(payload: dict) -> str:
         return "basic"
     if "박사_학교" in props:
         return "education"
-    if "1저자_논문" in props:
+    if "논문" in props:
         return "research"
     if "경력" in props:
         return "career"
@@ -254,3 +263,137 @@ def test_no_json_at_all_still_errors():
     body = {"choices": [{"finish_reason": "stop", "message": {"content": "죄송합니다"}}]}
     with pytest.raises(LLMError):
         parse_response(body, SCHEMA_HINT)
+
+
+# --- 석박통합 · 논문/특허 수 · 대표 경력 ------------------------------------------
+def test_integrated_program_becomes_its_own_column():
+    """박사 정보 왼쪽에 석박통합 여부가 따로 선다."""
+    from cvtool.schemas import COLUMNS
+
+    assert COLUMNS.index("박사_석박통합") == COLUMNS.index("박사_학교") - 1
+    rec = extract_cv_from_text("이력서", client=_sectioned_client())
+    assert rec.박사_석박통합 == ""          # 이 표본은 통합과정이 아니다
+
+
+def test_integrated_program_is_marked_from_either_signal():
+    from cvtool.extract import _assemble
+
+    for edu, basic in (
+        ({"석박통합_여부": True}, {}),
+        ({}, {"현재_신분": "석박통합"}),
+    ):
+        rec = _assemble({"education": edu, "basic": basic}, [],
+                        지원자_ID="CV-1", 원본_파일명="")
+        assert rec.박사_석박통합 == "석박통합"
+
+
+def test_integrated_program_blank_when_not_applicable():
+    from cvtool.extract import _assemble
+
+    rec = _assemble({"education": {"석박통합_여부": False}, "basic": {"현재_신분": "박사"}},
+                    [], 지원자_ID="CV-1", 원본_파일명="")
+    assert rec.박사_석박통합 == ""
+
+
+def test_coauthored_papers_are_collected_but_kept_out_of_the_first_author_column():
+    rec = extract_cv_from_text("이력서", client=_sectioned_client())
+    assert len(rec.논문) == 3                       # 공저자 논문까지 전부
+    # 공저자 해외 저널은 1저자 열에 들어가면 안 된다
+    assert "Nature Machine Intelligence" not in rec.해외논문_제출처()
+    assert rec.해외논문_제출처() == "NeurIPS 2024"
+
+
+def test_paper_and_patent_counts():
+    rec = extract_cv_from_text("이력서", client=_sectioned_client())
+    row = rec.to_row()
+    assert row["학회_수"] == "2" and row["학회_주저자_수"] == "2"
+    assert row["저널_수"] == "1" and row["저널_주저자_수"] == ""      # 공저자뿐
+    assert row["특허_등록_수"] == "1" and row["특허_출원_수"] == "2"
+
+
+def test_patent_with_unknown_status_is_counted_in_neither():
+    from cvtool.schemas import CVRecord, Patent
+
+    rec = CVRecord(지원자_ID="X", 특허=[Patent(상태="불명"), Patent(상태="등록")])
+    assert rec.특허_수() == {"특허_등록_수": 1, "특허_출원_수": 0}
+
+
+def test_representative_career_columns_are_filled():
+    rec = extract_cv_from_text("이력서", client=_sectioned_client())
+    assert rec.경력_회사 == "라마디테크"
+    assert rec.직책 == "연구원"
+    assert rec.경력_시작 == "202103" and rec.경력_종료 == "202406"
+
+
+def test_postdoc_shows_up_as_the_current_career():
+    """현재 포닥 중이면 그게 대표 경력이어야 한다 — 6개월이 안 됐어도."""
+    from cvtool.extract import _assemble
+
+    rec = _assemble(
+        {"career": {"경력": [
+            {"회사": "라마디테크", "직무": "연구원", "시작": "202103", "종료": "202406"},
+            {"회사": "한국대학교", "직무": "박사후연구원", "시작": "202605", "종료": "재직중"},
+        ]}},
+        [], 지원자_ID="CV-1", 원본_파일명="",
+    )
+    assert rec.경력_회사 == "한국대학교"
+    assert rec.직책 == "박사후연구원"
+    assert rec.경력_종료 == "재직중"
+    assert "박사후연구원" in rec.경력_요약
+
+
+def test_short_and_intern_careers_are_left_out():
+    from cvtool.extract import _assemble
+
+    rec = _assemble(
+        {"career": {"경력": [
+            {"회사": "짧은곳", "직무": "연구원", "시작": "202401", "종료": "202403"},
+            {"회사": "인턴한곳", "직무": "인턴", "시작": "202301", "종료": "202312"},
+            {"회사": "제대로", "직무": "선임연구원", "시작": "202101", "종료": "202312"},
+        ]}},
+        [], 지원자_ID="CV-1", 원본_파일명="",
+    )
+    assert rec.경력_회사 == "제대로"
+    # 요약에는 그대로 남는다 — 뽑아 쓰는 것과 기록은 다르다
+    assert "인턴한곳" in rec.경력_요약
+
+
+def test_no_eligible_career_leaves_the_columns_blank():
+    from cvtool.extract import _assemble
+
+    rec = _assemble(
+        {"career": {"경력": [{"회사": "인턴만", "직무": "Intern",
+                            "시작": "202301", "종료": "202306"}]}},
+        [], 지원자_ID="CV-1", 원본_파일명="",
+    )
+    assert rec.경력_회사 == "" and rec.직책 == ""
+
+
+def test_count_columns_cannot_be_edited_by_hand():
+    from cvtool.edit import READONLY_FIELDS
+    from cvtool.schemas import COUNT_COLUMNS
+
+    for c in COUNT_COLUMNS:
+        assert c in READONLY_FIELDS, c
+
+
+def test_registry_decides_journal_vs_conference():
+    """학회/저널 구분은 담당자가 판별한 값이 LLM 추측을 이긴다."""
+    from cvtool.schemas import CVRecord, Paper
+
+    class 사전:
+        def lookup(self, 종류, 원문):
+            class N:
+                표시명 = "Nature"
+                등급 = "최우수"
+                국내해외 = "해외"
+                유형 = "저널"
+            return N()
+
+        def column_tiers(self):
+            return []
+
+    rec = CVRecord(지원자_ID="X",
+                   논문=[Paper(제출처="Nature", 유형="학회", 저자구분="주저자")])
+    센것 = rec.논문_수(사전())
+    assert 센것["저널_수"] == 1 and 센것["학회_수"] == 0

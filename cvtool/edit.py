@@ -18,10 +18,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from . import normalize as N
-from .schemas import NAME_COLUMNS, 학위상태_ENUM, 현재_신분_ENUM
+from .schemas import (
+    COUNT_COLUMNS,
+    NAME_COLUMNS,
+    석박통합_ENUM,
+    학위상태_ENUM,
+    현재_신분_ENUM,
+)
 
 #: 수정할 수 없는 항목 (시스템이 관리한다)
-READONLY_FIELDS = {"지원자_ID", "추출_일시", "원본_파일명"}
+READONLY_FIELDS = {"지원자_ID", "추출_일시", "원본_파일명", *COUNT_COLUMNS}
 
 #: 명칭 사전이 대표명을 붙이는 항목. 여기서 직접 고치면 사전과 어긋난다.
 #: (표에 보이는 값은 사전을 거친 대표명이라, 그 값을 그대로 저장하면
@@ -32,13 +38,16 @@ REGISTRY_FIELDS = set(NAME_COLUMNS)
 CHOICE_FIELDS: dict[str, list[str]] = {
     "현재_신분": 현재_신분_ENUM,
     "박사_학위상태": 학위상태_ENUM,
+    "박사_석박통합": 석박통합_ENUM,
     "검토_필요": ["", "Y"],
 }
 
 #: 형식이 정해진 항목
 _YYYYMM_FIELDS = {
     "박사_시작", "박사_졸업", "석사_시작", "석사_졸업", "학사_시작", "학사_졸업",
+    "경력_시작",
 }
+#: 경력_종료는 '재직중' 도 들어갈 수 있어 YYYYMM 강제를 걸지 않는다
 _YYYYMMDD_FIELDS = {"생년월일"}
 _EMAIL_FIELDS = {"이메일"}
 _PHONE_FIELDS = {"전화번호"}

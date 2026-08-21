@@ -32,6 +32,7 @@ COLUMNS: list[str] = [
     "현재_소속_상세",
     "현재_지도교수",
     # C. 박사
+    "박사_석박통합",
     "박사_학교",
     "박사_전공",
     "박사_지도교수",
@@ -51,13 +52,31 @@ COLUMNS: list[str] = [
     "학사_졸업",
     # F. 연구
     "1저자_해외논문_제출처",
+    "저널_수",
+    "저널_주저자_수",
+    "학회_수",
+    "학회_주저자_수",
+    "특허_등록_수",
+    "특허_출원_수",
     "연구분야_키워드",
-    # G. 경력
+    # G. 경력 (가장 최근 것 하나. 6개월 미만·인턴은 빼고 센다)
     "경력_요약",
+    "경력_회사",
+    "직책",
+    "경력_시작",
+    "경력_종료",
     # H. 검토
     "검토_필요",
     "검토_사유",
 ]
+
+#: 열 이름과 **표에 보일 기본 이름**이 다른 것.
+#: 열 이름은 코드가 쓰는 값이라 괄호·공백을 넣지 않는다. 화면에 보이는 이름만
+#: 사람이 읽기 좋은 쪽으로 둔다 (표 항목 탭에서 더 고칠 수 있다).
+DEFAULT_LABELS: dict[str, str] = {
+    "경력_회사": "경력_회사(학교)",
+    "박사_석박통합": "석박통합",
+}
 
 #: 명칭 사전으로 대표명을 붙일 열 (열 이름 -> 사전 종류)
 NAME_COLUMNS: dict[str, str] = {
@@ -95,6 +114,8 @@ def columns(registry=None) -> list[str]:
 TEXT_COLUMNS: set[str] = {
     "생년월일",
     "전화번호",
+    "경력_시작",
+    "경력_종료",
     "박사_시작",
     "박사_졸업",
     "석사_시작",
@@ -107,6 +128,19 @@ TEXT_COLUMNS: set[str] = {
 # 모델이 판단이 안 서도 목록에서 하나를 억지로 찍는다 (그럴듯한 오답이 나온다).
 현재_신분_ENUM = ["포닥", "박사", "석박통합", "석사", "학사", "타사재직", "기타", "불명"]
 학위상태_ENUM = ["졸업", "수료", "재학", "예정", ""]
+#: 박사 과정이 석박사 통합과정이었는지. 빈칸이 '아님' 이다 (Y/N 로 두면
+#: 아직 안 본 것과 아니라고 본 것이 구분되지 않는다).
+석박통합_ENUM = ["", "석박통합"]
+#: 논문에서 이 사람의 위치. 주저자 = 제1저자(공동 1저자 포함) 또는 교신저자
+저자구분_ENUM = ["주저자", "공저자"]
+#: 특허 진행 상태
+특허상태_ENUM = ["등록", "출원", "불명"]
+
+#: 계산해서 나오는 열 (사람이 표에서 직접 못 고친다)
+COUNT_COLUMNS: tuple[str, ...] = (
+    "저널_수", "저널_주저자_수", "학회_수", "학회_주저자_수",
+    "특허_등록_수", "특허_출원_수",
+)
 
 # ---------------------------------------------------------------------------
 # 섹션별 JSON 스키마 (guided_json 에 그대로 들어간다)
@@ -156,7 +190,9 @@ SECTION_EDUCATION: dict = {
 SECTION_RESEARCH: dict = {
     "type": "object",
     "properties": {
-        "1저자_논문": {
+        # 예전에는 제1저자 논문만 받았다. 이제 **전부** 받고 저자구분으로 나눈다.
+        # 저널/학회 총 편수를 세려면 공저자 논문도 있어야 한다.
+        "논문": {
             "type": "array",
             "items": {
                 "type": "object",
@@ -165,13 +201,27 @@ SECTION_RESEARCH: dict = {
                     "연도": {"type": "string"},
                     "유형": {"type": "string", "enum": ["학회", "저널", "기타"]},
                     "국내해외": {"type": "string", "enum": ["국내", "해외", "불명"]},
+                    "저자구분": {"type": "string", "enum": 저자구분_ENUM},
                 },
-                "required": ["제출처"],
+                "required": ["제출처", "저자구분"],
+            },
+        },
+        "특허": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "제목": {"type": "string"},
+                    "상태": {"type": "string", "enum": 특허상태_ENUM},
+                    "연도": {"type": "string"},
+                    "번호": {"type": "string"},
+                },
+                "required": ["상태"],
             },
         },
         "연구분야_키워드": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["1저자_논문"],
+    "required": ["논문"],
 }
 
 SECTION_CAREER: dict = {
@@ -186,6 +236,7 @@ SECTION_CAREER: dict = {
                     "직무": {"type": "string"},
                     "시작": {"type": "string"},
                     "종료": {"type": "string"},
+                    "인턴여부": {"type": "boolean"},
                 },
                 "required": ["회사"],
             },
@@ -203,6 +254,20 @@ class Paper(BaseModel):
     연도: str = ""
     유형: str = ""
     국내해외: str = "불명"
+    #: 예전 레코드에는 제1저자 논문만 들어 있었다. 그래서 기본이 주저자다 —
+    #: 값을 안 채우고 저장된 옛 데이터가 갑자기 공저자로 바뀌면 안 된다.
+    저자구분: str = "주저자"
+
+    @property
+    def 주저자(self) -> bool:
+        return self.저자구분 != "공저자"
+
+
+class Patent(BaseModel):
+    제목: str = ""
+    상태: str = "불명"          # 등록 / 출원 / 불명
+    연도: str = ""
+    번호: str = ""
 
 
 class Career(BaseModel):
@@ -210,6 +275,7 @@ class Career(BaseModel):
     직무: str = ""
     시작: str = ""
     종료: str = ""
+    인턴여부: bool = False
 
 
 class CVRecord(BaseModel):
@@ -228,6 +294,7 @@ class CVRecord(BaseModel):
     현재_소속_상세: str = ""
     현재_지도교수: str = ""
 
+    박사_석박통합: str = ""     # "석박통합" 또는 빈칸
     박사_학교: str = ""
     박사_전공: str = ""
     박사_지도교수: str = ""
@@ -247,8 +314,14 @@ class CVRecord(BaseModel):
     학사_졸업: str = ""
 
     논문: list[Paper] = Field(default_factory=list)
+    특허: list[Patent] = Field(default_factory=list)
     연구분야_키워드: str = ""
     경력_요약: str = ""
+    # 가장 최근 경력 하나를 열로도 뽑아 둔다 (6개월 미만·인턴 제외)
+    경력_회사: str = ""
+    직책: str = ""
+    경력_시작: str = ""
+    경력_종료: str = ""
 
     검토_필요: str = ""
     검토_사유: str = ""
@@ -276,10 +349,40 @@ class CVRecord(BaseModel):
                     # 담당자가 판별한 값이 LLM 추측을 이긴다
                     if found.국내해외 in ("국내", "해외"):
                         국내해외 = found.국내해외
+            # 학회/저널 구분도 담당자가 판별한 값이 LLM 추측을 이긴다
+            if registry is not None and p.제출처:
+                found = registry.lookup(종류, p.제출처)
+                if found is not None and found.유형 in ("학회", "저널"):
+                    종류 = found.유형
             out.append(
-                {"표시명": 표시명, "연도": p.연도, "등급": 등급, "국내해외": 국내해외}
+                {"표시명": 표시명, "연도": p.연도, "등급": 등급,
+                 "국내해외": 국내해외, "유형": 종류, "주저자": p.주저자}
             )
         return out
+
+    def 논문_수(self, registry=None) -> dict[str, int]:
+        """저널·학회를 전체와 주저자로 나눠 센다.
+
+        주저자 = 제1저자(공동 1저자 포함) 또는 교신저자. 옛 레코드에는 제1저자
+        논문만 들어 있어 전부 주저자로 잡힌다 — 그게 맞다.
+        """
+        센것 = {"저널_수": 0, "저널_주저자_수": 0, "학회_수": 0, "학회_주저자_수": 0}
+        for v in self.papers_view(registry):
+            머리 = "저널" if v["유형"] == "저널" else "학회"
+            센것[f"{머리}_수"] += 1
+            if v["주저자"]:
+                센것[f"{머리}_주저자_수"] += 1
+        return 센것
+
+    def 특허_수(self) -> dict[str, int]:
+        """등록·출원을 따로 센다. 상태를 모르는 것은 어느 쪽에도 안 넣는다."""
+        센것 = {"특허_등록_수": 0, "특허_출원_수": 0}
+        for pt in self.특허:
+            if pt.상태 == "등록":
+                센것["특허_등록_수"] += 1
+            elif pt.상태 == "출원":
+                센것["특허_출원_수"] += 1
+        return 센것
 
     def 해외논문_제출처(self, registry=None) -> str:
         """해외 학회/저널 1저자 논문만 한 열로 합친다."""
@@ -288,14 +391,14 @@ class CVRecord(BaseModel):
         items = [
             f"{v['표시명']} {v['연도']}".strip()
             for v in self.papers_view(registry)
-            if v["국내해외"] == "해외"
+            if v["국내해외"] == "해외" and v["주저자"]
         ]
         return MULTI_SEP.join(items)
 
     def 등급별_해외논문_수(self, registry=None) -> dict[str, int]:
         counts: dict[str, int] = {}
         for v in self.papers_view(registry):
-            if v["국내해외"] == "해외" and v["등급"]:
+            if v["국내해외"] == "해외" and v["주저자"] and v["등급"]:
                 counts[v["등급"]] = counts.get(v["등급"], 0) + 1
         return counts
 
@@ -307,6 +410,9 @@ class CVRecord(BaseModel):
         """
         data = self.model_dump()
         data["1저자_해외논문_제출처"] = self.해외논문_제출처(registry)
+        # 세어 나오는 값. 0 은 빈칸으로 둔다 — 표가 0 으로 도배되면 안 읽힌다.
+        for 열, 값 in {**self.논문_수(registry), **self.특허_수()}.items():
+            data[열] = 값 or ""
 
         if registry is not None:
             from .normalize import MULTI_SEP

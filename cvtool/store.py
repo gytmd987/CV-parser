@@ -542,12 +542,20 @@ class CandidateStore:
         )
 
     def label(self, 열이름: str) -> str:
-        """표에 보일 이름. 안 정했으면 열 이름 그대로."""
-        return self.column_config().get(열이름, {}).get("표시이름") or 열이름
+        """표에 보일 이름. 안 정했으면 기본 이름, 그것도 없으면 열 이름 그대로."""
+        from .schemas import DEFAULT_LABELS
+
+        return (self.column_config().get(열이름, {}).get("표시이름")
+                or DEFAULT_LABELS.get(열이름) or 열이름)
 
     def labels(self, 열들: list[str]) -> dict[str, str]:
+        from .schemas import DEFAULT_LABELS
+
         cfg = self.column_config()
-        return {c: (cfg.get(c, {}).get("표시이름") or c) for c in 열들}
+        return {
+            c: (cfg.get(c, {}).get("표시이름") or DEFAULT_LABELS.get(c) or c)
+            for c in 열들
+        }
 
     def fields(self) -> list[dict]:
         return [dict(r) for r in self._conn.execute(

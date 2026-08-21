@@ -265,6 +265,28 @@ def major(value) -> str:
 # ---------------------------------------------------------------------------
 # 학위 상태 — 졸업일과 모순되지 않게
 # ---------------------------------------------------------------------------
+#: 이 개월 수보다 짧은 경력은 대표 경력으로 뽑지 않는다.
+MIN_CAREER_MONTHS = 6
+
+
+def months_between(시작: str, 종료: str, 오늘: str) -> int | None:
+    """YYYYMM 두 개 사이의 개월 수. 셀 수 없으면 None.
+
+    종료가 비었거나 '재직중' 이면 오늘까지로 본다.
+    """
+    s = yyyymm(시작)
+    if not s:
+        return None
+    e = yyyymm(종료) or yyyymm(오늘)
+    if not e:
+        return None
+    y1, m1 = int(s[:4]), int(s[4:] or "1")
+    y2, m2 = int(e[:4]), int(e[4:] or "1")
+    m1 = m1 or 1
+    m2 = m2 or 1
+    return (y2 - y1) * 12 + (m2 - m1)
+
+
 def degree_status(status: str, 졸업: str, 오늘: str) -> tuple[str, str]:
     """학위상태를 졸업일과 대조해 바로잡는다.
 

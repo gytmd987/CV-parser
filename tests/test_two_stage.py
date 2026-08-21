@@ -45,8 +45,8 @@ def _recording_client(overrides: dict | None = None):
                 }
             elif "박사_학교" in props:
                 reply = {"박사_학교": "서울대학교"}
-            elif "1저자_논문" in props:
-                reply = {"1저자_논문": [], "연구분야_키워드": []}
+            elif "논문" in props:
+                reply = {"논문": [], "특허": [], "연구분야_키워드": []}
             else:
                 reply = {"경력": []}
             reply.update(overrides.get(_section_of(props), {}))
@@ -64,7 +64,7 @@ def _section_of(props: set) -> str:
         return "basic"
     if "박사_학교" in props:
         return "education"
-    if "1저자_논문" in props:
+    if "논문" in props:
         return "research"
     return "career"
 
@@ -139,7 +139,7 @@ def test_candidate_name_is_passed_to_research_prompt():
     calls, client = _recording_client()
     extract_cv_from_text("이력서", client=client, two_stage=False)
     research = next(
-        c for c in calls if "1저자_논문" in (c.get("guided_json") or {}).get("properties", {})
+        c for c in calls if "논문" in (c.get("guided_json") or {}).get("properties", {})
     )
     content = research["messages"][-1]["content"]
     assert "홍길동" in content
