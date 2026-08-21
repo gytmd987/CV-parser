@@ -726,7 +726,7 @@ def test_purge_needs_delete_permission(현업):
 
 def test_department_delete_button_is_not_swallowed(web, org):
     """폼 안에 폼을 넣으면 브라우저가 안쪽을 버려서, 삭제가 이름 저장으로 바뀐다."""
-    page = web.get("/org")
+    page = web.get("/org/edit")
     이름폼 = page.index("action='/org/dept/rename'")
     닫힘 = page.index("</form>", 이름폼)
     삭제폼 = page.index("action='/org/dept/delete'")
@@ -784,10 +784,10 @@ def test_custom_field_scope_is_recorded(web):
     web.post("/fields/add", name="면접관 메모", type="텍스트", scope="채용 현황")
     f = web.module.store.field("면접관 메모")
     assert f["구분"] == "채용 현황"
-    # 채용 현황 열은 지원자 표에 안 나오고 채용 현황 표 쪽에 붙는다
-    assert "면접관 메모" not in web.module.표열()
     구분맵 = {c: g for g, c, _ in web.module.열목록()}
     assert 구분맵["면접관 메모"] == "채용 현황"
+    # 인재 Pool 표에는 **보기 전용**으로 나온다 (고치는 자리는 채용 현황)
+    assert "면접관 메모" in web.module.표열()
 
 
 def test_recruit_scoped_custom_column_is_editable_there(web, 채용cid):
@@ -913,3 +913,125 @@ def test_existing_progress_counts_as_started_after_upgrade(tmp_path):
     assert "CV-OLD3" in 시작한사람          # 단계 상태가 있었다
     assert "CV-OLD2" not in 시작한사람      # 아무것도 없던 줄은 인재 Pool 로
     r.close()
+
+
+# --- 인재 Pool: 필터·열·메일 -----------------------------------------------------
+def test_select_all_only_takes_visible_rows(web, cid):
+    """표 위 찾기 칸으로 걸러 놓고 전체선택을 누르면 **보이는 줄만** 골라야 한다.
+
+    화면에 없는 사람까지 선택되면 그대로 메일이 나가거나 지워진다.
+    """
+    page = web.get("/")
+    assert "selectVisible(this)" in page
+    js = page.split("function selectVisible", 1)[1].split("function ", 1)[0]
+    assert "classList.contains('hide')" in js
+
+
+def test_export_follows_the_search_filter(web):
+    """걸러 놓고 받았는데 전체가 나오면 엉뚱한 사람에게 자료가 나간다."""
+    이름들 = ["필터대상", "다른사람"]
+    for 이름 in 이름들:
+        before = {r.지원자_ID for r in web.module.store.list_all()}
+        web.post("/candidate/new")
+        새 = ({r.지원자_ID for r in web.module.store.list_all()} - before).pop()
+        web.cell(id=새, 항목="한글_이름", 새값=이름, 이전값="")
+    전체 = web.raw("/export.xlsx")
+    걸린것 = web.raw("/export.xlsx?q=" + urllib.parse.quote("필터대상"))
+    assert len(걸린것) < len(전체)
+    page = web.get("/?q=" + urllib.parse.quote("필터대상"))
+    assert "/export.xlsx?q=" in page          # 화면 단추도 조건을 달고 간다
+
+
+def test_pool_table_shows_recruit_and_mail_columns(web, cid):
+    """한 사람에 대해 아는 것을 보려고 화면을 옮겨 다니지 않아도 되게."""
+    열 = web.module.표열()
+    for c in ("부서", "과제", "서류 검토", "최종상태", "비고", "메일_발송이력"):
+        assert c in 열, c
+    page = web.get("/")
+    assert "메일_발송이력" in page
+
+
+def test_recruit_columns_are_read_only_in_the_pool(web, cid):
+    """고치는 자리는 채용 현황이다. 여기서 덮어쓰면 어긋난다."""
+    page = web.get("/")
+    for c in ("부서", "최종상태", "서류 검토"):
+        assert f"data-col='{c}'" not in page
+
+
+def test_mail_button_sends_the_selection_to_compose(web, cid):
+    page = web.get("/")
+    assert "formaction='/mail/compose'" in page
+
+
+# --- 메일: 고른 사람에게만 -------------------------------------------------------
+@pytest.fixture
+def 템플릿(web, request):
+    """테스트마다 **다른 이름**의 템플릿. 이름이 겹치면 만들기가 거부되고,
+    이미 보낸 기록이 남아 있는 남의 템플릿을 물려받게 된다."""
+    이름 = f"안내메일-{request.node.name[-20:]}"
+    tid = web.module.mailing.add_template(이름, 만든이="admin")
+    web.post("/mail/template/save", id=str(tid), name=이름,
+             subject="결과 안내", body="{{이름}}님 합격입니다", cc="",
+             imgmode="본문+첨부")
+    return web.module.mailing.template(tid)
+
+
+def test_mail_tab_cannot_send_to_candidates(web, 템플릿):
+    """메일 탭에서는 시험 발송까지만. 누가 서류 합격인지 거기서는 모른다."""
+    page = web.get(f"/mail/test?id={템플릿.id}")
+    assert "여기서는 실제 지원자에게 못 보냅니다" in page
+    assert "시험 발송" in page
+
+
+def test_compose_needs_a_selection(web):
+    코드, 본문 = web.post("/mail/compose", ids=[])
+    assert "고른 사람이 없습니다" in 본문
+
+
+def test_compose_shows_who_will_get_it(web, cid, 템플릿):
+    web.cell(id=cid, 항목="이메일", 새값="a@b.com", 이전값="")
+    web.cell(id=cid, 항목="한글_이름", 새값="홍길동", 이전값="")
+    코드, 본문 = web.post("/mail/compose", ids=[cid], template=str(템플릿.id))
+    assert "나갈 사람" in 본문
+    assert "홍길동" in 본문
+    assert "보내기 전 마지막 확인" in 본문
+
+
+def test_sending_requires_typing_the_headcount(web, cid, 템플릿):
+    """확인창은 안 읽고 누르지만, 숫자는 화면을 봐야 칠 수 있다."""
+    web.cell(id=cid, 항목="이메일", 새값="a@b.com", 이전값="")
+    web.cell(id=cid, 항목="한글_이름", 새값="홍길동", 이전값="")
+    코드, 본문 = web.post("/mail/send", ids=[cid], template=str(템플릿.id),
+                        confirm="")
+    assert "그대로 쳐 넣어야" in 본문
+    assert not web.module.mailing.history(cid)          # 안 나갔다
+
+    코드, 본문 = web.post("/mail/send", ids=[cid], template=str(템플릿.id),
+                        confirm="99")
+    assert "그대로 쳐 넣어야" in 본문
+    assert not web.module.mailing.history(cid)
+
+
+def test_already_sent_and_rejected_still_block(web, cid, 템플릿):
+    """대상을 고르는 방식이 바뀌어도 막는 규칙은 그대로여야 한다."""
+    web.cell(id=cid, 항목="이메일", 새값="a@b.com", 이전값="")
+    web.cell(id=cid, 항목="한글_이름", 새값="홍길동", 이전값="")
+    web.module.mailing.record(cid, 템플릿, "a@b.com", "제목", "본문", "성공",
+                              보낸이="admin")
+    코드, 본문 = web.post("/mail/compose", ids=[cid], template=str(템플릿.id))
+    assert "못 나가는 사람" in 본문
+    # 그 상태로 보내려 해도 나갈 사람이 0명이라 숫자가 안 맞는다
+    코드, 본문 = web.post("/mail/send", ids=[cid], template=str(템플릿.id),
+                        confirm="1")
+    assert "그대로 쳐 넣어야" in 본문
+
+
+def test_the_send_form_does_not_shadow_window_confirm(web, cid, 템플릿):
+    """폼 안에 name='confirm' 입력칸이 있으면 인라인 onsubmit 에서 그 칸이
+    window.confirm 을 가린다. 실제로 'confirm is not a function' 이 났다."""
+    web.cell(id=cid, 항목="이메일", 새값="a@b.com", 이전값="")
+    web.cell(id=cid, 항목="한글_이름", 새값="홍길동", 이전값="")
+    코드, 본문 = web.post("/mail/compose", ids=[cid], template=str(템플릿.id))
+    폼 = 본문.split("action='/mail/send'", 1)[1].split("</form>", 1)[0]
+    assert "name='confirm'" in 폼
+    assert "window.confirm(" in 폼

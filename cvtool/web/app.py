@@ -440,17 +440,17 @@ pre.rubric{background:#f6f7f9;border:1px solid var(--line);border-radius:6px;pad
 def _탭들(me: User | None, badge: str) -> list[tuple[str, str, tuple[str, ...]]]:
     학회 = "/names?kind=" + urllib.parse.quote("학회·저널")
     후보 = [
+        # 일이 흘러가는 순서대로: 넣고 → 보고 → 뽑고 → 들여다본다
+        ("지원자 추가", "/upload", ("/upload",), can(me, "지원자_등록")),
         ("인재 Pool", "/", ("/", "/candidate", "/attachment", "/export.xlsx"),
          can(me, "지원자_목록")),
         ("채용 현황", "/recruit", ("/recruit",),
          can(me, "채용현황_수정") or can(me, "지원자_조회")),
         ("대시보드", "/dash", ("/dash",), can(me, "대시보드_조회")),
-        ("CV 업로드", "/upload", ("/upload",), can(me, "지원자_등록")),
-        ("과제 매칭", "/match", ("/match",),
-         bool(settings.projects_json) and can(me, "과제매칭_조회")),
         ("메일", "/mail", ("/mail",), can(me, "메일_템플릿")),
         (f"명칭 관리{badge}", 학회, ("/names",), can(me, "명칭_관리")),
-        ("부서·과제", "/org", ("/org",), can(me, "부서과제_관리")),
+        # 과제 파일 관리는 이 아래 하위 화면으로 들어갔다 (/match/*)
+        ("부서·과제", "/org", ("/org", "/match"), can(me, "부서과제_관리")),
         ("계정", "/users", ("/users",), can(me, "계정_현업추가")),
         ("표 항목", "/fields", ("/fields",), can(me, "열_구성")),
         ("변경 이력", "/history", ("/history",), can(me, "변경이력_조회")),
@@ -753,7 +753,8 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
     COLS = 표열()
     사용자열정의 = {f["이름"]: f for f in store.fields()}
     사용자값맵 = store.custom_map()
-    관리값맵 = store.meta_map()
+    표값 = _표값맵()
+    보기전용열 = set(RECRUIT_COLUMNS) | set(추가열("채용 현황")) | {MAIL_COLUMN}
     수정가능 = can(me, "지원자_수정")
     채용중 = recruit.started()
     채용가능 = can(me, "채용현황_수정")
@@ -769,9 +770,10 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
             f"<td>{_채용칸(cid, cid in 채용중, 채용가능)}</td>",
         ]
         for c in COLS:
-            if c in MANAGE_COLUMNS:
-                # 등록·보관 정보는 표에서 고치지 않는다 (상세 화면에서 고친다)
-                v = html.escape(관리값맵.get(cid, {}).get(c, ""))
+            if c in MANAGE_COLUMNS or c in 보기전용열:
+                # 등록·보관 정보, 채용 현황, 메일 이력은 여기서 고치지 않는다.
+                # 고치는 자리가 따로 있는 값이라 여기서 덮어쓰면 어긋난다.
+                v = html.escape(표값.get(cid, {}).get(c, ""))
                 cells.append(f"<td class='muted' title='{v}'>{v}</td>")
                 continue
             if c in 사용자열정의:
@@ -792,7 +794,17 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
                 cells.append(f"<td class='{cls.strip()}' title='{v}'>{v}</td>")
         body_rows.append("<tr>" + "".join(cells) + "</tr>")
 
-    묶음단추 = (
+    # 걸어 둔 검색 조건. 엑셀도, 메일 보낸 뒤 돌아올 곳도 이 조건을 그대로 쓴다.
+    조건 = {k: v for k, v in (("q", q), ("year", 년도),
+                             ("review", "1" if review_only else "")) if v}
+    조건쿼리 = ("?" + urllib.parse.urlencode(조건)) if 조건 else ""
+    내려받기안내 = (f"지금 걸린 조건({len(records)}명)만 받습니다"
+                if 조건 else "전체를 받습니다")
+    메일단추 = (
+        "<button formaction='/mail/compose'>선택한 사람에게 메일</button> "
+        if can(me, "메일_발송") else ""
+    )
+    묶음단추 = 메일단추 + (
         "<button formaction='/candidates/start'>선택한 사람 채용 시작</button> "
         "<button formaction='/candidates/stop' class='sec'>채용 현황에서 내리기</button> "
         if 채용가능 else ""
@@ -804,13 +816,14 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
         <form method='post' action='/candidates/start' id='startform'></form>
         <form method='post' action='/candidates/stop' id='stopform'></form>
         <form method='post' action='/candidates/delete'>
+          <input type='hidden' name='back' value='{html.escape("/" + 조건쿼리)}'>
           <p>{묶음단추}<button type='submit' class='danger'
                onclick="return confirm('선택한 지원자를 삭제합니다. 되돌릴 수 없습니다.')"
                >선택 삭제</button>
              <span class='muted'>체크한 사람에게 적용합니다. </span></p>
           <div class='scroll'><table>
-            <tr><th><input type='checkbox' onclick="for(const c of
-                this.closest('table').querySelectorAll('input[name=ids]'))c.checked=this.checked">
+            <tr><th><input type='checkbox' onclick="selectVisible(this)"
+                title='보이는 줄만 선택합니다'>
             </th><th></th><th>채용</th>{head}</tr>
             {''.join(body_rows)}
           </table></div>
@@ -846,7 +859,8 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
             <button type='submit'>검색</button>
             <a class='btn sec' href='/'>초기화</a>
           </form>
-          <p><a class='btn' href='/export.xlsx'>엑셀(.xlsx) 다운로드</a></p>
+          <p><a class='btn' href='/export.xlsx{조건쿼리}'>엑셀(.xlsx) 다운로드</a>
+             <span class='muted'>{내려받기안내}</span></p>
           {안내}
           {table}
         </div>""",
@@ -925,6 +939,34 @@ function toast(msg){
 }
 
 // --- 찾기 (표 전체 검색 + 열별 값 추리기) ------------------------------------
+// 머리줄 전체선택 — **보이는 줄만** 고른다.
+// 표 위 찾기 칸으로 걸러 놓고 전체선택을 눌렀을 때, 화면에 없는 사람까지
+// 선택되면 그대로 메일이 나가거나 지워진다.
+function selectVisible(head){
+  var tb = head.closest('table');
+  var 센것 = 0;
+  bodyRows(tb).forEach(function(tr){
+    if(tr.classList.contains('hide')) return;
+    var c = tr.querySelector('input[name=ids]');
+    if(c){ c.checked = head.checked; if(c.checked) 센것++; }
+  });
+  showPicked(tb);
+}
+
+// 지금 몇 명 골랐는지 표 위에 적어 둔다.
+function showPicked(tb){
+  var bar = tb.__bar;
+  if(!bar) return;
+  var 칸 = bar.querySelector('.tpicked');
+  if(!칸){
+    칸 = document.createElement('span');
+    칸.className = 'muted tpicked';
+    bar.querySelector('.tcount').after(칸);
+  }
+  var n = tb.querySelectorAll('input[name=ids]:checked').length;
+  칸.textContent = n ? ' · 고른 사람 ' + n + '명' : '';
+}
+
 function applyFilters(tb){
   var q = (tb.__q || '').trim().toLowerCase();
   var f = tb.__filters || {};
@@ -946,6 +988,9 @@ function applyFilters(tb){
   headCells(tb).forEach(function(th, i){
     th.classList.toggle('filtered', f[i] !== undefined);
   });
+  var 머리 = tb.querySelector('th input[type=checkbox]');
+  if(머리) 머리.checked = false;      // 걸러내면 전체선택도 풀린다
+  showPicked(tb);
   var out = tb.__bar && tb.__bar.querySelector('.tcount');
   if(out) out.textContent = (q || cols.length) ? (보임 + '줄 보임') : '';
 }
@@ -1083,6 +1128,11 @@ function addToolbar(tb){
     tb.__q = e.target.value;
     applyFilters(tb);
   });
+  // 줄마다 체크를 켜고 끌 때도 고른 사람 수를 따라가게 한다
+  tb.addEventListener('change', function(ev){
+    if(ev.target && ev.target.name === 'ids') showPicked(tb);
+  });
+  showPicked(tb);
   bar.querySelector('.txlsx').addEventListener('click', function(){
     var form = document.createElement('form');
     form.method = 'post'; form.action = '/table.xlsx';
@@ -1257,13 +1307,20 @@ def 추가열(구분: str) -> list[str]:
     return store.field_names(구분)
 
 
-def 지원자열(registry_=None) -> list[str]:
-    """인재 Pool·엑셀에 나갈 수 있는 열 전부 (숨김·순서 적용 전).
+#: 지원자마다 어떤 메일을 보냈는지 한 열로. 세어 나오는 값이라 못 고친다.
+MAIL_COLUMN = "메일_발송이력"
 
-    '채용 현황' 으로 만든 추가 열은 여기 안 들어간다 — 그건 채용 현황 표 몫이다.
+
+def 지원자열(registry_=None) -> list[str]:
+    """인재 Pool·엑셀에 나갈 수 있는 열 **전부.**
+
+    지원자 정보뿐 아니라 채용 현황 열과 메일 발송이력까지 한 표에서 본다.
+    한 사람에 대해 아는 것을 보려고 화면을 옮겨 다니지 않아도 되게.
+    채용 열은 여기서 **보기만** 한다 (고치는 건 채용 현황 화면 몫).
     """
     return (list(table_columns(registry_ or registry)) + list(MANAGE_COLUMNS)
-            + 추가열("지원자 정보"))
+            + 추가열("지원자 정보") + list(RECRUIT_COLUMNS)
+            + 추가열("채용 현황") + [MAIL_COLUMN])
 
 
 #: 관리 정보 중 처음에는 접어 두는 열. 표가 넓어지기만 하고 평소엔 안 본다.
@@ -1287,10 +1344,27 @@ def 라벨(열들: list[str]) -> dict[str, str]:
 
 
 def _표값맵() -> dict[str, dict[str, str]]:
-    """추출 결과에 없는 열(추가한 열·관리 정보)의 값. {지원자_ID: {열: 값}}"""
+    """추출 결과에 없는 열의 값. {지원자_ID: {열: 값}}
+
+    관리 정보 · 추가한 열 · 채용 현황 · 메일 발송이력을 한 번에 모은다.
+    화면과 엑셀이 **같은 함수**를 쓰므로 둘이 어긋날 수 없다.
+    """
     합침 = store.meta_map()
     for cid, 값들 in store.custom_map().items():
         합침.setdefault(cid, {}).update(값들)
+
+    부서명 = {d["id"]: d["이름"] for d in auth.departments()}
+    과제명 = {p["id"]: p["이름"] for p in auth.projects()}
+    for cid, p in recruit.all().items():
+        칸 = 합침.setdefault(cid, {})
+        칸["부서"] = 부서명.get(p.부서_id, "")
+        칸["과제"] = 과제명.get(p.project_id, "")
+        칸["최종상태"] = p.최종상태
+        칸["비고"] = p.비고
+        for 단계 in STAGES:
+            칸[단계] = p.단계상태.get(단계, "")
+    for cid, 보낸것 in mailing.sent_summary().items():
+        합침.setdefault(cid, {})[MAIL_COLUMN] = 보낸것
     return 합침
 
 
@@ -1782,21 +1856,15 @@ def _curate_page(me: User, error: str = "", msg: str = "") -> bytes:
     )
 
 
-def _match_page(me: User, error: str = "", msg: str = "") -> bytes:
-    """과제 목록과 지원자별 1순위 매칭을 한 화면에서."""
+def _projects_page(me: User, error: str = "", msg: str = "") -> bytes:
+    """과제 정보 관리 — 어떤 과제 파일을 읽고 있고 무엇이 들어 있는지.
+
+    예전에는 `과제 매칭` 탭에서 이 화면과 **지원자별 1순위 표**를 같이 보여줬다.
+    지원자별 매칭은 어차피 지원자 상세에서 보므로 표는 뺐다. 여기 남는 것은
+    과제 쪽 관리뿐이라 `부서·과제` 아래로 들어왔다.
+    """
     목록, 파일오류 = 과제목록()
     경로 = projectsmod.resolve_path(쓰는과제파일()[0])
-    맨위 = store.top_matches()
-    비교수 = store.match_counts()
-    보여줄수 = max(1, settings.match_show)
-    보이는과제 = auth.visible_project_ids(me)
-    진행맵 = recruit.all()
-    records = store.list_all()
-    if 보이는과제 is not None:
-        records = [r for r in records
-                   if 진행맵.get(r.지원자_ID)
-                   and 진행맵[r.지원자_ID].project_id in 보이는과제]
-
     _쓰는것, 다듬음 = 쓰는과제파일()
     설정 = (
         "<table><tr><th style='width:150px'>과제 파일</th>"
@@ -1806,7 +1874,7 @@ def _match_page(me: User, error: str = "", msg: str = "") -> bytes:
         + "</td></tr>"
         f"<tr><th>읽은 과제</th><td>{len(목록)}개</td></tr>"
         f"<tr><th>맞춰본 지원자</th><td>{store.matched_count()}명 "
-        f"/ 전체 {len(records)}명</td></tr>"
+        f"/ 전체 {store.count()}명</td></tr>"
         f"<tr><th>자동 매칭</th><td>{'켜짐' if settings.match_auto else '꺼짐'} "
         "<span class='muted'>(CVTOOL_MATCH_AUTO)</span></td></tr>"
         f"<tr><th>비교 방식</th><td>과제 <b>전부</b>와 비교 · "
@@ -1822,39 +1890,6 @@ def _match_page(me: User, error: str = "", msg: str = "") -> bytes:
         for p in 목록
     ) or "<tr><td colspan='5' class='muted'>읽은 과제가 없습니다.</td></tr>"
 
-    지원자줄 = []
-    for rec in records:
-        이름 = rec.한글_이름 or rec.영문_이름 or rec.지원자_ID
-        고른것 = store.matches(rec.지원자_ID)[:보여줄수]
-        링크 = (f"<a href='/candidate?id={urllib.parse.quote(rec.지원자_ID)}'>"
-              f"{html.escape(이름)}</a>")
-        if not 고른것:
-            지원자줄.append(
-                f"<tr><td>{링크}</td>"
-                "<td colspan='4' class='muted'>아직 맞춰보지 않았습니다.</td></tr>"
-            )
-            continue
-        칸 = 비교수.get(rec.지원자_ID, 0)
-        for 자리, m in enumerate(고른것):
-            첫줄 = 자리 == 0
-            지원자줄.append(
-                "<tr>"
-                + (f"<td rowspan='{len(고른것)}'>{링크}"
-                   f"<br><span class='muted'>과제 {칸}개와 비교</span></td>"
-                   if 첫줄 else "")
-                + f"<td>{m['순위']}</td>"
-                f"<td><b>{html.escape(m['과제명'])}</b>"
-                + (f"<br><span class='muted'>유사도 {m['유사도']:.2f}</span>"
-                   if m.get("유사도") is not None else "")
-                + "</td>"
-                + (f"<td><span class='pill {_점수색(m['점수'])}'>{m['점수']}점</span>"
-                   f"<br><span class='muted'>{_등급이름(m)}</span></td>"
-                   if m["평가됨"] else "<td><span class='pill p-실패'>미평가</span></td>")
-                + f"<td style='white-space:normal'>{html.escape(m['사유'])}</td></tr>"
-            )
-    지원자표 = "".join(지원자줄) or \
-        "<tr><td colspan='5' class='muted'>지원자가 없습니다.</td></tr>"
-
     오류 = f"<div class='warn'>{html.escape(error or 파일오류)}</div>" \
         if (error or 파일오류) else ""
     알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
@@ -1869,8 +1904,9 @@ def _match_page(me: User, error: str = "", msg: str = "") -> bytes:
         if can(me, "지원자_등록") and 목록 else ""
     )
     return _page(
-        "과제 매칭",
+        "과제 정보 관리",
         알림 + 오류
+        + "<div class='card'><p><a class='btn sec' href='/org'>부서·과제로</a></p></div>"
         + "<div class='card'><h2>과제 파일</h2>" + 설정
         + "<p class='muted'>경로는 <code>.env</code> 의 "
         "<code>CVTOOL_PROJECTS_JSON</code> 으로 정합니다. 상대경로는 "
@@ -1882,16 +1918,31 @@ def _match_page(me: User, error: str = "", msg: str = "") -> bytes:
         + f"<div class='card'><h2>연구 과제 {len(목록)}개</h2><div class='scroll'>"
         "<table data-name='연구 과제'><tr><th>번호</th><th>과제명</th><th>키워드</th>"
         "<th>담당</th><th>설명</th></tr>" + 과제줄 + "</table></div></div>"
-        + f"<div class='card'><h2>지원자별 1순위 <span class='muted'>"
-        f"{len(records)}명</span></h2>" + 실행
-        + f"<p class='muted'>지원자마다 <b>모든 과제와 비교</b>하고 상위 "
-        f"{보여줄수}개를 보여줍니다. 점수 눈금은 아래와 같고, "
-        "<b>LLM 의 판단이지 측정값이 아닙니다.</b> 유사도는 임베딩 코사인값으로 "
-        "돌릴 때마다 같은 값이 나오는 참고 수치입니다.</p>"
-        f"<pre class='rubric'>{html.escape(SCORE_RUBRIC)}</pre>"
-        + "<div class='scroll'><table data-name='지원자별 과제 매칭'>"
-        "<tr><th>지원자</th><th>순위</th><th>과제</th><th>점수</th>"
-        "<th>판단 사유</th></tr>" + 지원자표 + "</table></div></div>",
+        + "<div class='card'><h2>지원자 맞춰보기</h2>" + 실행
+        + "<p class='muted'>지원자마다 <b>모든 과제와 비교</b>합니다. 결과는 "
+        "<b>지원자 상세 화면</b>에서 봅니다 — 한 사람을 볼 때 같이 보는 게 "
+        "맞아서 따로 목록을 두지 않습니다.</p>"
+        f"<pre class='rubric'>{html.escape(SCORE_RUBRIC)}</pre></div>",
+        me=me,
+    )
+
+
+def _org_hub_page(me: User) -> bytes:
+    """부서·과제 탭의 첫 화면. 무엇을 할지 고른다."""
+    목록, _오류 = 과제목록()
+    return _page(
+        "부서·과제",
+        "<div class='card'><h2>부서·과제</h2>"
+        "<p class='muted'>둘 중 무엇을 할지 고르세요.</p></div>"
+        "<div class='card'><h2><a href='/org/edit'>부서·과제 편집</a></h2>"
+        f"<p class='muted'>부서 {len(auth.departments())}개 · "
+        f"과제 {len(auth.projects())}개 — 이름을 고치고, 새로 만들고, "
+        "과제 초대암호를 겁니다. 현업 계정이 배정되는 그 과제입니다.</p>"
+        "<p><a class='btn' href='/org/edit'>열기</a></p></div>"
+        "<div class='card'><h2><a href='/match'>과제 정보 관리</a></h2>"
+        f"<p class='muted'>연구 과제 파일 {len(목록)}개 — 매칭에 쓸 과제 파일을 "
+        "확인하고 다듬습니다. 지원자와 맞춰보는 것도 여기서 돌립니다.</p>"
+        "<p><a class='btn' href='/match'>열기</a></p></div>",
         me=me,
     )
 
@@ -1902,7 +1953,7 @@ def _busy_count() -> int:
 
 
 def _upload_page(me: User) -> bytes:
-    """CV 업로드 전용 화면.
+    """지원자 추가 — CV 를 올리거나, CV 없이 빈 줄을 만든다.
 
     예전에는 지원자 목록 맨 위에 업로드 상자가 붙어 있어서, 표를 보러 올 때마다
     쓰지도 않는 상자가 화면을 차지했다. 탭으로 뺐다.
@@ -1911,10 +1962,10 @@ def _upload_page(me: User) -> bytes:
     가능 = ", ".join(sorted(SUPPORTED_SUFFIXES))
     등록가능 = can(me, "지원자_등록")
     if not 등록가능:
-        본문 = "<div class='card'><h2>CV 업로드</h2><p>업로드 권한이 없습니다.</p></div>"
+        본문 = "<div class='card'><h2>지원자 추가</h2><p>추가 권한이 없습니다.</p></div>"
     else:
         본문 = f"""
-        <div class='card'><h2>CV 업로드</h2>
+        <div class='card'><h2>CV 올려서 추가</h2>
           <form method='post' action='/upload' enctype='multipart/form-data'>
             <p><input type='file' name='files' multiple accept='{가능}'></p>
             <button type='submit'>업로드 후 분석</button>
@@ -1934,7 +1985,7 @@ def _upload_page(me: User) -> bytes:
           보관 기간 {settings.retention_months}개월
           (0 = 무제한) · 설정은 <code>.env</code> 에서 바꿉니다.</p>
         </div>"""
-    return _page("CV 업로드", 본문 + _status_table(), me=me)
+    return _page("지원자 추가", 본문 + _status_table(), me=me)
 
 
 def _candidate_page(지원자_ID: str, me: User, error: str = "") -> bytes:
@@ -2491,7 +2542,7 @@ def _mail_page(me: User, error: str = "", msg: str = "") -> bytes:
         f"<td class='muted'>{html.escape(t.참조)}</td>"
         f"<td class='muted'>{len(mailing.attachments(t.id)) or ''}</td>"
         f"<td class='muted'>{html.escape(t.수정일시)}</td>"
-        f"<td><a class='btn' href='/mail/send?id={t.id}'>보내기</a></td></tr>"
+        f"<td><a class='btn sec' href='/mail/test?id={t.id}'>확인·시험 발송</a></td></tr>"
         for t in templates
     ) or "<tr><td colspan='7' class='muted'>아직 만든 템플릿이 없습니다.</td></tr>"
 
@@ -2674,7 +2725,7 @@ def _mail_template_page(tid: int, me: User, error: str = "", msg: str = "") -> b
         f"{' checked' if tpl.탈락메일 else ''}> <b>탈락 메일</b> — 이걸 받은 지원자에게는"
         " 이후 어떤 메일도 나가지 않습니다</label></p>"
         "<p><button type='submit'>저장</button> "
-        f"<a class='btn sec' href='/mail/send?id={tpl.id}'>보내기</a> "
+        f"<a class='btn sec' href='/mail/test?id={tpl.id}'>확인·시험 발송</a> "
         "<a class='btn sec' href='/mail'>목록</a></p></form>"
         "<form method='post' action='/mail/template/delete' style='margin-top:10px'"
         " onsubmit=\"return confirm('이 템플릿을 지웁니다. 이미 보낸 기록은 남습니다.')\">"
@@ -2780,6 +2831,184 @@ def _mail_image_card(tpl) -> str:
     )
 
 
+def _mail_targets(ids: list[str], tpl, me: User):
+    """(보낼 수 있는 사람, 못 보내는 사람) 을 이유와 함께.
+
+    화면과 실제 발송이 **같은 함수**를 쓴다. 다르면 화면에서 본 것과 나가는
+    것이 어긋난다.
+    """
+    진행맵 = recruit.all()
+    보이는과제 = auth.visible_project_ids(me)
+    갈사람, 막힌사람 = [], []
+    for cid in dict.fromkeys(ids):
+        rec = store.get(cid)
+        if rec is None:
+            continue
+        if 보이는과제 is not None and recruit.get(cid).project_id not in 보이는과제:
+            continue
+        값 = _mail_vars(rec, 진행맵)
+        이름 = 값.get("한글_이름") or 값.get("영문_이름") or cid
+        받는사람 = (값.get("이메일") or "").split(MULTI_SEP)[0].strip()
+        제목, 빈1 = render(tpl.제목, 값)
+        본문, 빈2 = render(tpl.본문, 값)
+        빈칸 = list(dict.fromkeys(빈1 + 빈2))
+        막힘 = mailing.blocked_reason(cid, tpl)
+        if not 막힘 and not 받는사람:
+            막힘 = "이메일 주소가 없습니다"
+        if not 막힘 and 빈칸:
+            막힘 = f"값이 빈 자리표시자: {', '.join(빈칸)}"
+        한줄 = {"cid": cid, "이름": 이름, "받는사람": 받는사람,
+              "제목": 제목, "본문": 본문, "막힘": 막힘}
+        (막힌사람 if 막힘 else 갈사람).append(한줄)
+    return 갈사람, 막힌사람
+
+
+def _mail_compose_page(ids: list[str], tid: int, me: User, 뒤로: str = "/",
+                       error: str = "") -> bytes:
+    """고른 사람에게 보낼 템플릿을 고르고, 나갈 내용을 확인하고, 보낸다.
+
+    예전에는 `메일` 탭에서 템플릿을 열면 **지원자 전원**이 나왔다. 서류 합격
+    안내를 보내려는데 누가 서류 합격인지 그 화면에서는 알 수가 없었다.
+    이제 반대다 — 인재 Pool·채용 현황에서 **거른 뒤 고른 사람**을 데리고 온다.
+    """
+    templates = mailing.templates()
+    고른수 = len(dict.fromkeys(ids))
+    돌아가기 = f"<a class='btn sec' href='{html.escape(뒤로)}'>돌아가기</a>"
+    오류 = f"<div class='warn'>{html.escape(error)}</div>" if error else ""
+
+    if not ids:
+        return _page("메일 보내기", 오류 + "<div class='card'><h2>고른 사람이 없습니다</h2>"
+                     "<p class='muted'>표에서 보낼 사람을 체크한 뒤 다시 누르세요.</p>"
+                     f"<p>{돌아가기}</p></div>", me=me)
+
+    숨김 = "".join(
+        f"<input type='hidden' name='ids' value='{html.escape(c)}'>"
+        for c in dict.fromkeys(ids)
+    ) + f"<input type='hidden' name='back' value='{html.escape(뒤로)}'>"
+
+    tpl = mailing.template(tid) if tid else None
+    if tpl is None:
+        고르기 = "".join(
+            f"<label style='display:block;padding:4px 0'>"
+            f"<input type='radio' name='template' value='{t.id}'"
+            f"{' checked' if i == 0 else ''}> <b>{html.escape(t.이름)}</b>"
+            + (" <span class='pill p-미분류'>탈락 메일</span>" if t.탈락메일 else "")
+            + f" <span class='muted'>{html.escape(t.제목)}</span></label>"
+            for i, t in enumerate(templates)
+        ) or "<p class='muted'>만들어 둔 템플릿이 없습니다.</p>"
+        return _page(
+            "메일 보내기",
+            오류
+            + f"<div class='card'><h2>고른 사람 {고른수}명</h2>"
+            "<p class='muted'>보낼 템플릿을 고르세요. 다음 화면에서 "
+            "<b>누구에게 무엇이 나가는지 하나씩 확인</b>한 뒤에 보냅니다.</p>"
+            "<form method='post' action='/mail/compose'>" + 숨김 + 고르기
+            + "<p><button type='submit'>다음 — 나갈 내용 확인</button> "
+            + 돌아가기 + "</p></form>"
+            + ("<p class='muted'><a href='/mail'>메일 탭</a>에서 템플릿을 "
+               "만들고 고칠 수 있습니다.</p>")
+            + "</div>",
+            me=me,
+        )
+
+    갈사람, 막힌사람 = _mail_targets(ids, tpl, me)
+    미리 = lambda b: (html_to_text(b) if tpl.html else b)
+    갈줄 = "".join(
+        f"<tr><td>{html.escape(x['이름'])}</td><td>{html.escape(x['받는사람'])}</td>"
+        f"<td style='white-space:normal'>{html.escape(x['제목'])}</td>"
+        f"<td style='white-space:normal' class='muted'>{html.escape(미리(x['본문'])[:120])}"
+        f"{'…' if len(미리(x['본문'])) > 120 else ''}</td></tr>"
+        for x in 갈사람
+    ) or "<tr><td colspan='4' class='muted'>보낼 수 있는 사람이 없습니다.</td></tr>"
+    막힌줄 = "".join(
+        f"<tr class='dup'><td>{html.escape(x['이름'])}</td>"
+        f"<td class='flag' style='white-space:normal'>{html.escape(x['막힘'])}</td></tr>"
+        for x in 막힌사람
+    )
+
+    첨부 = mailing.attachments(tpl.id)
+    딸림 = []
+    if tpl.cc():
+        딸림.append("참조 <b>" + html.escape(", ".join(tpl.cc())) + "</b>")
+    if 첨부:
+        딸림.append("첨부 <b>"
+                  + html.escape(", ".join(a["파일명"] for a in 첨부)) + "</b>")
+    if mailing.used_body_images(tpl.본문):
+        딸림.append(f"본문 그림 <b>{tpl.그림보내기}</b>")
+    딸림칸 = f"<p class='muted'>{' · '.join(딸림)}</p>" if 딸림 else ""
+
+    본문미리 = 갈사람[0]["본문"] if 갈사람 else ""
+    미리보기 = (
+        "<div class='card'><h2>본문 미리보기 "
+        f"<span class='muted'>{html.escape(갈사람[0]['이름'])} 기준</span></h2>"
+        f"<div class='mailbody'>{본문미리}</div></div>"
+        if 본문미리 and tpl.html else ""
+    )
+    연습 = (
+        "<div class='warn'><b>연습 모드 (MAIL_DRY_RUN=1)</b> — 실제로 나가지 않고 "
+        "기록만 남습니다. 기록이 남으면 '이미 보냄' 으로 처리되니 주의하세요.</div>"
+        if settings.mail_dry_run else ""
+    )
+    탈락표시 = (
+        "<div class='warn'><b>이 템플릿은 탈락 메일입니다.</b> 보내고 나면 그 지원자에게는 "
+        "이후 어떤 메일도 보낼 수 없습니다.</div>" if tpl.탈락메일 else ""
+    )
+    빠진것 = mailapi.missing_settings()
+    설정경고 = (
+        f"<div class='warn'>메일 설정이 비어 있어 보낼 수 없습니다: "
+        f"<b>{html.escape(', '.join(빠진것))}</b></div>"
+        if 빠진것 and not settings.mail_dry_run else ""
+    )
+
+    보내기 = ""
+    if can(me, "메일_발송") and 갈사람:
+        보내기 = (
+            "<div class='card' style='border-color:#fca5a5'>"
+            "<h2>보내기 전 마지막 확인</h2>"
+            "<p><b>이 작업은 되돌릴 수 없습니다.</b> 아래 표에 있는 "
+            f"<b>{len(갈사람)}명</b>에게 지금 메일이 나갑니다.</p>"
+            # window.confirm 을 그대로 부르면 안 된다. 이 폼 안에 name='confirm'
+            # 입력칸이 있어서, 인라인 핸들러에서는 그 입력칸이 함수를 가린다.
+            "<form method='post' action='/mail/send'"
+            " onsubmit=\"return window.confirm('정말 보냅니다. 되돌릴 수 없습니다.')\">"
+            + 숨김
+            + f"<input type='hidden' name='template' value='{tpl.id}'>"
+            "<p>보낼 인원수 <b>" + str(len(갈사람)) + "</b> 을 그대로 쳐 넣으세요: "
+            "<input type='text' name='confirm' style='width:80px'"
+            " placeholder='숫자' autocomplete='off' required> "
+            "<button type='submit'>메일 보내기</button></p>"
+            "<p class='muted'>숫자를 직접 치게 하는 이유는 하나입니다 — "
+            "확인창은 안 읽고 누르지만 숫자는 화면을 봐야 칠 수 있습니다.</p>"
+            "</form></div>"
+        )
+    elif not 갈사람:
+        보내기 = ("<div class='card'><p class='muted'>보낼 수 있는 사람이 "
+                "없습니다. 아래 이유를 확인하세요.</p></div>")
+
+    return _page(
+        "메일 보내기",
+        오류 + 연습 + 설정경고 + 탈락표시
+        + f"<div class='card'><h2>{html.escape(tpl.이름)} "
+        f"<span class='muted'>{html.escape(tpl.제목)}</span></h2>" + 딸림칸
+        + f"<p class='muted'>고른 {고른수}명 중 <b>{len(갈사람)}명</b>에게 나가고 "
+        f"<b>{len(막힌사람)}명</b>은 못 나갑니다.</p>"
+        "<p><form method='post' action='/mail/compose' style='display:inline'>"
+        + 숨김 + "<button class='sec'>다른 템플릿 고르기</button></form> "
+        + 돌아가기
+        + f" <a class='btn sec' href='/mail/template?id={tpl.id}'>템플릿 고치기</a></p>"
+        "</div>"
+        + f"<div class='card'><h2>나갈 사람 {len(갈사람)}명</h2><div class='scroll'>"
+        "<table data-name='나갈 사람'><tr><th>지원자</th><th>받는 주소</th>"
+        "<th>제목</th><th>본문 미리보기</th></tr>" + 갈줄 + "</table></div></div>"
+        + (f"<div class='card'><h2>못 나가는 사람 {len(막힌사람)}명</h2>"
+           "<div class='scroll'><table data-name='못 나가는 사람'>"
+           "<tr><th>지원자</th><th>이유</th></tr>" + 막힌줄 + "</table></div></div>"
+           if 막힌사람 else "")
+        + 미리보기 + 보내기,
+        me=me,
+    )
+
+
 def _mail_request_preview(tpl) -> str:
     """실제로 API 에 보낼 URL 과 본문을 그대로 보여준다.
 
@@ -2821,54 +3050,17 @@ def _mail_request_preview(tpl) -> str:
     )
 
 
-def _mail_send_page(tid: int, me: User, error: str = "", msg: str = "",
+def _mail_test_page(tid: int, me: User, error: str = "", msg: str = "",
                     peek: bool = False) -> bytes:
-    """지원자를 고르고 미리보기한 뒤 보낸다."""
+    """메일 탭의 템플릿 확인 화면 — **시험 발송까지만** 한다.
+
+    예전에는 여기서 지원자 전원을 늘어놓고 골라 보냈다. 서류 합격 안내를
+    보내려는데 이 화면에서는 누가 서류 합격인지 알 수가 없었다. 실제 발송은
+    **인재 Pool·채용 현황**에서 거른 뒤 고른 사람에게 하도록 옮겼다.
+    """
     tpl = mailing.template(tid)
     if tpl is None:
         return _page("없음", "<div class='card'>템플릿을 찾을 수 없습니다.</div>", me=me)
-
-    진행맵 = recruit.all()
-    보이는과제 = auth.visible_project_ids(me)
-    records = store.list_all()
-    if 보이는과제 is not None:
-        records = [r for r in records
-                   if 진행맵.get(r.지원자_ID)
-                   and 진행맵[r.지원자_ID].project_id in 보이는과제]
-
-    rows = []
-    보낼수있음 = 0
-    첫번째 = 미리본문 = ""
-    for rec in records:
-        cid = rec.지원자_ID
-        값 = _mail_vars(rec, 진행맵)
-        받는사람 = (값.get("이메일") or "").split(MULTI_SEP)[0].strip()
-        제목, 빈1 = render(tpl.제목, 값)
-        본문, 빈2 = render(tpl.본문, 값)
-        빈칸 = list(dict.fromkeys(빈1 + 빈2))
-        막힘 = mailing.blocked_reason(cid, tpl)
-        if not 막힘 and not 받는사람:
-            막힘 = "이메일 주소가 없습니다"
-        if not 막힘 and 빈칸:
-            막힘 = f"값이 빈 자리표시자: {', '.join(빈칸)}"
-        if not 막힘:
-            보낼수있음 += 1
-            첫번째 = 첫번째 or 본문
-        미리본문 = 미리본문 or 본문        # 아무도 못 보내도 본문은 보여준다
-        체크 = (
-            f"<input type='checkbox' form='sendform' name='ids' value='{html.escape(cid)}'>"
-            if not 막힘 else ""
-        )
-        미리 = html_to_text(본문) if tpl.html else 본문
-        rows.append(
-            f"<tr{' class=dup' if 막힘 else ''}><td>{체크}</td>"
-            f"<td>{html.escape(값.get('한글_이름') or 값.get('영문_이름') or cid)}</td>"
-            f"<td>{html.escape(받는사람)}</td>"
-            f"<td style='white-space:normal'>{html.escape(제목)}</td>"
-            f"<td style='white-space:normal' class='muted'>{html.escape(미리[:120])}"
-            f"{'…' if len(미리) > 120 else ''}</td>"
-            f"<td class='flag' style='white-space:normal'>{html.escape(막힘)}</td></tr>"
-        )
 
     첨부 = mailing.attachments(tpl.id)
     딸림 = []
@@ -2877,37 +3069,30 @@ def _mail_send_page(tid: int, me: User, error: str = "", msg: str = "",
     if 첨부:
         딸림.append("첨부 <b>"
                   + html.escape(", ".join(a["파일명"] for a in 첨부)) + "</b>")
+    if mailing.used_body_images(tpl.본문):
+        딸림.append(f"본문 그림 <b>{tpl.그림보내기}</b>")
     딸림칸 = f"<p class='muted'>{' · '.join(딸림)}</p>" if 딸림 else ""
 
-    본문미리 = 첫번째 or 미리본문
-    미리보기 = (
-        "<div class='card'><h2>본문 미리보기 "
-        + ("<span class='muted'>보낼 수 있는 첫 번째 지원자 기준</span>" if 첫번째
-           else "<span class='muted'>첫 지원자 기준 — 지금은 보낼 수 있는 사람이 없습니다</span>")
-        + f"</h2><div class='mailbody'>{본문미리}</div></div>"
-        if 본문미리 and tpl.html else ""
-    )
+    # 보기용 값으로 한 사람 몫을 채워 본다 (자리표시자가 제대로 도는지 확인)
+    진행맵 = recruit.all()
+    records = store.list_all()
+    값 = _mail_vars(records[0], 진행맵) if records else {}
+    값 = {k: (v or f"(예시){k}") for k, v in 값.items()}
+    for 변수 in _mail_var_names():
+        값.setdefault(변수, f"(예시){변수}")
+    제목미리, _ = render(tpl.제목, 값)
+    본문미리, 빈칸 = render(tpl.본문, 값)
 
     알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
     오류 = f"<div class='warn'>{html.escape(error)}</div>" if error else ""
     연습 = (
-        "<div class='warn'><b>연습 모드 (MAIL_DRY_RUN=1)</b> — 실제로 나가지 않고 "
-        "기록만 남습니다. 기록이 남으면 '이미 보냄' 으로 처리되니 주의하세요.</div>"
-        if settings.mail_dry_run else ""
+        "<div class='warn'><b>연습 모드 (MAIL_DRY_RUN=1)</b> — 실제로 나가지 "
+        "않습니다.</div>" if settings.mail_dry_run else ""
     )
     탈락표시 = (
-        "<div class='warn'><b>이 템플릿은 탈락 메일입니다.</b> 보내고 나면 그 지원자에게는 "
-        "이후 어떤 메일도 보낼 수 없습니다.</div>" if tpl.탈락메일 else ""
-    )
-    보내기 = (
-        "<form method='post' action='/mail/send' id='sendform' class='mergebar'"
-        " onsubmit=\"return confirm('선택한 지원자에게 메일을 보냅니다. "
-        "되돌릴 수 없습니다. 진행할까요?')\">"
-        f"<input type='hidden' name='id' value='{tpl.id}'>"
-        "<button type='submit'>선택한 지원자에게 보내기</button>"
-        f"<span class='muted'>보낼 수 있는 지원자 {보낼수있음}명. "
-        "빨간 줄은 보낼 수 없는 이유가 적혀 있습니다.</span></form>"
-        if can(me, "메일_발송") else ""
+        "<div class='warn'><b>이 템플릿은 탈락 메일입니다.</b> 보내고 나면 그 "
+        "지원자에게는 이후 어떤 메일도 보낼 수 없습니다.</div>"
+        if tpl.탈락메일 else ""
     )
     시험 = (
         "<div class='card'><h2>시험 발송</h2>"
@@ -2921,28 +3106,33 @@ def _mail_send_page(tid: int, me: User, error: str = "", msg: str = "",
         + ("지금은 연습 모드라 실제로 나가지 않고 요청 내용만 보여줍니다."
            if settings.mail_dry_run else
            "<b>지금은 실제로 나갑니다 (MAIL_DRY_RUN=0).</b>")
-        + f" <a href='/mail/send?id={tpl.id}&peek=1'>보낼 요청 내용 보기</a></p></div>"
+        + f" <a href='/mail/test?id={tpl.id}&peek=1'>보낼 요청 내용 보기</a></p></div>"
         if can(me, "메일_발송") else ""
     )
     점검 = _mail_request_preview(tpl) if peek else ""
+    미리 = (
+        f"<div class='card'><h2>보기용 미리보기</h2>"
+        f"<p class='muted'>제목: {html.escape(제목미리)}</p>"
+        + (f"<div class='mailbody'>{본문미리}</div>" if tpl.html
+           else f"<pre class='rubric'>{html.escape(본문미리)}</pre>")
+        + "<p class='muted'>실제 값이 아니라 <b>(예시)</b> 로 채운 화면입니다. "
+        "누구에게 무엇이 나가는지는 보낼 때 하나씩 확인합니다.</p></div>"
+    )
     return _page(
-        f"{tpl.이름} 보내기",
-        알림 + 오류 + 연습 + 탈락표시 + 시험 + 점검
+        f"{tpl.이름} 확인",
+        알림 + 오류 + 연습 + 탈락표시
         + f"<div class='card'><h2>{html.escape(tpl.이름)} "
-        f"<span class='muted'>{html.escape(tpl.제목)}</span></h2>"
-        + 딸림칸
+        f"<span class='muted'>{html.escape(tpl.제목)}</span></h2>" + 딸림칸
+        + ("<p class='flag'>값이 빈 자리표시자: "
+           + html.escape(", ".join(빈칸)) + "</p>" if 빈칸 else "")
+        + "<div class='warn'><b>여기서는 실제 지원자에게 못 보냅니다.</b> "
+        "보낼 사람은 <a href='/'>인재 Pool</a> 이나 "
+        "<a href='/recruit'>채용 현황</a> 에서 고릅니다 — 거기서는 "
+        "<b>누가 서류 합격인지 보면서</b> 고를 수 있습니다. "
+        "표에서 체크한 뒤 <b>선택한 사람에게 메일</b> 을 누르세요.</div>"
         + f"<p><a class='btn sec' href='/mail/template?id={tpl.id}'>템플릿 고치기</a> "
-        "<a class='btn sec' href='/mail'>목록</a></p>"
-        + 보내기
-        + "<div class='scroll'><table data-name='메일 발송 대상'>"
-        "<tr><th style='width:34px'><input type='checkbox' title='전체 선택'"
-        " onclick=\"for(const c of this.closest('table')"
-        ".querySelectorAll('input[name=ids]'))"
-        "if(!c.closest('tr').classList.contains('hide'))c.checked=this.checked\"></th>"
-        "<th>지원자</th><th>받는 주소</th><th>제목</th><th>본문 미리보기</th>"
-        "<th>보낼 수 없는 이유</th></tr>"
-        + "".join(rows) + "</table></div></div>"
-        + 미리보기,
+        "<a class='btn sec' href='/mail'>목록</a></p></div>"
+        + 시험 + 점검 + 미리,
         me=me,
     )
 
@@ -3038,7 +3228,7 @@ def _users_page(me: User, error: str = "") -> bytes:
 
 
 def _org_page(me: User, error: str = "") -> bytes:
-    """부서 · 과제 관리. 과제는 부서에 속한다."""
+    """부서 · 과제 편집. 과제는 부서에 속한다."""
     depts = auth.departments()
     projects = auth.projects()
 
@@ -3081,7 +3271,8 @@ def _org_page(me: User, error: str = "") -> bytes:
 
     오류 = f"<p class='flag'>{html.escape(error)}</p>" if error else ""
     본문 = (
-        "<div class='card'><h2>부서 추가</h2>" + 오류
+        "<div class='card'><p><a class='btn sec' href='/org'>부서·과제로</a></p></div>"
+        + "<div class='card'><h2>부서 추가</h2>" + 오류
         + "<form method='post' action='/org/dept/add' style='display:flex;gap:8px'>"
         "<input type='text' name='name' placeholder='부서 이름' required>"
         "<button type='submit'>추가</button></form>"
@@ -3089,7 +3280,7 @@ def _org_page(me: User, error: str = "") -> bytes:
         "</div>"
         + ("".join(카드) or "<div class='card muted'>부서를 먼저 추가하세요.</div>")
     )
-    return _page("부서·과제 관리", 본문, me=me)
+    return _page("부서·과제 편집", 본문, me=me)
 
 
 def _history_page(me: User, 대상종류: str = "", limit: int = 300) -> bytes:
@@ -3210,6 +3401,7 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
     표열 = store.arrange(recruit.columns())
     이름표 = 라벨(표열)
     고를수있는상태 = recruit.statuses()
+    메일가능 = can(me, "메일_발송")
     # '채용 현황' 으로 만든 추가 열은 **여기서** 고친다. 그 열의 자리가 여기니까.
     채용사용자열 = {f["이름"]: f for f in store.fields()
                 if (f.get("구분") or "지원자 정보") == "채용 현황"}
@@ -3302,11 +3494,16 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
             else:
                 # 지원자 정보 열은 보기만 한다 (고치려면 인재 Pool/상세에서)
                 cells.append(f"<td title='{v}'>{v}</td>")
+        체크 = (f"<td><input type='checkbox' form='mailform' name='ids'"
+              f" value='{html.escape(cid)}'></td>" if 메일가능 else "")
         링크 = f"<td><a href='/candidate?id={urllib.parse.quote(cid)}'>상세</a></td>"
         묶음 = " class='dup'" if p and p.탈락 else ""
-        rows.append(f"<tr{묶음}>{링크}{''.join(cells)}</tr>")
+        rows.append(f"<tr{묶음}>{체크}{링크}{''.join(cells)}</tr>")
 
-    머리 = "<th></th>" + "".join(f"<th>{html.escape(이름표[c])}</th>" for c in 표열)
+    체크머리 = ("<th><input type='checkbox' onclick='selectVisible(this)'"
+             " title='보이는 줄만 선택합니다'></th>" if 메일가능 else "")
+    머리 = 체크머리 + "<th></th>" + "".join(
+        f"<th>{html.escape(이름표[c])}</th>" for c in 표열)
     알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
     오류 = f"<div class='warn'>{html.escape(error)}</div>" if error else ""
     안내 = (
@@ -3321,6 +3518,15 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
     열이름칸 = "".join(
         f"<input type='hidden' form='recruitform' name='사용자열_{n}'"
         f" value='{html.escape(c)}'>" for c, n in 열번호.items()
+    )
+    메일바 = (
+        "<form method='post' action='/mail/compose' id='mailform' class='mergebar'>"
+        "<input type='hidden' name='back' value='/recruit'>"
+        "<button type='submit'>선택한 사람에게 메일</button>"
+        "<span class='muted'>여기서는 <b>누가 어느 단계인지 보면서</b> 고를 수 "
+        "있습니다. 표 위 찾기 칸으로 걸러 놓고 전체선택을 누르면 "
+        "<b>보이는 줄만</b> 선택됩니다.</span></form>"
+        if rows and 메일가능 else ""
     )
     저장바 = (
         "<form method='post' action='/recruit/save' id='recruitform' class='mergebar'>"
@@ -3353,7 +3559,7 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
         f"""{알림}{오류}<div class='card'><h2>채용 현황 <span class='muted'>{len(records)}명</span></h2>
         <p class='muted'>{안내}{출처}</p>
         <p>{열구성}<a class='btn' href='/recruit/export.xlsx'>엑셀(.xlsx) 다운로드</a></p>
-        {저장바}{표}</div>
+        {메일바}{저장바}{표}</div>
         <script>var 과제표 = {과제표};{_RECRUIT_JS}</script>""",
         me=me,
     )
@@ -4150,6 +4356,11 @@ class Handler(BaseHTTPRequestHandler):
             if not can(me, "부서과제_관리"):
                 return self._deny()
             params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            return self._send(_org_hub_page(me))
+        if path == "/org/edit":
+            if not can(me, "부서과제_관리"):
+                return self._deny()
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             return self._send(_org_page(me, (params.get("err") or [""])[0]))
         if path == "/history":
             if not can(me, "변경이력_조회"):
@@ -4190,14 +4401,16 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/recruit/export.xlsx":
             if not (can(me, "채용현황_수정") or can(me, "지원자_조회")):
                 return self._deny()
-            표열 = store.arrange(recruit.columns())
-            이름표 = 라벨(표열)
+            # 이름을 표열 로 두면 do_GET 안에서 모듈 함수 표열() 을 가린다
+            # (파이썬은 함수 어디서든 대입이 있으면 그 이름을 지역으로 본다).
+            채용열 = store.arrange(recruit.columns())
+            이름표 = 라벨(채용열)
             records, _진행, 값 = _recruit_rows(me, (urllib.parse.parse_qs(
                 urllib.parse.urlparse(self.path).query).get("sort") or [""])[0])
-            rows = [{이름표[c]: 값(rec, c) for c in 표열} for rec in records]
+            rows = [{이름표[c]: 값(rec, c) for c in 채용열} for rec in records]
             stamp = now_kst().strftime("%Y%m%d_%H%M")
             return self._send(
-                build_xlsx(rows, [이름표[c] for c in 표열]),
+                build_xlsx(rows, [이름표[c] for c in 채용열]),
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 extra={"Content-Disposition": f'attachment; filename="recruit_{stamp}.xlsx"'},
             )
@@ -4208,11 +4421,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(_curate_page(me, (params.get("err") or [""])[0],
                                            (params.get("msg") or [""])[0]))
         if path == "/match":
+            # 과제 정보 관리. 부서·과제 탭 아래 화면이다.
             if not can(me, "과제매칭_조회"):
-                return self._deny("과제 매칭은 채용담당자 이상만 볼 수 있습니다.")
+                return self._deny("과제 정보는 채용담당자 이상만 볼 수 있습니다.")
             params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            return self._send(_match_page(me, (params.get("err") or [""])[0],
-                                          (params.get("msg") or [""])[0]))
+            return self._send(_projects_page(me, (params.get("err") or [""])[0],
+                                             (params.get("msg") or [""])[0]))
         if path == "/mail":
             if not can(me, "메일_템플릿"):
                 return self._deny()
@@ -4229,7 +4443,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._redirect("/mail")
             return self._send(_mail_template_page(tid, me, (params.get("err") or [""])[0],
                                                   (params.get("msg") or [""])[0]))
-        if path == "/mail/send":
+        if path == "/mail/test":
+            # 메일 탭에서는 **시험 발송까지만** 한다. 실제 발송은 인재 Pool·
+            # 채용 현황에서 대상을 고른 뒤에 한다.
             if not can(me, "메일_템플릿"):
                 return self._deny()
             params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -4237,7 +4453,7 @@ class Handler(BaseHTTPRequestHandler):
                 tid = int((params.get("id") or ["0"])[0])
             except ValueError:
                 return self._redirect("/mail")
-            return self._send(_mail_send_page(tid, me, (params.get("err") or [""])[0],
+            return self._send(_mail_test_page(tid, me, (params.get("err") or [""])[0],
                                               (params.get("msg") or [""])[0],
                                               peek=bool(params.get("peek"))))
         if path == "/mail/attachment":
@@ -4345,8 +4561,16 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/export.xlsx":
             if not can(me, "엑셀_다운로드"):
                 return self._deny()
+            # 화면에 걸어 둔 검색 조건을 **그대로** 따른다. 걸러 놓고 받았는데
+            # 전체가 나오면 엉뚱한 사람에게 자료가 나간다.
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            records = store.list_filtered(
+                (params.get("q") or [""])[0],
+                bool(params.get("review")),
+                (params.get("year") or [""])[0],
+            )
             열 = 표열()
-            data = records_to_xlsx(store.list_all(), registry,
+            data = records_to_xlsx(records, registry,
                                    (store.field_names(), _표값맵()),
                                    열=열, 라벨=라벨(열))
             stamp = now_kst().strftime("%Y%m%d_%H%M")
@@ -4702,7 +4926,7 @@ class Handler(BaseHTTPRequestHandler):
             if tpl is None:
                 return self._redirect("/mail")
             주소 = (data.get("to") or [""])[0].strip()
-            뒤로 = f"/mail/send?id={tid}"
+            뒤로 = f"/mail/test?id={tid}"
             if not 주소:
                 return self._redirect(뒤로 + "&err=" + urllib.parse.quote(
                     "시험 발송할 주소를 넣으세요."))
@@ -4821,22 +5045,54 @@ class Handler(BaseHTTPRequestHandler):
                 audit.record(me.아이디, "메일", str(tid), 항목="첨부 삭제", 이전값=이름)
             return self._redirect(f"/mail/template?id={tid}")
 
+        if path == "/mail/compose":
+            # 인재 Pool·채용 현황에서 고른 사람을 데리고 오는 입구.
+            if not can(me, "메일_발송"):
+                return self._deny("메일 발송 권한이 없습니다.")
+            data = urllib.parse.parse_qs(
+                self._read_body().decode("utf-8", "replace"), keep_blank_values=True
+            )
+            ids = [x for x in (data.get("ids") or []) if x.strip()]
+            뒤로 = (data.get("back") or ["/"])[0] or "/"
+            if not 뒤로.startswith("/"):
+                뒤로 = "/"
+            try:
+                tid = int((data.get("template") or ["0"])[0] or 0)
+            except ValueError:
+                tid = 0
+            return self._send(_mail_compose_page(ids, tid, me, 뒤로))
+
         if path == "/mail/send":
             if not can(me, "메일_발송"):
                 return self._deny()
             data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
             try:
-                tid = int((data.get("id") or ["0"])[0])
+                tid = int((data.get("template") or data.get("id") or ["0"])[0])
             except ValueError:
                 return self._redirect("/mail")
             tpl = mailing.template(tid)
             if tpl is None:
                 return self._redirect("/mail")
-            뒤로 = f"/mail/send?id={tid}"
-            ids = data.get("ids") or []
+            돌아갈곳 = (data.get("back") or ["/"])[0] or "/"
+            if not 돌아갈곳.startswith("/"):
+                돌아갈곳 = "/"
+            ids = [x for x in (data.get("ids") or []) if x.strip()]
             if not ids:
-                return self._redirect(뒤로 + "&err=" + urllib.parse.quote(
-                    "보낼 지원자를 하나 이상 고르세요."))
+                return self._send(_mail_compose_page(
+                    ids, tid, me, 돌아갈곳, "보낼 지원자를 하나 이상 고르세요."))
+
+            # 안전장치: 보낼 인원수를 사람이 직접 쳐야 한다. 화면을 그린 뒤에
+            # 상황이 바뀌었을 수 있으니 **지금 다시 세어** 그 수와 맞춰 본다.
+            갈사람, _막힌 = _mail_targets(ids, tpl, me)
+            친것 = (data.get("confirm") or [""])[0].strip()
+            if 친것 != str(len(갈사람)):
+                return self._send(_mail_compose_page(
+                    ids, tid, me, 돌아갈곳,
+                    f"보낼 인원수({len(갈사람)})를 그대로 쳐 넣어야 나갑니다. "
+                    f"넣은 값: {친것 or '(빈칸)'}"
+                    + ("" if 친것 else "")
+                ))
+            뒤로 = 돌아갈곳
 
             진행맵 = recruit.all()
             보이는 = auth.visible_project_ids(me)
@@ -4893,12 +5149,14 @@ class Handler(BaseHTTPRequestHandler):
                 audit.record(me.아이디, "메일", cid, 항목=tpl.이름,
                              새값=상태, 비고=f"{받는사람} 로 발송")
 
-            조각 = [f"{성공}명에게 보냈습니다"]
+            조각 = [f"'{tpl.이름}' 을 {성공}명에게 보냈습니다"]
             if 실패:
                 조각.append(f"{실패}명 실패 ({첫오류[:80]})")
             if 건너뜀:
                 조각.append(f"{건너뜀}명은 보낼 수 없어 건너뛰었습니다")
-            return self._redirect(뒤로 + "&msg=" + urllib.parse.quote(" / ".join(조각)))
+            이음 = "&" if "?" in 뒤로 else "?"
+            return self._redirect(뒤로 + 이음 + "msg="
+                                  + urllib.parse.quote(" / ".join(조각)))
 
         if path.startswith("/dash"):
             if not can(me, "대시보드_조회"):
@@ -5164,11 +5422,11 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 옛이름 = auth.rename_department(int((data.get("id") or ["0"])[0]), 새이름)
             except (ValueError, TypeError) as exc:
-                return self._redirect("/org?err=" + urllib.parse.quote(str(exc)))
+                return self._redirect("/org/edit?err=" + urllib.parse.quote(str(exc)))
             if 옛이름 != 새이름:
                 audit.record(me.아이디, "과제", 새이름, 항목="부서명",
                              이전값=옛이름, 새값=새이름)
-            return self._redirect("/org")
+            return self._redirect("/org/edit")
 
         if path == "/org/dept/delete":
             if not can(me, "부서과제_관리"):
@@ -5178,7 +5436,7 @@ class Handler(BaseHTTPRequestHandler):
                 auth.delete_department(int((data.get("id") or ["0"])[0]))
             except (ValueError, TypeError):
                 pass
-            return self._redirect("/org")
+            return self._redirect("/org/edit")
 
         if path == "/org/project/rename":
             if not can(me, "부서과제_관리"):
@@ -5190,14 +5448,14 @@ class Handler(BaseHTTPRequestHandler):
                 pid = int((data.get("id") or ["0"])[0])
                 옛이름 = auth.rename_project(pid, 새이름)
             except (ValueError, TypeError) as exc:
-                return self._redirect("/org?err=" + urllib.parse.quote(str(exc)))
+                return self._redirect("/org/edit?err=" + urllib.parse.quote(str(exc)))
             if 암호.strip():          # 비우면 기존 암호를 그대로 둔다
                 auth.set_project_password(pid, 암호)
                 audit.record(me.아이디, "과제", 새이름, 비고="초대암호 변경")
             if 옛이름 != 새이름:
                 audit.record(me.아이디, "과제", 새이름, 항목="과제명",
                              이전값=옛이름, 새값=새이름)
-            return self._redirect("/org")
+            return self._redirect("/org/edit")
 
         if path == "/fields":
             if not can(me, "열_구성"):
@@ -5395,9 +5653,9 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 auth.add_department((data.get("name") or [""])[0])
             except ValueError as exc:
-                return self._redirect("/org?err=" + urllib.parse.quote(str(exc)))
+                return self._redirect("/org/edit?err=" + urllib.parse.quote(str(exc)))
             audit.record(me.아이디, "과제", (data.get("name") or [""])[0], 비고="부서 추가")
-            return self._redirect("/org")
+            return self._redirect("/org/edit")
 
         if path == "/org/project/add":
             if not can(me, "부서과제_관리"):
@@ -5410,9 +5668,9 @@ class Handler(BaseHTTPRequestHandler):
                     (data.get("invite") or [""])[0],
                 )
             except (ValueError, TypeError) as exc:
-                return self._redirect("/org?err=" + urllib.parse.quote(str(exc)))
+                return self._redirect("/org/edit?err=" + urllib.parse.quote(str(exc)))
             audit.record(me.아이디, "과제", (data.get("name") or [""])[0], 비고="과제 추가")
-            return self._redirect("/org")
+            return self._redirect("/org/edit")
 
         if path == "/org/project/delete":
             if not can(me, "부서과제_관리"):
@@ -5422,7 +5680,7 @@ class Handler(BaseHTTPRequestHandler):
                 auth.delete_project(int((data.get("id") or ["0"])[0]))
             except (ValueError, TypeError):
                 pass
-            return self._redirect("/org")
+            return self._redirect("/org/edit")
 
         if path == "/candidate/delete":
             if not can(me, "지원자_삭제"):

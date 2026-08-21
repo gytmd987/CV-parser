@@ -271,8 +271,56 @@ def test_integrated_program_becomes_its_own_column():
     from cvtool.schemas import COLUMNS
 
     assert COLUMNS.index("박사_석박통합") == COLUMNS.index("박사_학교") - 1
-    rec = extract_cv_from_text("이력서", client=_sectioned_client())
-    assert rec.박사_석박통합 == ""          # 이 표본은 통합과정이 아니다
+
+
+def test_no_masters_but_a_phd_is_read_as_an_integrated_program():
+    """석사 없이 박사만 있으면 통합과정으로 본다 (국내에서는 대개 맞다).
+
+    다만 **확실하지 않다** — 해외 박사는 석사 없이 바로 가기도 하고, 석사를
+    이력서에 안 적었을 수도 있다. 그래서 반드시 검토_필요로 표시한다.
+    """
+    from cvtool.extract import _assemble
+
+    rec = _assemble({"education": {"박사_학교": "서울대학교", "박사_전공": "기계공학"}},
+                    [], 지원자_ID="CV-1", 원본_파일명="")
+    assert rec.박사_석박통합 == "석박통합"
+    assert rec.검토_필요 == "Y"
+    assert "석사 학력이 없어" in rec.검토_사유
+
+
+def test_a_masters_degree_means_it_is_not_inferred():
+    from cvtool.extract import _assemble
+
+    rec = _assemble(
+        {"education": {"박사_학교": "서울대학교", "석사_학교": "서울대학교"}},
+        [], 지원자_ID="CV-1", 원본_파일명="",
+    )
+    assert rec.박사_석박통합 == ""
+    assert "석사 학력이 없어" not in rec.검토_사유
+
+
+def test_no_phd_means_no_inference():
+    from cvtool.extract import _assemble
+
+    rec = _assemble({"education": {"석사_학교": "서울대학교"}}, [],
+                    지원자_ID="CV-1", 원본_파일명="")
+    assert rec.박사_석박통합 == ""
+
+
+def test_stated_integrated_program_is_not_flagged_as_a_guess():
+    """이력서에 적혀 있으면 유추가 아니다. 검토 사유에 안 남는다."""
+    from cvtool.extract import _assemble
+
+    rec = _assemble({"education": {"박사_학교": "서울대", "석박통합_여부": True}},
+                    [], 지원자_ID="CV-1", 원본_파일명="")
+    assert rec.박사_석박통합 == "석박통합"
+    assert "석사 학력이 없어" not in rec.검토_사유
+
+
+def test_the_prompt_tells_the_model_to_infer_it_too():
+    from cvtool.extract import _EDU_HINT
+
+    assert "석사 학력이 없고 박사만 있으면" in _EDU_HINT
 
 
 def test_integrated_program_is_marked_from_either_signal():

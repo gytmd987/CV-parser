@@ -657,6 +657,27 @@ class MailStore:
         self._conn.commit()
         return att["파일명"]
 
+    def sent_summary(self) -> dict[str, str]:
+        """{지원자_ID: "서류합격 안내(08-21) | 면접 안내(08-25)"}
+
+        인재 Pool 표에 한 열로 낸다. 누구에게 무엇을 보냈는지 표에서 바로
+        보이지 않으면, 같은 메일을 두 번 보내거나 안 보낸 사람을 놓친다.
+        """
+        보낸것: dict[str, list[str]] = {}
+        for r in self._conn.execute(
+            "SELECT 지원자_ID, 템플릿이름, 상태, 탈락메일, 보낸일시 FROM sent"
+            " ORDER BY 보낸일시, id"
+        ):
+            이름 = r["템플릿이름"] or "(이름 없음)"
+            날 = (r["보낸일시"] or "")[5:10]        # MM-DD
+            꼬리 = "" if r["상태"] == "성공" else f"[{r['상태']}]"
+            if r["탈락메일"]:
+                꼬리 += "[탈락]"
+            보낸것.setdefault(r["지원자_ID"], []).append(
+                f"{이름}({날}){꼬리}" if 날 else f"{이름}{꼬리}"
+            )
+        return {cid: " | ".join(v) for cid, v in 보낸것.items()}
+
     def history(self, 지원자_ID: str = "", limit: int = 300) -> list[dict]:
         sql = "SELECT * FROM sent"
         args: tuple = ()

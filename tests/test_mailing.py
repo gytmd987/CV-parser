@@ -589,3 +589,22 @@ def test_body_image_needs_an_image_extension(ms):
     t = ms.template(ms.add_template("이상한형식", 만든이="admin"))
     with pytest.raises(ValueError):
         ms.add_body_image(t.id, "문서.pdf", _PNG)
+
+
+# --- 발송 이력 열 -------------------------------------------------------------
+def test_sent_summary_lists_what_went_out(ms, 템플릿):
+    """인재 Pool 표에서 누구에게 뭘 보냈는지 바로 보여야 한다."""
+    ms.record("CV-1", 템플릿, "a@b.c", "제목", "본문", "성공", 보낸이="admin")
+    요약 = ms.sent_summary()
+    assert "서류합격" in 요약["CV-1"]
+
+
+def test_sent_summary_marks_failures_and_rejections(ms, 템플릿, 탈락):
+    ms.record("CV-1", 템플릿, "a@b.c", "제목", "본문", "실패", 보낸이="admin")
+    ms.record("CV-1", 탈락, "a@b.c", "제목", "본문", "성공", 보낸이="admin")
+    글 = ms.sent_summary()["CV-1"]
+    assert "[실패]" in 글 and "[탈락]" in 글
+
+
+def test_sent_summary_is_empty_for_untouched_people(ms):
+    assert ms.sent_summary() == {}
