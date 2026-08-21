@@ -197,6 +197,9 @@ SECTION_RESEARCH: dict = {
             "items": {
                 "type": "object",
                 "properties": {
+                    # 제목이 그 사람의 분야를 가장 잘 알려준다. 연구분야 키워드와
+                    # 과제 매칭이 이걸 읽는다.
+                    "제목": {"type": "string"},
                     "제출처": {"type": "string"},
                     "연도": {"type": "string"},
                     "유형": {"type": "string", "enum": ["학회", "저널", "기타"]},
@@ -219,9 +222,11 @@ SECTION_RESEARCH: dict = {
                 "required": ["상태"],
             },
         },
+        # required 에 넣어야 guided_json 이 이 키를 **반드시** 내게 만든다.
+        # 안 넣으면 모델이 조용히 빼먹고, 열이 빈 채로 저장된다.
         "연구분야_키워드": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["논문"],
+    "required": ["논문", "연구분야_키워드"],
 }
 
 SECTION_CAREER: dict = {
@@ -250,6 +255,7 @@ SECTION_CAREER: dict = {
 # Pydantic 모델
 # ---------------------------------------------------------------------------
 class Paper(BaseModel):
+    제목: str = ""
     제출처: str = ""
     연도: str = ""
     유형: str = ""
@@ -355,7 +361,7 @@ class CVRecord(BaseModel):
                 if found is not None and found.유형 in ("학회", "저널"):
                     종류 = found.유형
             out.append(
-                {"표시명": 표시명, "연도": p.연도, "등급": 등급,
+                {"제목": p.제목, "표시명": 표시명, "연도": p.연도, "등급": 등급,
                  "국내해외": 국내해외, "유형": 종류, "주저자": p.주저자}
             )
         return out

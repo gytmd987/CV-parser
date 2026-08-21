@@ -397,3 +397,99 @@ def test_registry_decides_journal_vs_conference():
                    논문=[Paper(제출처="Nature", 유형="학회", 저자구분="주저자")])
     센것 = rec.논문_수(사전())
     assert 센것["저널_수"] == 1 and 센것["학회_수"] == 0
+
+
+# --- 연구분야 키워드 ---------------------------------------------------------
+def test_the_model_is_actually_asked_for_keywords():
+    """비어 있던 진짜 이유: **프롬프트에 키워드 얘기가 한 줄도 없었다.**
+
+    스키마에 항목만 있으면 모델은 채울 이유가 없다. 지시가 있어야 채운다.
+    """
+    from cvtool.extract import _RESEARCH_HINT, _READ_PROMPT
+
+    assert "연구분야 키워드" in _RESEARCH_HINT
+    assert "Research Interests" in _RESEARCH_HINT
+    assert "논문 제목" in _RESEARCH_HINT      # 없을 때 어디서 뽑을지
+    assert "연구 분야" in _READ_PROMPT        # 1단계 정리에서도 챙긴다
+
+
+def test_keywords_are_required_by_the_schema():
+    """guided_json 의 required 에 없으면 모델이 조용히 빼먹는다."""
+    from cvtool.schemas import SECTION_RESEARCH
+
+    assert "연구분야_키워드" in SECTION_RESEARCH["required"]
+
+
+def test_useless_words_are_dropped():
+    """'연구' '개발' 같은 낱말은 아무것도 알려주지 않는다."""
+    from cvtool.extract import _assemble
+
+    rec = _assemble(
+        {"research": {"연구분야_키워드": ["플라즈마 식각", "연구", "개발", "박막 증착"]}},
+        [], 지원자_ID="CV-1", 원본_파일명="",
+    )
+    assert rec.연구분야_키워드 == "플라즈마 식각 | 박막 증착"
+
+
+def test_duplicate_keywords_are_merged_in_order():
+    from cvtool.extract import _assemble
+
+    rec = _assemble(
+        {"research": {"연구분야_키워드": ["광학", "박막", "광학", " 박막 "]}},
+        [], 지원자_ID="CV-1", 원본_파일명="",
+    )
+    assert rec.연구분야_키워드 == "광학 | 박막"
+
+
+def test_empty_keywords_are_flagged_for_review():
+    """조용히 빈칸으로 두면 아무도 모른다. 이 값은 매칭·검색에서 제일 많이 쓴다."""
+    from cvtool.extract import _assemble
+
+    rec = _assemble({"research": {"연구분야_키워드": []}}, [],
+                    지원자_ID="CV-1", 원본_파일명="")
+    assert rec.검토_필요 == "Y"
+    assert "연구분야 키워드" in rec.검토_사유
+
+
+def test_keywords_survive_the_normal_path():
+    rec = extract_cv_from_text("이력서", client=_sectioned_client())
+    assert rec.연구분야_키워드 == "컴퓨터비전 | 멀티모달"
+    assert "연구분야 키워드" not in rec.검토_사유
+
+
+# --- 논문 제목 ---------------------------------------------------------------
+def test_paper_titles_are_kept():
+    """제목이 그 사람의 분야를 가장 잘 알려준다."""
+    from cvtool.extract import _assemble
+
+    rec = _assemble(
+        {"research": {"논문": [
+            {"제목": "Plasma etching of high aspect ratio patterns",
+             "제출처": "JVST", "유형": "저널", "저자구분": "주저자"},
+        ], "연구분야_키워드": ["식각"]}},
+        [], 지원자_ID="CV-1", 원본_파일명="",
+    )
+    assert rec.논문[0].제목.startswith("Plasma etching")
+    assert rec.papers_view()[0]["제목"] == rec.논문[0].제목
+
+
+def test_paper_titles_go_into_the_matching_profile():
+    from cvtool.matching import candidate_profile
+    from cvtool.schemas import CVRecord, Paper
+
+    rec = CVRecord(지원자_ID="X", 논문=[
+        Paper(제목="Plasma etching of Si", 제출처="JVST", 저자구분="주저자"),
+        Paper(제목="공저자 논문", 제출처="Optics Express", 저자구분="공저자"),
+    ])
+    프로필 = candidate_profile(rec)
+    assert "Plasma etching of Si" in 프로필
+    assert "공저자 논문" not in 프로필
+
+
+def test_old_records_without_titles_still_work():
+    """제목 없이 저장된 옛 레코드도 그대로 읽혀야 한다."""
+    from cvtool.schemas import CVRecord, Paper
+
+    rec = CVRecord(지원자_ID="X", 논문=[Paper(제출처="NeurIPS", 저자구분="주저자")])
+    assert rec.논문[0].제목 == ""
+    assert rec.papers_view()[0]["표시명"] == "NeurIPS"

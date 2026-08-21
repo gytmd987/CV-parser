@@ -141,6 +141,10 @@ def candidate_profile(rec, registry=None) -> str:
     넣기("경력 전체", row.get("경력_요약"))
 
     논문 = getattr(rec, "논문", []) or []
+    # 제목이 분야를 가장 잘 알려준다. 제출처는 그 다음.
+    제목들 = [p.제목 for p in 논문 if getattr(p, "제목", "") and p.주저자][:15]
+    if 제목들:
+        줄.append("주저자 논문 제목: " + " / ".join(제목들))
     제출처 = [p.제출처 for p in 논문 if getattr(p, "제출처", "") and p.주저자][:15]
     if 제출처:
         줄.append("주저자 논문 제출처: " + " / ".join(제출처))

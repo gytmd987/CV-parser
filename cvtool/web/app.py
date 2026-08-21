@@ -2032,8 +2032,10 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "") -> bytes:
     논문행 = "".join(
         f"<tr><td>{주저자배지 if v['주저자'] else 공저자배지}</td>"
         f"<td>{html.escape(v['유형'])}</td>"
-        f"<td style='white-space:normal'>{html.escape(v['표시명'])}</td>"
-        f"<td>{html.escape(v['연도'])}</td>"
+        f"<td style='white-space:normal'>{html.escape(v.get('제목') or '')}"
+        + (f"<br><span class='muted'>{html.escape(v['표시명'])}</span>"
+           if v.get('제목') else html.escape(v['표시명']))
+        + f"</td><td>{html.escape(v['연도'])}</td>"
         f"<td>{html.escape(v['국내해외'])}</td>"
         f"<td>{html.escape(v['등급'])}</td></tr>"
         for v in 논문보기
@@ -2055,7 +2057,7 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "") -> bytes:
             "</span></h2>"
             + ("<div class='scroll'><table data-name='논문'>"
                "<tr><th style='width:80px'>저자</th><th style='width:60px'>유형</th>"
-               "<th>제출처</th><th style='width:60px'>연도</th>"
+               "<th>제목 / 제출처</th><th style='width:60px'>연도</th>"
                "<th style='width:70px'>국내해외</th><th style='width:80px'>등급</th></tr>"
                + 논문행 + "</table></div>" if 논문보기 else "")
             + ("<h2 style='margin-top:14px'>특허</h2><div class='scroll'>"
