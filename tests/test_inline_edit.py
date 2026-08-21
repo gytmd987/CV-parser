@@ -1035,3 +1035,132 @@ def test_the_send_form_does_not_shadow_window_confirm(web, cid, 템플릿):
     폼 = 본문.split("action='/mail/send'", 1)[1].split("</form>", 1)[0]
     assert "name='confirm'" in 폼
     assert "window.confirm(" in 폼
+
+
+# --- 검토를 그 자리에서 -----------------------------------------------------------
+@pytest.fixture
+def 검토cid(web, cid):
+    """검토 사유가 여럿 달린 지원자."""
+    rec = web.module.store.get(cid)
+    rec.검토_필요 = "Y"
+    rec.검토_사유 = ("현재_신분을 판단하지 못함"
+                 " / 연구분야 키워드를 뽑지 못함 (확인 필요)")
+    web.module.store.save(rec)
+    return cid
+
+
+def test_detail_shows_a_review_card(web, 검토cid):
+    page = web.get(f"/candidate?id={urllib.parse.quote(검토cid)}")
+    assert "id='검토'" in page
+    assert "검토 필요" in page
+    assert "확인함" in page
+
+
+def test_review_marks_the_related_rows(web, 검토cid):
+    """어느 항목을 봐야 하는지 표에서 바로 보여야 한다."""
+    page = web.get(f"/candidate?id={urllib.parse.quote(검토cid)}")
+    본문 = page.split("id='추출결과'", 1)[1]
+    줄 = 본문.split("<tr class='needs'>")
+    assert len(줄) >= 3                       # 현재_신분 · 연구분야_키워드
+    assert "현재_신분" in 본문 and "p-검토필요" in 본문
+
+
+def test_marking_one_item_done_keeps_the_flag_until_all_are_done(web, 검토cid):
+    web.post("/candidate/review/done", id=검토cid, 사유="현재_신분을 판단하지 못함")
+    rec = web.module.store.get(검토cid)
+    assert rec.검토_필요 == "Y"               # 아직 하나 남았다
+    web.post("/candidate/review/done", id=검토cid,
+             사유="연구분야 키워드를 뽑지 못함 (확인 필요)")
+    assert web.module.store.get(검토cid).검토_필요 == ""
+
+
+def test_review_can_be_undone(web, 검토cid):
+    for 사유 in ("현재_신분을 판단하지 못함", "연구분야 키워드를 뽑지 못함 (확인 필요)"):
+        web.post("/candidate/review/done", id=검토cid, 사유=사유)
+    assert web.module.store.get(검토cid).검토_필요 == ""
+    web.post("/candidate/review/undo", id=검토cid, 사유="현재_신분을 판단하지 못함")
+    assert web.module.store.get(검토cid).검토_필요 == "Y"
+
+
+def test_upload_status_links_straight_to_the_review(web, 검토cid):
+    """검토 필요로 끝난 줄에서 바로 그 지원자로 갈 수 있어야 한다."""
+    web.module._set_status("샘플.pdf", "검토필요", "사유 어쩌고", cid=검토cid)
+    page = web.get("/upload")
+    assert f"/candidate?id={urllib.parse.quote(검토cid)}#검토" in page
+    assert "검토 2건" in page
+
+
+def test_reanalysis_clears_old_review_marks(web, 검토cid):
+    web.post("/candidate/review/done", id=검토cid, 사유="현재_신분을 판단하지 못함")
+    assert web.module.store.review_done(검토cid)
+    web.module.store.clear_reviews(검토cid)
+    assert not web.module.store.review_done(검토cid)
+
+
+# --- 상세 화면 저장은 하나로 ------------------------------------------------------
+def test_detail_has_one_save_button(web, cid):
+    """줄마다 저장 단추가 있으면 하나 고치고 다른 칸으로 가면 앞의 수정이 날아간다."""
+    page = web.get(f"/candidate?id={urllib.parse.quote(cid)}")
+    본문 = page.split("<main>", 1)[1]
+    assert 본문.count("action='/candidate/edit'") == 0
+    assert 본문.count("action='/candidate/custom'") == 0
+    assert 본문.count("id='saveform'") == 1
+
+
+def test_saving_several_fields_at_once(web, cid):
+    page = web.get(f"/candidate?id={urllib.parse.quote(cid)}")
+    폼 = page.split("id='saveform'", 1)[1].split("</form>", 1)[0]
+    번호 = {}
+    for 조각 in 폼.split("name='항목_")[1:]:
+        n = 조각.split("'", 1)[0]
+        이름 = 조각.split("value='", 1)[1].split("'", 1)[0]
+        번호[이름] = n
+    끝 = 페이지끝(page)
+    web.post("/candidate/save", id=cid, 끝=끝, **{
+        f"항목_{번호['한글_이름']}": "한글_이름",
+        f"이전_{번호['한글_이름']}": "",
+        f"값_{번호['한글_이름']}": "홍길동",
+        f"항목_{번호['이메일']}": "이메일",
+        f"이전_{번호['이메일']}": "",
+        f"값_{번호['이메일']}": "hong@x.com",
+    })
+    rec = web.module.store.get(cid)
+    assert rec.한글_이름 == "홍길동" and rec.이메일 == "hong@x.com"
+
+
+def 페이지끝(page: str) -> str:
+    return page.split("name='끝' value='", 1)[1].split("'", 1)[0]
+
+
+def test_a_bad_value_does_not_lose_the_good_ones(web, cid):
+    """한 칸이 형식에 걸려도 나머지는 저장돼야 한다."""
+    page = web.get(f"/candidate?id={urllib.parse.quote(cid)}")
+    폼 = page.split("id='saveform'", 1)[1].split("</form>", 1)[0]
+    번호 = {}
+    for 조각 in 폼.split("name='항목_")[1:]:
+        n = 조각.split("'", 1)[0]
+        번호[조각.split("value='", 1)[1].split("'", 1)[0]] = n
+    코드, 본문 = web.post("/candidate/save", id=cid, 끝=페이지끝(page), **{
+        f"항목_{번호['한글_이름']}": "한글_이름",
+        f"이전_{번호['한글_이름']}": "",
+        f"값_{번호['한글_이름']}": "김철수",
+        f"항목_{번호['생년월일']}": "생년월일",
+        f"이전_{번호['생년월일']}": "",
+        f"값_{번호['생년월일']}": "이건날짜가아님",
+    })
+    assert web.module.store.get(cid).한글_이름 == "김철수"
+    assert "생년월일" in 본문                    # 무엇이 틀렸는지 알려준다
+
+
+def test_the_reason_text_is_not_editable_in_the_detail(web, 검토cid):
+    """검토 카드가 관리하는 값이다. 글을 고치면 '확인함' 표시와 짝이 안 맞는다."""
+    page = web.get(f"/candidate?id={urllib.parse.quote(검토cid)}")
+    폼 = page.split("id='saveform'", 1)[1].split("</form>", 1)[0]
+    assert "value='검토_사유'" not in 폼
+
+
+def test_redirect_headers_survive_korean_fragments(web, 검토cid):
+    """헤더는 latin-1 로만 나간다. '#검토' 를 붙였다가 서버가 터진 적이 있다."""
+    코드, _ = web.post_raw("/candidate/review/done", id=검토cid,
+                          사유="현재_신분을 판단하지 못함")
+    assert 코드 in (200, 303)

@@ -67,6 +67,13 @@ CREATE TABLE IF NOT EXISTS column_config (
     숨김         INTEGER DEFAULT 0,
     순서         INTEGER DEFAULT 0    -- 0 이면 원래 순서
 );
+CREATE TABLE IF NOT EXISTS review_done (
+    지원자_ID    TEXT NOT NULL,
+    사유         TEXT NOT NULL,      -- 검토_사유 항목 글 그대로
+    본사람        TEXT DEFAULT '',
+    본일시        TEXT DEFAULT '',
+    PRIMARY KEY (지원자_ID, 사유)
+);
 CREATE TABLE IF NOT EXISTS custom_values (
     지원자_ID    TEXT NOT NULL,
     필드명       TEXT NOT NULL,
@@ -317,6 +324,7 @@ class CandidateStore:
         cur = self._conn.execute(
             "DELETE FROM candidates WHERE 지원자_ID=?", (지원자_ID,)
         )
+        self._conn.execute("DELETE FROM review_done WHERE 지원자_ID=?", (지원자_ID,))
         self._conn.commit()
         return cur.rowcount > 0
 
@@ -328,6 +336,9 @@ class CandidateStore:
         cur = self._conn.execute(
             f"DELETE FROM candidates WHERE 지원자_ID IN ({marks})", ids
         )
+        self._conn.execute(
+            f"DELETE FROM review_done WHERE 지원자_ID IN ({marks})", ids
+        )
         self._conn.commit()
         return cur.rowcount
 
@@ -335,6 +346,7 @@ class CandidateStore:
         rows = self._conn.execute("SELECT 지원자_ID FROM candidates").fetchall()
         self._unlink_files([r["지원자_ID"] for r in rows])
         cur = self._conn.execute("DELETE FROM candidates")
+        self._conn.execute("DELETE FROM review_done")
         self._conn.commit()
         return cur.rowcount
 
@@ -654,6 +666,40 @@ class CandidateStore:
         """열과 그 열에 들어 있던 값을 전부 지운다."""
         self._conn.execute("DELETE FROM custom_fields WHERE 이름=?", (이름,))
         self._conn.execute("DELETE FROM custom_values WHERE 필드명=?", (이름,))
+        self._conn.commit()
+
+    # -- 검토 항목 -----------------------------------------------------------
+    def review_done(self, 지원자_ID: str) -> set[str]:
+        """이 지원자에 대해 **이미 확인한** 검토 사유들."""
+        return {
+            r["사유"] for r in self._conn.execute(
+                "SELECT 사유 FROM review_done WHERE 지원자_ID=?", (지원자_ID,)
+            )
+        }
+
+    def review_done_map(self) -> dict[str, set[str]]:
+        out: dict[str, set[str]] = {}
+        for r in self._conn.execute("SELECT 지원자_ID, 사유 FROM review_done"):
+            out.setdefault(r["지원자_ID"], set()).add(r["사유"])
+        return out
+
+    def mark_reviewed(self, 지원자_ID: str, 사유: str, 본사람: str = "") -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO review_done (지원자_ID, 사유, 본사람, 본일시)"
+            " VALUES (?,?,?,?)",
+            (지원자_ID, 사유, 본사람, now_kst().strftime("%Y-%m-%d %H:%M:%S")),
+        )
+        self._conn.commit()
+
+    def unmark_reviewed(self, 지원자_ID: str, 사유: str) -> None:
+        self._conn.execute(
+            "DELETE FROM review_done WHERE 지원자_ID=? AND 사유=?", (지원자_ID, 사유)
+        )
+        self._conn.commit()
+
+    def clear_reviews(self, 지원자_ID: str) -> None:
+        """재분석하면 사유가 새로 나온다. 옛 확인 기록은 무효다."""
+        self._conn.execute("DELETE FROM review_done WHERE 지원자_ID=?", (지원자_ID,))
         self._conn.commit()
 
     def set_custom(self, 지원자_ID: str, 필드명: str, 값: str) -> str:

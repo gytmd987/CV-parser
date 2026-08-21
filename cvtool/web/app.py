@@ -29,6 +29,7 @@ from pathlib import Path
 from ..audit import AuditLog
 from ..auth import ROLES, AuthStore, User, can
 from ..config import settings
+from .. import review
 from ..dashboards import (
     AXIS_SOURCES,
     BLOCK_KINDS,
@@ -216,16 +217,22 @@ _status: dict[str, dict] = {}  # filename -> {state, message}
 # ---------------------------------------------------------------------------
 # 백그라운드 추출 워커
 # ---------------------------------------------------------------------------
-def _set_status(name: str, state: str, message: str = "") -> None:
+def _set_status(name: str, state: str, message: str = "", cid: str = "") -> None:
+    """처리 현황 한 줄. cid 를 실어 둬야 거기서 바로 상세로 갈 수 있다."""
     with _status_lock:
-        _status[name] = {"state": state, "message": message, "시각": now_kst().strftime("%H:%M:%S")}
+        옛 = _status.get(name) or {}
+        _status[name] = {
+            "state": state, "message": message,
+            "cid": cid or 옛.get("cid", ""),
+            "시각": now_kst().strftime("%H:%M:%S"),
+        }
 
 
 def _worker() -> None:
     while True:
         filename, 지원자_ID, 저장_파일명 = _jobs.get()
         try:
-            _set_status(filename, "처리중")
+            _set_status(filename, "처리중", cid=지원자_ID)
             path = store.files_dir / 저장_파일명
             # 보관된 원본에서 매번 새로 뽑는다. 그래야 PDF 파서를 개선하면
             # 재분석만으로 반영된다 (텍스트를 캐시하면 옛 추출에 갇힌다).
@@ -265,7 +272,8 @@ def _worker() -> None:
                     매칭메모 = f" / 과제: {최고['과제명']} {최고['점수']}점"
 
             state = "중복의심" if 후보 else ("검토필요" if rec.검토_필요 == "Y" else "완료")
-            _set_status(filename, state, (rec.검토_사유 or "") + 매칭메모)
+            _set_status(filename, state, (rec.검토_사유 or "") + 매칭메모,
+                        cid=지원자_ID)
         except Exception as exc:  # noqa: BLE001 - 워커가 죽으면 안 된다
             _set_status(filename, "실패", f"{type(exc).__name__}: {exc}")
             traceback.print_exc()
@@ -326,6 +334,9 @@ input[type=password],input[type=text],select{padding:7px 9px;border:1px solid va
 .p-겹침{background:#fef3c7;color:#92400e}
 .dup{background:#fff1f2}
 tr.grouphead td{background:#eef2ff;border-top:2px solid #c7d2fe}
+/* 검토가 필요한 줄. 색만으로 알리지 않고 배지도 같이 붙는다. */
+tr.needs th,tr.needs td{background:#fffbeb}
+tr.needs th{border-left:3px solid #f59e0b}
 td.edit{cursor:cell}
 td.edit:hover{outline:2px solid var(--accent);outline-offset:-2px}
 td.saved{background:#dcfce7 !important}
@@ -520,22 +531,56 @@ def _login_page(error: str = "") -> bytes:
 
 
 def _status_table() -> str:
+    """업로드 처리 현황.
+
+    검토 필요로 끝난 줄에서는 **바로 그 지원자 상세로 갈 수 있어야 한다.**
+    예전에는 여기서 '검토 필요' 라고만 알려주고, 사람은 인재 Pool 로 가서
+    이름을 찾아 들어가야 했다.
+    """
     with _status_lock:
         items = list(_status.items())
     if not items:
         return ""
-    rows = "".join(
-        f"<tr><td>{html.escape(n)}</td>"
-        f"<td><span class='pill p-{s['state']}'>{s['state']}</span></td>"
-        f"<td>{html.escape(s.get('message',''))}</td><td>{s['시각']}</td></tr>"
-        for n, s in items
-    )
+    끝낸것 = store.review_done_map()
+    rows = []
+    검토수 = 0
+    for n, s in items:
+        cid = s.get("cid") or ""
+        rec = store.get(cid) if cid else None
+        남은 = review.remaining(rec.검토_사유, 끝낸것.get(cid, set())) if rec else []
+        할일 = ""
+        if rec is not None and 남은:
+            검토수 += 1
+            보임 = " · ".join(review.short(x, 40) for x in 남은[:2])
+            더 = f" 외 {len(남은) - 2}건" if len(남은) > 2 else ""
+            할일 = (
+                f"<a class='btn' href='/candidate?id={urllib.parse.quote(cid)}#검토'>"
+                f"검토 {len(남은)}건 →</a>"
+                f"<div class='muted' style='white-space:normal;margin-top:3px'>"
+                f"{html.escape(보임)}{더}</div>"
+            )
+        elif rec is not None:
+            할일 = (f"<a class='btn sec' href='/candidate?id={urllib.parse.quote(cid)}'>"
+                  "상세</a>")
+        rows.append(
+            f"<tr><td>{html.escape(n)}</td>"
+            f"<td><span class='pill p-{s['state']}'>{s['state']}</span></td>"
+            f"<td style='white-space:normal'>{html.escape(s.get('message',''))}</td>"
+            f"<td>{s['시각']}</td>"
+            f"<td class='ctl'>{할일}</td></tr>"
+        )
     처리중 = any(s["state"] == "처리중" for _, s in items)
     refresh = "<meta http-equiv='refresh' content='5'>" if 처리중 else ""
+    안내 = (
+        f"<p class='warn'>검토가 필요한 CV 가 <b>{검토수}건</b> 있습니다. "
+        "오른쪽 <b>검토 N건 →</b> 을 누르면 그 지원자의 검토 항목으로 바로 "
+        "갑니다.</p>" if 검토수 else ""
+    )
     return (
-        f"{refresh}<div class='card'><h2>업로드 처리 현황</h2>"
-        f"<table><tr><th>파일</th><th>상태</th><th>메모</th><th>시각</th></tr>"
-        f"{rows}</table>"
+        f"{refresh}<div class='card'><h2>업로드 처리 현황</h2>{안내}"
+        "<div class='scroll'><table data-name='처리 현황'>"
+        "<tr><th>파일</th><th>상태</th><th>메모</th><th>시각</th><th>할 일</th></tr>"
+        + "".join(rows) + "</table></div>"
         + ("<p class='muted'>처리 중입니다. 5초마다 자동 새로고침됩니다.</p>" if 처리중 else "")
         + "<p><form method='post' action='/status/clear' style='display:inline'>"
         "<button type='submit' class='sec'>현황 지우기</button></form>"
@@ -1988,7 +2033,8 @@ def _upload_page(me: User) -> bytes:
     return _page("지원자 추가", 본문 + _status_table(), me=me)
 
 
-def _candidate_page(지원자_ID: str, me: User, error: str = "") -> bytes:
+def _candidate_page(지원자_ID: str, me: User, error: str = "",
+                    msg: str = "") -> bytes:
     rec = store.get(지원자_ID)
     if rec is None:
         return _page("없음", "<div class='card'>해당 지원자를 찾을 수 없습니다.</div>")
@@ -1996,7 +2042,13 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "") -> bytes:
     row = rec.to_row(registry)
     수정가능 = can(me, "지원자_수정")
 
-    def 입력칸(항목: str, 값: str) -> str:
+    # 검토가 필요한 항목이 어느 열에 대한 이야기인지 미리 알아 둔다.
+    끝낸검토 = store.review_done(지원자_ID)
+    검토항목 = review.items(rec.검토_사유, 끝낸검토)
+    검토열 = review.columns_needing_review(rec.검토_사유, 끝낸검토)
+
+    def 입력칸(항목: str, 값: str, 이름: str) -> str:
+        """한 칸. 이름은 값_{i} 처럼 번호를 달아 **한 폼에** 담는다."""
         if 항목 in REGISTRY_FIELDS:
             종류 = NAME_COLUMNS[항목]
             현재 = registry.display(종류, 값) if 값 else ""
@@ -2006,7 +2058,8 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "") -> bytes:
                 f"{html.escape(o) or '(빈칸)'}</option>"
                 for o in dict.fromkeys(보기)
             )
-            return f"<select name='새값'>{opts}</select>"
+            return (f"<select form='saveform' name='{이름}' onchange='markDirty(this)'"
+                    f" data-orig='{html.escape(현재)}'>{opts}</select>")
         spec = field_spec(항목)
         if spec.입력 == "select":
             opts = "".join(
@@ -2014,30 +2067,51 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "") -> bytes:
                 f"{html.escape(o) or '(빈칸)'}</option>"
                 for o in spec.선택지
             )
-            return f"<select name='새값'>{opts}</select>"
+            return (f"<select form='saveform' name='{이름}' onchange='markDirty(this)'"
+                    f" data-orig='{html.escape(값)}'>{opts}</select>")
         도움 = f" placeholder='{html.escape(spec.도움말)}'" if spec.도움말 else ""
-        return f"<input type='text' name='새값' value='{html.escape(값)}' style='width:260px'{도움}>"
+        return (f"<input type='text' form='saveform' name='{이름}'"
+                f" value='{html.escape(값)}' style='width:100%;max-width:420px'"
+                f" data-orig='{html.escape(값)}' oninput='markDirty(this)'{도움}>")
+
+    def 검토배지(c: str) -> str:
+        return (" <span class='pill p-검토필요'>검토</span>"
+                if c in 검토열 else "")
 
     이름표 = 라벨(list(table_columns(registry)))
     항목행 = []
+    숨은칸 = []
+    번호 = 0
     for c in table_columns(registry):
         값 = str(row.get(c, "") or "")
         보기 = html.escape(값) or "<span class='muted'>-</span>"
-        if not 수정가능 or c in READONLY_FIELDS or c.startswith("1저자_해외논문_"):
+        if c == "검토_사유" and 검토항목:
+            보기 = ("<a href='#검토'>위 검토 카드에서 항목별로 봅니다 →</a>"
+                  f"<br><span class='muted'>{html.escape(값)}</span>")
+        줄표시 = " class='needs'" if c in 검토열 else ""
+        # 검토_사유는 위 검토 카드가 관리한다. 여기서 글을 고치면 '확인함'
+        # 표시와 짝이 안 맞는다.
+        if (not 수정가능 or c in READONLY_FIELDS or c == "검토_사유"
+                or c.startswith("1저자_해외논문_")):
             항목행.append(
-                f"<tr><th style='width:170px'>{html.escape(이름표[c])}</th>"
+                f"<tr{줄표시}><th style='width:180px'>{html.escape(이름표[c])}"
+                f"{검토배지(c)}</th>"
                 f"<td style='white-space:normal;max-width:none'>{보기}</td></tr>"
             )
             continue
+        번호 += 1
         원본값 = str(getattr(rec, c, "") or "")
+        숨은칸.append(
+            f"<input type='hidden' form='saveform' name='항목_{번호}'"
+            f" value='{html.escape(c)}'>"
+            f"<input type='hidden' form='saveform' name='이전_{번호}'"
+            f" value='{html.escape(원본값)}'>"
+        )
         항목행.append(
-            f"<tr><th style='width:170px'>{html.escape(이름표[c])}</th>"
+            f"<tr{줄표시}><th style='width:180px'>{html.escape(이름표[c])}"
+            f"{검토배지(c)}</th>"
             f"<td style='white-space:normal;max-width:none'>"
-            f"<form method='post' action='/candidate/edit' style='display:flex;gap:6px'>"
-            f"<input type='hidden' name='id' value='{html.escape(지원자_ID)}'>"
-            f"<input type='hidden' name='항목' value='{html.escape(c)}'>"
-            f"<input type='hidden' name='이전값' value='{html.escape(원본값)}'>"
-            f"{입력칸(c, 원본값)}<button type='submit'>저장</button></form></td></tr>"
+            f"{입력칸(c, 원본값, f'값_{번호}')}</td></tr>"
         )
 
     사용자열 = store.fields()
@@ -2047,34 +2121,93 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "") -> bytes:
         이름, 값 = f["이름"], 사용자값.get(f["이름"], "")
         if not 수정가능:
             사용자행.append(
-                f"<tr><th style='width:170px'>{html.escape(이름)}</th>"
+                f"<tr><th style='width:180px'>{html.escape(이름)}</th>"
                 f"<td>{html.escape(값) or '<span class=muted>-</span>'}</td></tr>"
             )
             continue
+        번호 += 1
         spec = custom_field_spec(f)
         if spec.입력 == "select":
             opts = "".join(
                 f"<option value='{html.escape(o)}'{' selected' if o == 값 else ''}>"
                 f"{html.escape(o) or '(빈칸)'}</option>" for o in spec.선택지
             )
-            칸 = f"<select name='새값'>{opts}</select>"
+            칸 = (f"<select form='saveform' name='값_{번호}' onchange='markDirty(this)'"
+                 f" data-orig='{html.escape(값)}'>{opts}</select>")
         else:
             칸 = (
-                f"<input type='text' name='새값' value='{html.escape(값)}'"
-                f" style='width:260px' placeholder='{html.escape(spec.도움말)}'>"
+                f"<input type='text' form='saveform' name='값_{번호}'"
+                f" value='{html.escape(값)}' style='width:100%;max-width:420px'"
+                f" data-orig='{html.escape(값)}' oninput='markDirty(this)'"
+                f" placeholder='{html.escape(spec.도움말)}'>"
             )
-        사용자행.append(
-            f"<tr><th style='width:170px'>{html.escape(이름)}"
-            f"<br><span class='muted'>{html.escape(f['유형'])}</span></th>"
-            f"<td><form method='post' action='/candidate/custom' style='display:flex;gap:6px'>"
-            f"<input type='hidden' name='id' value='{html.escape(지원자_ID)}'>"
-            f"<input type='hidden' name='항목' value='{html.escape(이름)}'>"
-            f"{칸}<button type='submit'>저장</button></form></td></tr>"
+        숨은칸.append(
+            f"<input type='hidden' form='saveform' name='항목_{번호}'"
+            f" value='{html.escape(이름)}'>"
+            f"<input type='hidden' form='saveform' name='이전_{번호}'"
+            f" value='{html.escape(값)}'>"
+            f"<input type='hidden' form='saveform' name='구분_{번호}' value='추가'>"
         )
+        사용자행.append(
+            f"<tr><th style='width:180px'>{html.escape(이름)}"
+            f"<br><span class='muted'>{html.escape(f['유형'])}</span></th>"
+            f"<td>{칸}</td></tr>"
+        )
+
     사용자카드 = (
         f"<div class='card'><h2>추가 항목</h2><table>{''.join(사용자행)}</table></div>"
         if 사용자열 else ""
     )
+
+    # 검토 카드 — 항목마다 '확인함' 을 눌러 하나씩 지운다.
+    남은검토 = [x for x in 검토항목 if not x["완료"]]
+    본검토 = [x for x in 검토항목 if x["완료"]]
+
+    def 검토줄(x: dict, 완료: bool) -> str:
+        가리킴 = " · ".join(이름표.get(c, c) for c in x["열"])
+        단추 = ""
+        if 수정가능:
+            길 = "/candidate/review/undo" if 완료 else "/candidate/review/done"
+            단추 = (
+                f"<form method='post' action='{길}' style='display:inline'>"
+                f"<input type='hidden' name='id' value='{html.escape(지원자_ID)}'>"
+                f"<input type='hidden' name='사유' value='{html.escape(x['글'])}'>"
+                + ("<button class='sec'>되돌리기</button>" if 완료
+                   else "<button>확인함</button>")
+                + "</form>"
+            )
+        return (
+            f"<tr><td style='white-space:normal'>"
+            + ("<span class='muted'>" if 완료 else "<b>")
+            + html.escape(x["글"])
+            + ("</span>" if 완료 else "</b>")
+            + (f"<br><span class='muted'>관련 항목: {html.escape(가리킴)}</span>"
+               if 가리킴 else "")
+            + f"</td><td class='ctl'>{단추}</td></tr>"
+        )
+
+    검토카드 = ""
+    if 검토항목:
+        줄 = ("".join(검토줄(x, False) for x in 남은검토)
+             + "".join(검토줄(x, True) for x in 본검토))
+        머리 = (f"검토 필요 <span class='pill p-검토필요'>{len(남은검토)}건</span>"
+              if 남은검토 else "검토 완료 <span class='pill p-완료'>전부 확인함</span>")
+        안내 = (
+            "<p class='muted'>LLM 이 <b>확신하지 못한 것</b>들입니다. 아래 표에서 "
+            "해당 항목이 <span class='pill p-검토필요'>검토</span> 로 표시돼 있습니다. "
+            "값을 고치거나 그대로 둔 뒤 <b>확인함</b> 을 누르세요. "
+            "전부 확인하면 이 지원자는 검토 필요에서 빠집니다.</p>"
+            if 남은검토 else
+            "<p class='muted'>모두 확인했습니다. 이 지원자는 검토 필요가 아닙니다.</p>"
+        )
+        검토카드 = (
+            f"<div class='card' id='검토'"
+            + (" style='border-color:#fcd34d;background:#fffbeb'" if 남은검토 else "")
+            + f"><h2>{머리}</h2>{안내}"
+            "<table><tr><th>사유</th><th style='width:110px'></th></tr>"
+            + 줄 + "</table></div>"
+        )
+
 
     # 논문·특허 목록 — 표의 '수' 열이 무엇을 세었는지 눈으로 볼 수 있어야 한다.
     논문보기 = rec.papers_view(registry)
@@ -2122,13 +2255,32 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "") -> bytes:
         )
 
     년도 = store.year_of(지원자_ID)
-    년도폼 = (
-        f"<form method='post' action='/candidate/year' style='display:flex;gap:6px'>"
+    if 수정가능:
+        번호 += 1
+        숨은칸.append(
+            f"<input type='hidden' form='saveform' name='항목_{번호}' value='등록년도'>"
+            f"<input type='hidden' form='saveform' name='이전_{번호}'"
+            f" value='{html.escape(년도)}'>"
+            f"<input type='hidden' form='saveform' name='구분_{번호}' value='년도'>"
+        )
+        년도폼 = (
+            f"<input type='text' form='saveform' name='값_{번호}'"
+            f" value='{html.escape(년도)}' style='width:90px' placeholder='YYYY'"
+            f" data-orig='{html.escape(년도)}' oninput='markDirty(this)'>"
+            "<span class='muted'> 아래 <b>고친 내용 저장</b> 으로 함께 저장됩니다.</span>"
+        )
+    else:
+        년도폼 = html.escape(년도)
+
+    저장바 = (
+        "<form method='post' action='/candidate/save' id='saveform' class='mergebar'>"
         f"<input type='hidden' name='id' value='{html.escape(지원자_ID)}'>"
-        f"<input type='text' name='년도' value='{html.escape(년도)}' style='width:90px'"
-        f" placeholder='YYYY'><button type='submit'>저장</button></form>"
-        if 수정가능
-        else html.escape(년도)
+        f"<input type='hidden' name='끝' value='{번호}'>"
+        + "".join(숨은칸)
+        + "<button type='submit'>고친 내용 저장</button>"
+        "<span class='muted'>여러 칸을 고치고 <b>한 번만</b> 누르세요. "
+        "고친 칸은 노랗게 표시됩니다.</span></form>"
+        if 수정가능 else ""
     )
 
     진행 = recruit.get(지원자_ID)
@@ -2301,17 +2453,20 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "") -> bytes:
         "지원자를 삭제하면 함께 지워집니다.</p></div>"
     )
 
+    알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
     return _page(
         f"지원자 {rec.한글_이름 or rec.지원자_ID}",
-        f"""{오류}
+        f"""{알림}{오류}
         <div class='card'>
           <h2>{html.escape(rec.한글_이름 or '(이름 미상)')}
               <span class='muted'>{html.escape(rec.지원자_ID)}</span></h2>
           <p>{원본버튼}{재분석}{삭제}<a class='btn sec' href='/'>목록으로</a></p>
           {'<p class=muted>수정 권한이 없어 읽기 전용입니다.</p>' if not 수정가능 else ''}
         </div>
+        {검토카드}
         <div class='card'><h2>관리 정보</h2><table>{관리}</table></div>
-        <div class='card'><h2>추출 결과 {'(칸을 고치고 저장을 누르세요)' if 수정가능 else ''}</h2>
+        <div class='card' id='추출결과'><h2>추출 결과</h2>
+          {저장바}
           <table>{''.join(항목행)}</table></div>
         {사용자카드}
         {실적카드}
@@ -4294,8 +4449,12 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def _redirect(self, location: str, extra: dict[str, str] | None = None) -> None:
+        # 헤더는 latin-1 로만 나간다. 한글이 그대로 들어가면 서버가 터진다
+        # (`#검토` 같은 조각을 붙였을 때 실제로 그랬다). % 를 안전 문자로 둬서
+        # 이미 인코딩된 부분은 두 번 인코딩되지 않게 한다.
         self.send_response(303)
-        self.send_header("Location", location)
+        self.send_header("Location",
+                         urllib.parse.quote(location, safe="/?&=#%+:,"))
         for k, v in (extra or {}).items():
             self.send_header(k, v)
         self.end_headers()
@@ -4346,7 +4505,8 @@ class Handler(BaseHTTPRequestHandler):
             if not _볼수있나(me, (params.get("id") or [""])[0]):
                 return self._deny("배정된 과제의 지원자만 볼 수 있습니다.")
             cid = (params.get("id") or [""])[0]
-            return self._send(_candidate_page(cid, me, (params.get("err") or [""])[0]))
+            return self._send(_candidate_page(cid, me, (params.get("err") or [""])[0],
+                                              (params.get("msg") or [""])[0]))
         if path == "/users":
             if not can(me, "계정_현업추가"):
                 return self._deny()
@@ -4628,7 +4788,7 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     cid = f"CV-{uuid.uuid4().hex[:8].upper()}"
                     저장명 = store.store_file(cid, safe_name, f.content)
-                    _set_status(safe_name, "대기중")
+                    _set_status(safe_name, "대기중", cid=cid)
                     _jobs.put((safe_name, cid, 저장명))
                 except Exception as exc:  # noqa: BLE001
                     _set_status(safe_name, "실패", f"{type(exc).__name__}: {exc}")
@@ -5559,6 +5719,116 @@ class Handler(BaseHTTPRequestHandler):
             표시 = str(rec.to_row(registry).get(항목, "") or "")
             return self._json({"ok": True, "raw": 저장값, "표시": 표시})
 
+        if path == "/candidate/save":
+            # 상세 화면 한 폼 전체. 줄마다 저장 단추가 있으면 하나 고치고
+            # 다른 칸으로 넘어갈 때 앞의 수정이 조용히 날아간다.
+            if not can(me, "지원자_수정"):
+                return self._deny()
+            data = urllib.parse.parse_qs(
+                self._read_body().decode("utf-8", "replace"), keep_blank_values=True
+            )
+            cid = (data.get("id") or [""])[0]
+            rec = store.get(cid)
+            뒤로 = f"/candidate?id={urllib.parse.quote(cid)}"
+            if rec is None:
+                return self._redirect("/")
+            try:
+                끝 = int((data.get("끝") or ["0"])[0])
+            except ValueError:
+                끝 = 0
+
+            바뀐것: list[str] = []
+            문제: list[str] = []
+            레코드바뀜 = False
+            for i in range(1, 끝 + 1):
+                항목 = (data.get(f"항목_{i}") or [""])[0]
+                if not 항목:
+                    continue
+                새값 = (data.get(f"값_{i}") or [""])[0]
+                이전값 = (data.get(f"이전_{i}") or [""])[0]
+                if 새값 == 이전값:
+                    continue
+                구분 = (data.get(f"구분_{i}") or [""])[0]
+                if 구분 == "년도":
+                    옛 = store.year_of(cid)
+                    try:
+                        store.set_year(cid, 새값)
+                    except ValueError as exc:
+                        문제.append(str(exc))
+                        continue
+                    if 옛 != 새값.strip():
+                        바뀐것.append("등록년도")
+                        audit.record(me.아이디, "지원자", cid, 항목="등록년도",
+                                     이전값=옛, 새값=새값.strip())
+                    continue
+                if 구분 == "추가":
+                    field = store.field(항목)
+                    if field is None:
+                        continue
+                    try:
+                        저장값 = validate_custom(field, 새값)
+                    except ValidationError as exc:
+                        문제.append(str(exc))
+                        continue
+                    옛값 = store.set_custom(cid, 항목, 저장값)
+                    if 옛값 != 저장값:
+                        바뀐것.append(항목)
+                        audit.record(me.아이디, "지원자", cid, 항목=항목,
+                                     이전값=옛값, 새값=저장값)
+                    continue
+                try:
+                    옛값, 저장값 = apply_edit(rec, 항목, 새값, 기대_이전값=이전값,
+                                            registry=registry)
+                except (ValidationError, ConflictError) as exc:
+                    문제.append(str(exc))
+                    continue
+                if 옛값 != 저장값:
+                    레코드바뀜 = True
+                    바뀐것.append(항목)
+                    audit.record(me.아이디, "지원자", cid, 항목=항목,
+                                 이전값=옛값, 새값=저장값)
+            if 레코드바뀜:
+                store.save(rec)
+
+            if 문제:
+                return self._redirect(
+                    f"{뒤로}&err=" + urllib.parse.quote(" / ".join(문제[:3]))
+                    + "#추출결과")
+            if not 바뀐것:
+                return self._redirect(f"{뒤로}&msg="
+                                      + urllib.parse.quote("바뀐 내용이 없습니다.")
+                                      + "#추출결과")
+            보임 = ", ".join(바뀐것[:6]) + (" 외" if len(바뀐것) > 6 else "")
+            return self._redirect(
+                f"{뒤로}&msg=" + urllib.parse.quote(f"{len(바뀐것)}개 저장했습니다 — {보임}")
+                + "#추출결과")
+
+        if path in ("/candidate/review/done", "/candidate/review/undo"):
+            if not can(me, "지원자_수정"):
+                return self._deny()
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            cid = (data.get("id") or [""])[0]
+            사유 = (data.get("사유") or [""])[0]
+            rec = store.get(cid)
+            뒤로 = f"/candidate?id={urllib.parse.quote(cid)}#검토"
+            if rec is None or not 사유:
+                return self._redirect(뒤로)
+            끝냄 = path.endswith("/done")
+            if 끝냄:
+                store.mark_reviewed(cid, 사유, 본사람=me.아이디)
+            else:
+                store.unmark_reviewed(cid, 사유)
+            # 남은 게 없으면 검토_필요를 내린다. 화면·표·엑셀이 같이 따라온다.
+            남은 = review.flagged(rec.검토_사유, store.review_done(cid))
+            if rec.검토_필요 != 남은:
+                rec.검토_필요 = 남은
+                store.save(rec)
+            audit.record(me.아이디, "지원자", cid, 항목="검토",
+                         이전값="" if 끝냄 else "확인함",
+                         새값="확인함" if 끝냄 else "",
+                         비고=review.short(사유, 80))
+            return self._redirect(뒤로)
+
         if path == "/candidate/edit":
             if not can(me, "지원자_수정"):
                 return self._deny()
@@ -5756,9 +6026,11 @@ class Handler(BaseHTTPRequestHandler):
             if not meta or not meta.get("저장_파일명"):
                 return self._redirect(f"/candidate?id={urllib.parse.quote(cid)}")
             name = meta.get("원본_파일명") or cid
-            _set_status(name, "대기중", "재분석")
+            # 재분석하면 사유가 새로 나온다. 옛 '확인함' 기록은 무효다.
+            store.clear_reviews(cid)
+            _set_status(name, "대기중", "재분석", cid=cid)
             _jobs.put((name, cid, meta["저장_파일명"]))
-            return self._redirect("/")
+            return self._redirect("/upload")
 
         if path == "/status/clear":
             if not can(me, "지원자_등록"):
