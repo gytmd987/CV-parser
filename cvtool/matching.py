@@ -91,11 +91,24 @@ class Match:
         return "접점 없음"
 
 
+#: 매칭 판단에 넣지 않는 학력 단계.
+#:
+#: 학사 전공은 **10년쯤 전의 이야기**다. 학사가 광학이고 석·박사가 다른
+#: 분야인 사람에게 광학 과제를 1순위로 붙여 준 일이 있었다. 모델은 프로필에
+#: 있는 단어를 과제 키워드와 맞추려 하므로, 판단에 쓰면 안 되는 정보는
+#: 애초에 **넣지 않는 것**이 유일하게 확실한 방법이다.
+#: (학사 정보 자체는 표·엑셀에 그대로 남는다. 매칭에만 안 쓴다.)
+MATCH_SKIP_DEGREES = ("학사",)
+MATCH_DEGREES = ("박사", "석사")
+
+
 def candidate_profile(rec, registry=None) -> str:
     """매칭 판단에 쓸 지원자 요약.
 
     이름·연락처는 **넣지 않는다.** 판단에 필요 없고, 넣으면 사람 이름을 보고
     엉뚱한 판단을 할 여지만 생긴다.
+
+    학사 학력도 **넣지 않는다** (MATCH_SKIP_DEGREES 참고).
     """
     row = rec.to_row(registry) if registry is not None else rec.to_row()
     줄 = []
@@ -108,28 +121,33 @@ def candidate_profile(rec, registry=None) -> str:
     넣기("현재 신분", row.get("현재_신분"))
     넣기("현재 소속", row.get("현재_소속"))
     넣기("현재 소속 상세", row.get("현재_소속_상세"))
-    for 단계 in ("박사", "석사", "학사"):
+    for 단계 in MATCH_DEGREES:
         학교, 전공 = row.get(f"{단계}_학교"), row.get(f"{단계}_전공")
         if 학교 or 전공:
             상태 = row.get(f"{단계}_학위상태", "")
             넣기(f"{단계}", " ".join(x for x in (학교, 전공, 상태) if x))
     넣기("연구분야 키워드", row.get("연구분야_키워드"))
     넣기("1저자 해외논문", row.get("1저자_해외논문_제출처"))
-    넣기("경력", row.get("경력_요약"))
+
+    # 최근 경력을 앞세운다. 요약은 전부 이어 붙인 것이라 뒤에 둔다.
+    최근 = " ".join(x for x in (
+        str(row.get("경력_회사") or ""), str(row.get("직책") or ""),
+    ) if x).strip()
+    기간 = " ".join(x for x in (
+        str(row.get("경력_시작") or ""), str(row.get("경력_종료") or ""),
+    ) if x).strip()
+    if 최근:
+        넣기("최근 경력", f"{최근} ({기간})" if 기간 else 최근)
+    넣기("경력 전체", row.get("경력_요약"))
 
     논문 = getattr(rec, "논문", []) or []
-    제목들 = [p.제목 for p in 논문 if getattr(p, "제목", "")][:12]
+    제출처 = [p.제출처 for p in 논문 if getattr(p, "제출처", "") and p.주저자][:15]
+    if 제출처:
+        줄.append("주저자 논문 제출처: " + " / ".join(제출처))
+    특허 = getattr(rec, "특허", []) or []
+    제목들 = [pt.제목 for pt in 특허 if getattr(pt, "제목", "")][:8]
     if 제목들:
-        줄.append("논문 제목: " + " / ".join(제목들))
-    경력 = getattr(rec, "경력", []) or []
-    상세 = [
-        " ".join(x for x in (getattr(c, "회사", ""), getattr(c, "직무", ""),
-                             getattr(c, "설명", "")) if x)
-        for c in 경력
-    ]
-    상세 = [x for x in 상세 if x.strip()][:8]
-    if 상세:
-        줄.append("경력 상세: " + " / ".join(상세))
+        줄.append("특허: " + " / ".join(제목들))
     return "\n".join(줄)
 
 
@@ -172,6 +190,8 @@ def _prompt(profile: str, 후보: list[Project]) -> list[dict]:
         "- **지원자 정보에 없는 내용을 지어내지 마라.** 근거는 지원자 정보에 적힌 "
         "표현을 그대로 인용한다.\n"
         "- 맞는 구석이 없으면 낮은 점수를 주고 그 이유를 쓴다. 억지로 맞추지 마라.\n"
+        "- **박사 과정과 최근 연구·경력을 중심으로** 판단해라. 오래된 이력에서 "
+        "단어 하나가 겹친다고 점수를 올리지 마라.\n"
         "- 사유는 한국어 두세 문장. **무엇이 겹치고 무엇이 부족한지 함께** 쓰고, "
         "왜 그 점수 구간인지 밝힌다.\n"
         "- 준 과제키만 쓴다. 목록에 없는 과제를 만들지 마라.\n"

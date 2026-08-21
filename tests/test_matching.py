@@ -531,3 +531,66 @@ def test_the_key_is_computed_the_same_way_everywhere(tmp_path):
     키들 = {item_key(k, v) for k, v in 항목}
     assert 키들 == {"P-1", "나"}
     assert len(curate(항목, 키들, None)) == 2
+
+
+# --- 학사 정보는 매칭 판단에 안 넣는다 -------------------------------------------
+def test_bachelor_details_never_reach_the_model():
+    """학사 광학 + 박사 재료공학인 사람에게 광학 과제가 1순위로 붙던 문제.
+
+    학사 전공은 10년쯤 전 이야기라 지금 무엇을 할 수 있는지와 관계가 적다.
+    모델은 프로필에 있는 단어를 과제 키워드와 맞추려 하므로, 쓰면 안 되는
+    정보는 **넣지 않는 것**이 유일하게 확실한 방법이다.
+    """
+    from cvtool.schemas import CVRecord
+
+    rec = CVRecord(
+        지원자_ID="X",
+        박사_학교="한국대학교", 박사_전공="재료공학",
+        석사_학교="한국대학교", 석사_전공="재료공학",
+        학사_학교="서울대학교", 학사_전공="광학",
+    )
+    프로필 = candidate_profile(rec)
+    assert "광학" not in 프로필
+    assert "서울대학교" not in 프로필
+    assert "재료공학" in 프로필          # 박사·석사는 그대로 들어간다
+
+
+def test_bachelor_data_is_still_kept_in_the_record():
+    """매칭에만 안 쓴다. 표·엑셀에는 그대로 있어야 한다."""
+    from cvtool.schemas import CVRecord
+
+    rec = CVRecord(지원자_ID="X", 학사_학교="서울대학교", 학사_전공="광학")
+    assert rec.to_row()["학사_전공"] == "광학"
+
+
+def test_recent_career_is_put_before_the_full_summary():
+    from cvtool.schemas import CVRecord
+
+    rec = CVRecord(
+        지원자_ID="X",
+        경력_회사="한국대학교", 직책="박사후연구원",
+        경력_시작="202605", 경력_종료="재직중",
+        경력_요약="옛회사/사원(201001-201212) | 한국대학교/박사후연구원(202605-재직중)",
+    )
+    프로필 = candidate_profile(rec)
+    assert 프로필.index("최근 경력") < 프로필.index("경력 전체")
+
+
+def test_first_author_venues_are_given_to_the_model():
+    """제출처 이름이 분야 신호다. 공저자 것은 넣지 않는다."""
+    from cvtool.schemas import CVRecord, Paper
+
+    rec = CVRecord(지원자_ID="X", 논문=[
+        Paper(제출처="Acta Materialia", 저자구분="주저자"),
+        Paper(제출처="Optics Express", 저자구분="공저자"),
+    ])
+    프로필 = candidate_profile(rec)
+    assert "Acta Materialia" in 프로필
+    assert "Optics Express" not in 프로필
+
+
+def test_prompt_tells_the_model_to_weigh_recent_work():
+    from cvtool.matching import _prompt
+
+    글 = "\n".join(m["content"] for m in _prompt("프로필", [Project(키="P", 이름="과제")]))
+    assert "최근 연구" in 글 or "최근 연구·경력" in 글
