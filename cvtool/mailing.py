@@ -32,6 +32,30 @@ ATTACHMENT_SUFFIXES = {
 #: 첨부 한 개 최대 크기(바이트). 메일 서버가 대개 여기서 막힌다.
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 
+#: 본문 그림으로 받을 형식과 최대 크기
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif"}
+MAX_IMAGE_BYTES = 2 * 1024 * 1024
+
+#: 본문 그림을 **메일에 어떻게 실을지.**
+#:
+#: 그림을 본문에 base64 로 박아 보내면, 받는 쪽 메일 프로그램이나 중간의 메일
+#: API 가 그걸 어딘가에 올려두고 주소로 바꿔치는 일이 있다. 그 주소가 없어지면
+#: **나중에 열었을 때 그림이 깨진다.** 우리가 어쩌지 못하는 영역이라, 파일을
+#: 같이 보내 두는 선택지를 준다. 첨부는 메일 안에 남으므로 사라지지 않는다.
+IMAGE_MODES = ("본문", "본문+첨부", "첨부만")
+DEFAULT_IMAGE_MODE = "본문+첨부"
+
+#: 본문 안 그림 참조. 우리 DB 에 있는 파일을 가리킨다.
+BODY_IMAGE_RE = re.compile(r"/mail/image\?id=(\d+)")
+#: 편집기가 예전에 남긴, 본문에 박힌 그림
+_DATA_IMG_RE = re.compile(
+    r"""<img\b[^>]*?\bsrc\s*=\s*(['"])data:image/(png|jpe?g|gif);base64,"""
+    r"""([A-Za-z0-9+/=\s]+?)\1[^>]*>""",
+    re.IGNORECASE,
+)
+#: 그림 태그 하나 (첨부만 모드에서 통째로 걷어낸다)
+_IMG_TAG_RE = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
+
 #: 이미 HTML 로 쓰인 본문인지 가늠하는 흔적
 _LOOKS_HTML_RE = re.compile(
     r"</?(p|br|div|span|font|b|i|u|strong|em|table|tr|td|ul|ol|li|img|a)\b",
@@ -132,6 +156,16 @@ CREATE TABLE IF NOT EXISTS sent (
     보낸일시      TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS sent_cand ON sent (지원자_ID);
+CREATE TABLE IF NOT EXISTS body_images (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    template_id INTEGER NOT NULL,
+    파일명        TEXT NOT NULL,
+    저장명        TEXT NOT NULL,
+    크기         INTEGER DEFAULT 0,
+    올린이        TEXT DEFAULT '',
+    올린일시      TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS bodyimg_tpl ON body_images (template_id);
 """
 
 #: 다시 보내도 되는 상태 (실패했으면 한 번 더 시도할 수 있어야 한다)
@@ -150,6 +184,11 @@ class Template:
     만든이: str
     만든일시: str
     수정일시: str
+    그림방식: str = DEFAULT_IMAGE_MODE
+
+    @property
+    def 그림보내기(self) -> str:
+        return self.그림방식 if self.그림방식 in IMAGE_MODES else DEFAULT_IMAGE_MODE
 
     @property
     def html(self) -> bool:
@@ -196,13 +235,15 @@ class MailStore:
         self._conn.executescript(_SCHEMA)
         self._add_missing_columns()
         self._conn.commit()
+        self.import_inline_images()
         for suffix in ("", "-wal", "-shm"):
             secure_file(Path(str(self.path) + suffix))
 
     def _add_missing_columns(self) -> None:
         """예전 DB 에 없던 열을 붙인다."""
         for 표, 열들 in (
-            ("templates", (("참조", "''"), ("본문형식", "'HTML'"))),
+            ("templates", (("참조", "''"), ("본문형식", "'HTML'"),
+                           ("그림방식", f"'{DEFAULT_IMAGE_MODE}'"))),
             ("sent", (("참조", "''"), ("첨부", "''"))),
         ):
             있는열 = {r["name"] for r in self._conn.execute(f"PRAGMA table_info({표})")}
@@ -259,7 +300,8 @@ class MailStore:
     def update_template(self, tid: int, *, 이름: str | None = None,
                         제목: str | None = None, 본문: str | None = None,
                         탈락메일: bool | None = None, 참조: str | None = None,
-                        본문형식: str | None = None) -> Template | None:
+                        본문형식: str | None = None,
+                        그림방식: str | None = None) -> Template | None:
         옛 = self.template(tid)
         if 옛 is None:
             return None
@@ -267,9 +309,12 @@ class MailStore:
         겹침 = self.template_by_name(새이름)
         if 겹침 and 겹침.id != tid:
             raise ValueError(f"이미 있는 템플릿 이름입니다: {새이름}")
+        새그림방식 = 옛.그림보내기 if 그림방식 is None else 그림방식
+        if 새그림방식 not in IMAGE_MODES:
+            raise ValueError(f"그림 방식은 {'/'.join(IMAGE_MODES)} 중 하나여야 합니다")
         self._conn.execute(
             "UPDATE templates SET 이름=?, 제목=?, 본문=?, 탈락메일=?, 참조=?,"
-            " 본문형식=?, 수정일시=? WHERE id=?",
+            " 본문형식=?, 그림방식=?, 수정일시=? WHERE id=?",
             (
                 새이름,
                 옛.제목 if 제목 is None else 제목,
@@ -277,6 +322,7 @@ class MailStore:
                 (1 if 옛.탈락메일 else 0) if 탈락메일 is None else (1 if 탈락메일 else 0),
                 옛.참조 if 참조 is None else 참조,
                 (옛.본문형식 if 본문형식 is None else 본문형식).upper(),
+                새그림방식,
                 now_kst().strftime("%Y-%m-%d %H:%M:%S"),
                 tid,
             ),
@@ -407,6 +453,179 @@ class MailStore:
         )
         self._conn.commit()
         return att_id
+
+    # -- 본문 그림 -----------------------------------------------------------
+    def add_body_image(self, template_id: int, 파일명: str, content: bytes,
+                       올린이: str = "") -> int:
+        """본문에 넣을 그림을 **파일로** 보관하고 id 를 돌려준다.
+
+        예전에는 편집기가 base64 를 본문에 그대로 박았다. 그러면 원본이
+        본문 글자 안에만 있어서, 본문이 한 번 상해도 되돌릴 방법이 없다.
+        파일로 두면 원본은 그대로 남고 본문에는 짧은 참조만 들어간다.
+        """
+        안전 = safe_filename(파일명) or "image.png"
+        suffix = Path(안전).suffix.lower()
+        if suffix not in IMAGE_SUFFIXES:
+            raise ValueError(
+                f"본문 그림은 {', '.join(sorted(IMAGE_SUFFIXES))} 만 됩니다: "
+                f"{suffix or '(확장자 없음)'}"
+            )
+        if len(content) > MAX_IMAGE_BYTES:
+            raise ValueError(
+                f"그림이 너무 큽니다 ({len(content) // 1024}KB). "
+                f"{MAX_IMAGE_BYTES // (1024 * 1024)}MB 까지입니다. "
+                "큰 파일은 첨부로 붙이세요."
+            )
+        cur = self._conn.execute(
+            "INSERT INTO body_images (template_id,파일명,저장명,크기,올린이,올린일시)"
+            " VALUES (?,?,?,?,?,?)",
+            (template_id, 안전, "", len(content), 올린이,
+             now_kst().strftime("%Y-%m-%d %H:%M:%S")),
+        )
+        img_id = cur.lastrowid
+        저장명 = f"MI{template_id}-{img_id}{suffix}"
+        dest = self.files_dir / 저장명
+        dest.write_bytes(content)
+        secure_file(dest)
+        self._conn.execute(
+            "UPDATE body_images SET 저장명=? WHERE id=?", (저장명, img_id)
+        )
+        self._conn.commit()
+        return img_id
+
+    def body_image(self, img_id: int) -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM body_images WHERE id=?", (img_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def body_images(self, template_id: int) -> list[dict]:
+        return [dict(r) for r in self._conn.execute(
+            "SELECT * FROM body_images WHERE template_id=? ORDER BY id",
+            (template_id,),
+        )]
+
+    def body_image_bytes(self, img_id: int) -> bytes | None:
+        img = self.body_image(img_id)
+        if not img:
+            return None
+        path = self.files_dir / img["저장명"]
+        return path.read_bytes() if path.is_file() else None
+
+    def used_body_images(self, 본문: str) -> list[dict]:
+        """본문이 실제로 쓰고 있는 그림 (쓴 순서, 중복 제거)."""
+        out, 봤다 = [], set()
+        for m in BODY_IMAGE_RE.finditer(본문 or ""):
+            img_id = int(m.group(1))
+            if img_id in 봤다:
+                continue
+            봤다.add(img_id)
+            img = self.body_image(img_id)
+            if img:
+                out.append(img)
+        return out
+
+    def import_inline_images(self) -> int:
+        """본문에 박혀 있던 base64 그림을 파일로 옮긴다 (한 번만).
+
+        옛 템플릿을 새 방식으로 끌어올린다. 본문에는 짧은 참조가 남고 원본
+        바이트는 파일로 보관된다. 실패하면 본문을 건드리지 않는다.
+        """
+        import base64
+        import binascii
+
+        옮긴것 = 0
+        for row in self._conn.execute("SELECT id, 본문 FROM templates").fetchall():
+            본문 = row["본문"] or ""
+            if not _DATA_IMG_RE.search(본문):
+                continue
+
+            def 바꾸기(m: re.Match) -> str:
+                nonlocal 옮긴것
+                확장자 = {"png": ".png", "jpg": ".jpg", "jpeg": ".jpg",
+                       "gif": ".gif"}[m.group(2).lower()]
+                try:
+                    내용 = base64.b64decode("".join(m.group(3).split()))
+                except (binascii.Error, ValueError):
+                    return m.group(0)          # 못 읽으면 그대로 둔다
+                try:
+                    img_id = self.add_body_image(
+                        row["id"], f"본문그림{확장자}", 내용, 올린이="(옛 본문에서 옮김)"
+                    )
+                except ValueError:
+                    return m.group(0)
+                옮긴것 += 1
+                return (f"<img src='/mail/image?id={img_id}' "
+                        "style='max-width:100%'>")
+
+            새본문 = _DATA_IMG_RE.sub(바꾸기, 본문)
+            if 새본문 != 본문:
+                self._conn.execute(
+                    "UPDATE templates SET 본문=? WHERE id=?", (새본문, row["id"])
+                )
+        if 옮긴것:
+            self._conn.commit()
+        return 옮긴것
+
+    def prepare_body(self, 본문: str, 방식: str) -> tuple[str, list[tuple[str, bytes]]]:
+        """보내기 직전에 본문 그림을 실제로 실을 모양으로 바꾼다.
+
+        Returns:
+            (내보낼 본문, 함께 붙일 (파일명, 내용) 목록)
+
+        - `본문`      : 예전과 같이 base64 로 박는다. 메일 API 나 받는 쪽이
+                       그림을 어디로 옮기든 우리가 관여하지 않는다.
+        - `본문+첨부` : 박아 넣고 **같은 파일을 첨부로도** 보낸다. 본문 그림이
+                       나중에 깨져도 받은 사람 손에 파일은 남는다. (기본값)
+        - `첨부만`    : 본문에서 그림을 빼고 첨부로만 보낸다. 본문이 가벼워지고
+                       깨질 그림 자체가 없다.
+        """
+        import base64
+
+        방식 = 방식 if 방식 in IMAGE_MODES else DEFAULT_IMAGE_MODE
+        쓴그림 = self.used_body_images(본문)
+        붙일것: list[tuple[str, bytes]] = []
+        for img in 쓴그림:
+            내용 = self.body_image_bytes(img["id"])
+            if 내용 is None:
+                continue
+            if 방식 in ("본문+첨부", "첨부만"):
+                붙일것.append((f"{img['id']}_{img['파일명']}", 내용))
+
+        if 방식 == "첨부만":
+            나온본문 = _IMG_TAG_RE.sub(
+                lambda m: ("<p style='color:#666;font-size:10pt'>"
+                           "[그림은 첨부파일을 봐 주세요]</p>")
+                if BODY_IMAGE_RE.search(m.group(0)) else m.group(0),
+                본문 or "",
+            )
+            return 나온본문, 붙일것
+
+        # 본문에 박아 넣는다 — 참조를 실제 바이트로 되살린다
+        내용맵 = {img["id"]: self.body_image_bytes(img["id"]) for img in 쓴그림}
+        타입맵 = {".png": "image/png", ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg", ".gif": "image/gif"}
+
+        def 되살리기(m: re.Match) -> str:
+            img_id = int(m.group(1))
+            내용 = 내용맵.get(img_id)
+            if 내용 is None:
+                return m.group(0)
+            img = self.body_image(img_id) or {}
+            mime = 타입맵.get(Path(img.get("저장명") or "").suffix.lower(), "image/png")
+            b64 = base64.b64encode(내용).decode("ascii")
+            return f"data:{mime};base64,{b64}"
+
+        return BODY_IMAGE_RE.sub(되살리기, 본문 or ""), 붙일것
+
+    def delete_body_image(self, img_id: int) -> str:
+        img = self.body_image(img_id)
+        if not img:
+            return ""
+        (self.files_dir / img["저장명"]).unlink(missing_ok=True)
+        self._conn.execute("DELETE FROM body_images WHERE id=?", (img_id,))
+        self._conn.commit()
+        return img["파일명"]
 
     def attachments(self, template_id: int) -> list[dict]:
         return [dict(r) for r in self._conn.execute(

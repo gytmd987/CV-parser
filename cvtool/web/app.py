@@ -59,7 +59,13 @@ from ..names import (
     canonical_kind,
     observe_record,
 )
-from ..mailing import MailStore, Template, html_to_text, render
+from ..mailing import (
+    IMAGE_MODES,
+    MailStore,
+    Template,
+    html_to_text,
+    render,
+)
 from ..matching import SCORE_RUBRIC, candidate_profile, match as match_projects
 from .. import projects as projectsmod
 from ..clients import mailer as mailapi
@@ -82,6 +88,10 @@ CONTENT_TYPES = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".txt": "text/plain; charset=utf-8",
     ".md": "text/plain; charset=utf-8",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
 }
 
 store = CandidateStore(DATA_DIR / "candidates.db", DATA_DIR / "files")
@@ -1449,20 +1459,43 @@ function rtLink(){
   var url = prompt('링크 주소를 넣으세요', 'https://');
   if(url) rtCmd('createLink', url);
 }
+// 그림은 본문에 base64 로 박지 않고 **서버에 파일로 올린다.**
+// 본문에는 짧은 참조만 남는다. 원본이 본문 글자 안에만 있으면, 본문이 한 번
+// 상했을 때 되돌릴 방법이 없다.
 function rtImage(input){
   var f = input.files && input.files[0];
   input.value = '';
   if(!f) return;
-  if(f.size > 1024 * 1024){
+  if(f.size > 2 * 1024 * 1024){
     alert('그림이 너무 큽니다 (' + Math.round(f.size / 1024) + 'KB).\n'
-      + '본문에 넣는 그림은 1MB 까지입니다. 큰 파일은 첨부로 붙이세요.');
+      + '본문에 넣는 그림은 2MB 까지입니다. 큰 파일은 첨부로 붙이세요.');
     return;
   }
-  var fr = new FileReader();
-  fr.onload = function(){
-    rtInsert("<img src='" + fr.result + "' style='max-width:100%'>");
-  };
-  fr.readAsDataURL(f);
+  var fd = new FormData();
+  fd.append('template', window.템플릿ID || '0');
+  fd.append('file', f, f.name);
+  rtInsert("<span id='rtimgwait' class='muted'>그림 올리는 중…</span>");
+  fetch('/mail/image/add', {method: 'POST', body: fd})
+    .then(function(r){ return r.json(); })
+    .then(function(res){
+      var 자리 = document.getElementById('rtimgwait');
+      if(자리 && 자리.parentNode){
+        if(res.ok){
+          var img = document.createElement('img');
+          img.src = res.src;
+          img.style.maxWidth = '100%';
+          자리.parentNode.replaceChild(img, 자리);
+        }else{
+          자리.parentNode.removeChild(자리);
+          alert(res.error || '그림을 올리지 못했습니다.');
+        }
+      }
+    })
+    .catch(function(e){
+      var 자리 = document.getElementById('rtimgwait');
+      if(자리 && 자리.parentNode) 자리.parentNode.removeChild(자리);
+      alert('그림을 올리지 못했습니다: ' + e);
+    });
 }
 
 // --- 자리표시자 고르기 --------------------------------------------------------
@@ -2489,6 +2522,7 @@ def _mail_template_page(tid: int, me: User, error: str = "", msg: str = "") -> b
     오류 = f"<p class='flag'>{html.escape(error)}</p>" if error else ""
     변수JSON = json.dumps([[이름, 항목] for 이름, 항목 in 묶음], ensure_ascii=False)
     설명JSON = json.dumps(MAIL_VAR_NOTES, ensure_ascii=False)
+    그림카드 = _mail_image_card(tpl)
     글꼴JSON = json.dumps(글꼴, ensure_ascii=False)
     크기JSON = json.dumps(크기, ensure_ascii=False)
 
@@ -2496,7 +2530,7 @@ def _mail_template_page(tid: int, me: User, error: str = "", msg: str = "") -> b
         f"{tpl.이름} 템플릿",
         알림 + 경고
         + "<div class='card'><h2>템플릿 편집</h2>" + 오류
-        + "<form method='post' action='/mail/template/save'>"
+        + "<form method='post' action='/mail/template/save' id='tplform'>"
         f"<input type='hidden' name='id' value='{tpl.id}'>"
         "<p><label>템플릿 이름<br><input type='text' name='name'"
         f" value='{html.escape(tpl.이름)}' required style='width:360px'"
@@ -2544,17 +2578,90 @@ def _mail_template_page(tid: int, me: User, error: str = "", msg: str = "") -> b
         "<div class='scroll' style='margin-top:10px'><table data-name='첨부파일'>"
         "<tr><th>파일</th><th>크기</th><th>붙인 일시</th><th></th></tr>"
         + 첨부행 + "</table></div>"
-        "<p class='muted'>본문에 넣는 그림은 <b>그림</b> 단추를 쓰세요(1MB 까지). "
-        "큰 파일은 여기에 붙입니다.</p>"
-        "<div class='warn' style='margin-top:8px'>본문에 <b>박아 넣은 그림</b>은 "
-        "Outlook 등 일부 메일 프로그램이 <b>차단해서 안 보일 수 있습니다</b>. "
-        "꼭 봐야 하는 그림이면 여기 <b>첨부로도 함께</b> 붙여 두세요.</div></div>"
-        f"<script>window.자리표시자 = {변수JSON};window.자리표시자설명 = {설명JSON};"
+        "<p class='muted'>본문에 넣는 그림은 <b>그림</b> 단추를 쓰세요(2MB 까지). "
+        "큰 파일은 여기에 붙입니다.</p></div>"
+        + 그림카드
+        + f"<script>window.템플릿ID = {tpl.id};"
+        f"window.자리표시자 = {변수JSON};window.자리표시자설명 = {설명JSON};"
 f"window.rtFonts = {글꼴JSON};window.rtSizes = {크기JSON};"
 f"function rtColorMenuFore(b){{rtColorMenu(b, 'foreColor');}}"
 f"function rtColorMenuBack(b){{rtColorMenu(b, 'hiliteColor');}}"
 f"{_MAIL_JS}</script>",
         me=me,
+    )
+
+
+#: 본문 그림을 메일에 어떻게 실을지 — 화면에 그대로 적는다.
+IMAGE_MODE_NOTE = {
+    "본문": "본문에 그림을 박아 보냅니다. 메일 API 나 받는 쪽이 그림을 "
+          "어디로 옮기는지 우리가 관여할 수 없습니다.",
+    "본문+첨부": "본문에 박고 <b>같은 파일을 첨부로도</b> 보냅니다. 본문 그림이 "
+              "나중에 깨져도 받은 사람 손에 파일은 남습니다. (권장)",
+    "첨부만": "본문에서 그림을 빼고 첨부로만 보냅니다. 본문이 가볍고 깨질 그림이 "
+           "아예 없습니다.",
+}
+
+
+def _mail_image_card(tpl) -> str:
+    """본문 그림 — 어떻게 보낼지 고르고, 지금 쓰는 그림을 확인한다.
+
+    본문에 박은 그림이 **시간이 지나 깨지는** 일이 있었다. 우리 DB 에는 원본이
+    그대로 있으니, 무엇이 어떤 방식으로 나가는지 눈으로 볼 수 있어야 한다.
+    """
+    쓰는것 = mailing.used_body_images(tpl.본문)
+    쓰는id = {i["id"] for i in 쓰는것}
+    안쓰는것 = [i for i in mailing.body_images(tpl.id) if i["id"] not in 쓰는id]
+
+    def 줄(img: dict, 쓴다: bool) -> str:
+        있나 = mailing.body_image_bytes(img["id"]) is not None
+        상태 = ("<span class='pill p-완료'>원본 있음</span>" if 있나
+              else "<span class='pill p-실패'>파일 없음</span>")
+        지우기 = (
+            "<form method='post' action='/mail/image/delete' style='display:inline'"
+            " onsubmit=\"return confirm('이 그림을 지웁니다.')\">"
+            f"<input type='hidden' name='id' value='{img['id']}'>"
+            f"<input type='hidden' name='template' value='{tpl.id}'>"
+            "<button class='danger'>지우기</button></form>" if not 쓴다 else
+            "<span class='muted'>본문에서 쓰는 중</span>"
+        )
+        미리 = (f"<img src='/mail/image?id={img['id']}' alt=''"
+              " style='max-height:44px;max-width:80px;vertical-align:middle'>"
+              if 있나 else "-")
+        return (
+            f"<tr><td>{미리}</td><td>{html.escape(img['파일명'])}"
+            f"<br><span class='muted'>id {img['id']}</span></td>"
+            f"<td>{img['크기'] // 1024}KB</td><td>{상태}</td>"
+            f"<td class='muted'>{html.escape(img['올린일시'])}</td>"
+            f"<td>{지우기}</td></tr>"
+        )
+
+    행 = ("".join(줄(i, True) for i in 쓰는것)
+         + "".join(줄(i, False) for i in 안쓰는것)) or (
+        "<tr><td colspan='6' class='muted'>본문에 넣은 그림이 없습니다.</td></tr>")
+
+    고르기 = "".join(
+        f"<label style='display:block;padding:3px 0'>"
+        f"<input type='radio' name='imgmode' form='tplform' value='{html.escape(m)}'"
+        f"{' checked' if tpl.그림보내기 == m else ''}> <b>{html.escape(m)}</b> — "
+        f"{IMAGE_MODE_NOTE[m]}</label>"
+        for m in IMAGE_MODES
+    )
+    return (
+        "<div class='card'><h2>본문 그림</h2>"
+        "<p class='muted'>그림 원본은 <b>이 시스템에 파일로</b> 보관됩니다. "
+        "본문에는 짧은 참조만 들어가므로, 본문을 아무리 고쳐도 원본은 상하지 "
+        "않습니다. 메일에 어떻게 실을지만 고르면 됩니다.</p>"
+        f"<div style='margin:8px 0 12px'>{고르기}</div>"
+        "<p class='muted'>고른 뒤 위 <b>저장</b> 을 누르세요.</p>"
+        "<div class='scroll'><table data-name='본문 그림'>"
+        "<tr><th style='width:90px'>미리보기</th><th>파일</th><th>크기</th>"
+        "<th>원본</th><th>올린 일시</th><th></th></tr>" + 행 + "</table></div>"
+        "<div class='warn' style='margin-top:8px'>메일 프로그램(특히 Outlook)은 "
+        "<b>본문에 박은 그림을 막거나 주소로 바꿔</b> 두는 일이 있습니다. "
+        "그 주소가 나중에 없어지면 <b>예전에 보낸 메일의 그림이 깨집니다.</b> "
+        "우리가 어쩌지 못하는 구간이라, 꼭 봐야 하는 그림이면 "
+        "<b>본문+첨부</b> 나 <b>첨부만</b> 으로 두세요 — 첨부는 메일 안에 "
+        "남으므로 사라지지 않습니다.</div></div>"
     )
 
 
@@ -3573,6 +3680,23 @@ class Handler(BaseHTTPRequestHandler):
                 extra={"Content-Disposition":
                        f"attachment; filename=\"file\"; filename*=UTF-8''{이름}"},
             )
+        if path == "/mail/image":
+            # 본문 그림. 편집기·미리보기·발송 이력이 이 주소로 그림을 본다.
+            if not can(me, "메일_템플릿"):
+                return self._deny()
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                img = mailing.body_image(int((params.get("id") or ["0"])[0]))
+            except (ValueError, TypeError):
+                img = None
+            내용 = mailing.body_image_bytes(img["id"]) if img else None
+            if 내용 is None:
+                return self._send(b"", "image/png", code=404)
+            return self._send(
+                내용,
+                CONTENT_TYPES.get(Path(img["저장명"]).suffix.lower(), "image/png"),
+                extra={"Cache-Control": "private, max-age=600"},
+            )
         if path == "/mail/log":
             if not can(me, "메일_템플릿"):
                 return self._deny()
@@ -3928,6 +4052,7 @@ class Handler(BaseHTTPRequestHandler):
                     본문=(data.get("body") or [""])[0],
                     탈락메일=bool(data.get("reject")),
                     참조=(data.get("cc") or [""])[0],
+                    그림방식=(data.get("imgmode") or [None])[0],
                 )
             except ValueError as exc:
                 return self._redirect(f"/mail/template?id={tid}&err="
@@ -4014,6 +4139,47 @@ class Handler(BaseHTTPRequestHandler):
             return self._redirect(뒤로 + "&msg=" + urllib.parse.quote(알림)
                                   + "&peek=1")
 
+        if path == "/mail/image/add":
+            # 편집기가 그림을 넣을 때 부른다. 본문에 base64 를 박는 대신
+            # 파일로 보관하고 짧은 참조만 돌려준다.
+            if not can(me, "메일_템플릿"):
+                return self._json({"ok": False, "error": "권한이 없습니다."}, code=403)
+            form = parse_multipart(self._read_body(), self.headers.get("Content-Type", ""))
+            try:
+                tid = int(form.fields.get("template", "0"))
+            except (ValueError, TypeError):
+                tid = 0
+            if mailing.template(tid) is None:
+                return self._json({"ok": False, "error": "템플릿을 찾을 수 없습니다."},
+                                  code=404)
+            f = form.files[0] if form.files else None
+            if f is None or not f.filename:
+                return self._json({"ok": False, "error": "그림 파일이 없습니다."}, code=400)
+            try:
+                img_id = mailing.add_body_image(tid, f.filename, f.content,
+                                                올린이=me.아이디)
+            except ValueError as exc:
+                return self._json({"ok": False, "error": str(exc)}, code=400)
+            audit.record(me.아이디, "메일", str(tid), 항목="본문 그림 추가",
+                         새값=f.filename)
+            return self._json({"ok": True, "id": img_id,
+                               "src": f"/mail/image?id={img_id}"})
+
+        if path == "/mail/image/delete":
+            if not can(me, "메일_템플릿"):
+                return self._deny()
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            tid = (data.get("template") or ["0"])[0]
+            try:
+                이름 = mailing.delete_body_image(int((data.get("id") or ["0"])[0]))
+            except (ValueError, TypeError):
+                이름 = ""
+            if 이름:
+                audit.record(me.아이디, "메일", tid, 항목="본문 그림 삭제", 이전값=이름)
+            return self._redirect(f"/mail/template?id={tid}&msg="
+                                  + urllib.parse.quote("본문에서 쓰지 않는 그림을 지웠습니다."
+                                                       if 이름 else "그림을 찾을 수 없습니다."))
+
         if path == "/mail/attachment/add":
             if not can(me, "메일_템플릿"):
                 return self._deny()
@@ -4078,7 +4244,10 @@ class Handler(BaseHTTPRequestHandler):
             보이는 = auth.visible_project_ids(me)
             참조 = tpl.cc()
             첨부파일 = mailing.attachment_bytes(tpl.id)
-            첨부이름 = ", ".join(이름 for 이름, _ in 첨부파일)
+            그림이름 = [f"{i['id']}_{i['파일명']}"
+                     for i in mailing.used_body_images(tpl.본문)
+                     if tpl.그림보내기 in ("본문+첨부", "첨부만")]
+            첨부이름 = ", ".join([이름 for 이름, _ in 첨부파일] + 그림이름)
             성공, 실패, 건너뜀 = 0, 0, 0
             첫오류 = ""
             for cid in ids:
@@ -4101,9 +4270,12 @@ class Handler(BaseHTTPRequestHandler):
                 if not 받는사람 or 빈1 or 빈2:
                     건너뜀 += 1
                     continue
+                # 본문 그림을 실제로 실을 모양으로 바꾼다. 이력에는 **참조가 든
+                # 본문**을 남긴다 — 나중에 다시 열어도 우리 DB 로 그림이 보인다.
+                보낼본문, 그림첨부 = mailing.prepare_body(본문, tpl.그림보내기)
                 try:
-                    결과 = mailapi.send(받는사람, 제목, 본문, html=tpl.html,
-                                      참조=참조, 첨부=첨부파일)
+                    결과 = mailapi.send(받는사람, 제목, 보낼본문, html=tpl.html,
+                                      참조=참조, 첨부=첨부파일 + 그림첨부)
                 except mailapi.MailError as exc:
                     실패 += 1
                     첫오류 = 첫오류 or str(exc)

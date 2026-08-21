@@ -485,3 +485,107 @@ def test_mail_local_is_ignored_by_git():
 
     무시목록 = Path(".gitignore").read_text(encoding="utf-8")
     assert "cvtool/clients/mail_local.py" in 무시목록
+
+
+# --- 본문 그림: 원본은 파일로, 메일에는 고른 방식으로 -----------------------------
+_PNG = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01"
+    b"\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
+
+def test_body_image_is_kept_as_a_file(ms):
+    t = ms.template(ms.add_template("그림메일", 만든이="admin"))
+    img_id = ms.add_body_image(t.id, "로고.png", _PNG, 올린이="admin")
+    assert ms.body_image_bytes(img_id) == _PNG
+    ms.update_template(t.id, 본문=f"<p>안녕</p><img src='/mail/image?id={img_id}'>")
+    쓰는것 = ms.used_body_images(ms.template(t.id).본문)
+    assert [i["id"] for i in 쓰는것] == [img_id]
+
+
+def test_body_stays_small_and_survives_resaving(ms):
+    """본문에는 짧은 참조만 남는다. 본문을 몇 번 고쳐도 원본은 안 상한다."""
+    t = ms.template(ms.add_template("작은본문", 만든이="admin"))
+    img_id = ms.add_body_image(t.id, "로고.png", _PNG)
+    본문 = f"<img src='/mail/image?id={img_id}' style='max-width:100%'>"
+    for _ in range(3):
+        ms.update_template(t.id, 본문=본문)
+        본문 = ms.template(t.id).본문
+    assert len(본문) < 200
+    assert ms.body_image_bytes(img_id) == _PNG
+
+
+def test_send_mode_body_puts_the_image_back_inline(ms):
+    t = ms.template(ms.add_template("본문모드", 만든이="admin"))
+    img_id = ms.add_body_image(t.id, "로고.png", _PNG)
+    본문 = f"<img src='/mail/image?id={img_id}'>"
+    나갈본문, 첨부 = ms.prepare_body(본문, "본문")
+    assert "data:image/png;base64," in 나갈본문
+    assert 첨부 == []
+
+
+def test_send_mode_body_plus_attach_sends_the_file_too(ms):
+    """본문 그림이 나중에 깨져도 첨부는 메일 안에 남는다."""
+    t = ms.template(ms.add_template("본문첨부모드", 만든이="admin"))
+    img_id = ms.add_body_image(t.id, "로고.png", _PNG)
+    나갈본문, 첨부 = ms.prepare_body(f"<img src='/mail/image?id={img_id}'>", "본문+첨부")
+    assert "data:image/png;base64," in 나갈본문
+    assert [내용 for _이름, 내용 in 첨부] == [_PNG]
+
+
+def test_send_mode_attach_only_removes_the_image_from_the_body(ms):
+    t = ms.template(ms.add_template("첨부만모드", 만든이="admin"))
+    img_id = ms.add_body_image(t.id, "로고.png", _PNG)
+    나갈본문, 첨부 = ms.prepare_body(
+        f"<p>안녕</p><img src='/mail/image?id={img_id}'>", "첨부만")
+    assert "<img" not in 나갈본문 and "base64" not in 나갈본문
+    assert "첨부파일을 봐 주세요" in 나갈본문
+    assert [내용 for _이름, 내용 in 첨부] == [_PNG]
+    assert "안녕" in 나갈본문          # 나머지 본문은 그대로
+
+
+def test_old_inline_images_are_moved_into_files(tmp_path):
+    """본문에 base64 로 박혀 있던 그림을 파일로 끌어올린다."""
+    import base64
+
+    from cvtool.mailing import MailStore
+
+    db = tmp_path / "ms.db"
+    m = MailStore(db)
+    t = m.template(m.add_template("옛템플릿", 만든이="admin"))
+    b64 = base64.b64encode(_PNG).decode()
+    m.update_template(t.id, 본문=f"<p>안녕</p><img src='data:image/png;base64,{b64}'>")
+    m.close()
+
+    m2 = MailStore(db)                      # 다시 열면 옮겨져 있어야 한다
+    본문 = m2.template(t.id).본문
+    assert "base64" not in 본문
+    쓰는것 = m2.used_body_images(본문)
+    assert len(쓰는것) == 1
+    assert m2.body_image_bytes(쓰는것[0]["id"]) == _PNG
+    m2.close()
+
+
+def test_default_mode_is_body_plus_attach(ms):
+    """기본값은 첨부를 함께 보내는 쪽이다 — 깨져도 파일은 남아야 하니까."""
+    t = ms.template(ms.add_template("기본값", 만든이="admin"))
+    assert ms.template(t.id).그림보내기 == "본문+첨부"
+
+
+def test_unknown_image_mode_is_refused(ms):
+    t = ms.template(ms.add_template("이상한모드", 만든이="admin"))
+    with pytest.raises(ValueError):
+        ms.update_template(t.id, 그림방식="아무거나")
+
+
+def test_oversized_body_image_is_refused(ms):
+    t = ms.template(ms.add_template("큰그림", 만든이="admin"))
+    with pytest.raises(ValueError):
+        ms.add_body_image(t.id, "큰거.png", b"x" * (3 * 1024 * 1024))
+
+
+def test_body_image_needs_an_image_extension(ms):
+    t = ms.template(ms.add_template("이상한형식", 만든이="admin"))
+    with pytest.raises(ValueError):
+        ms.add_body_image(t.id, "문서.pdf", _PNG)
