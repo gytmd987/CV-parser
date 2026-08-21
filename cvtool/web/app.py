@@ -29,6 +29,17 @@ from pathlib import Path
 from ..audit import AuditLog
 from ..auth import ROLES, AuthStore, User, can
 from ..config import settings
+from ..dashboards import (
+    AXIS_SOURCES,
+    BLOCK_KINDS,
+    CELL_FORMATS,
+    DashboardStore,
+    format_cell,
+    render_profile,
+    render_table,
+)
+from .. import formula as F
+from .. import profile_form as P
 from ..edit import (
     CHOICE_FIELDS,
     READONLY_FIELDS,
@@ -107,6 +118,7 @@ auth = AuthStore(DATA_DIR / "admin.db")
 recruit = RecruitStore(DATA_DIR / "recruit.db")
 audit = AuditLog(DATA_DIR / "audit.db")
 mailing = MailStore(DATA_DIR / "mail.db", DATA_DIR / "mail_files")
+boards = DashboardStore(DATA_DIR / "dashboard.db")
 
 
 _projects_cache: dict = {"mtime": None, "path": None, "목록": [], "오류": ""}
@@ -432,6 +444,7 @@ def _탭들(me: User | None, badge: str) -> list[tuple[str, str, tuple[str, ...]
          can(me, "지원자_목록")),
         ("채용 현황", "/recruit", ("/recruit",),
          can(me, "채용현황_수정") or can(me, "지원자_조회")),
+        ("대시보드", "/dash", ("/dash",), can(me, "대시보드_조회")),
         ("CV 업로드", "/upload", ("/upload",), can(me, "지원자_등록")),
         ("과제 매칭", "/match", ("/match",),
          bool(settings.projects_json) and can(me, "과제매칭_조회")),
@@ -629,6 +642,62 @@ def _editable(col: str) -> bool:
         and col not in REGISTRY_FIELDS
         and not col.startswith(TIER_COLUMN_PREFIX)
     )
+
+
+# ---------------------------------------------------------------------------
+# 대시보드가 셀 데이터 — 화면들이 쓰는 것과 **같은 것**을 넘긴다.
+# 새 질의 계층을 만들면 화면 숫자와 대시보드 숫자가 어긋난다.
+# ---------------------------------------------------------------------------
+def 대시보드_행() -> F.Rows:
+    """지원자(인재 Pool 전체) / 채용(채용 시작한 사람) 두 묶음."""
+    진행맵 = recruit.all()
+    부서명 = {d["id"]: d["이름"] for d in auth.departments()}
+    과제명 = {p["id"]: p["이름"] for p in auth.projects()}
+    사용자값 = store.custom_map()
+    관리값 = store.meta_map()
+    시작한사람 = recruit.started()
+    상위매칭 = store.top_matches()
+
+    지원자행, 채용행 = [], []
+    for rec in store.list_all():
+        cid = rec.지원자_ID
+        행 = rec.to_row(registry)
+        행["지원자_ID"] = cid
+        행.update(관리값.get(cid, {}))
+        행.update(사용자값.get(cid, {}))
+        p = 진행맵.get(cid)
+        행["부서"] = 부서명.get(p.부서_id, "") if p else ""
+        행["과제"] = 과제명.get(p.project_id, "") if p else ""
+        행["최종상태"] = p.최종상태 if p else "미시작"
+        행["비고"] = p.비고 if p else ""
+        for 단계 in STAGES:
+            행[단계] = (p.단계상태.get(단계, "") if p else "")
+        m = 상위매칭.get(cid)
+        행["매칭_과제"] = (m or {}).get("과제명", "") if isinstance(m, dict) else ""
+        행["매칭_점수"] = str((m or {}).get("점수", "")) if isinstance(m, dict) else ""
+        지원자행.append(행)
+        if cid in 시작한사람:
+            채용행.append(행)
+    return F.Rows(지원자=지원자행, 채용=채용행)
+
+
+def 대시보드_열() -> set[str]:
+    """수식·문장 틀에서 쓸 수 있는 열 이름 전부."""
+    이름 = set(지원자열()) | set(RECRUIT_COLUMNS) | set(store.field_names())
+    이름 |= {"지원자_ID", "매칭_과제", "매칭_점수"}
+    return 이름
+
+
+def 대시보드_축() -> dict[str, list[str]]:
+    """축으로 쓸 수 있는 값 목록. 조직·설정이 바뀌면 표가 알아서 따라 늘어난다."""
+    return {
+        "부서": [d["이름"] for d in auth.departments()],
+        "과제": [p["이름"] for p in auth.projects()],
+        "단계": list(STAGES),
+        "최종상태": [s for s in recruit.statuses() if s],
+        "등록년도": store.years(),
+        "현재_신분": [v for v in CHOICE_FIELDS.get("현재_신분", []) if v],
+    }
 
 
 def _채용칸(cid: str, 시작함: bool, 고칠수있나: bool) -> str:
@@ -3501,6 +3570,474 @@ def _fields_page(me: User, error: str = "", msg: str = "") -> bytes:
 
 
 # ---------------------------------------------------------------------------
+# 대시보드 화면
+# ---------------------------------------------------------------------------
+#: 처음 만들 때 넣어 주는 프로필 양식. 빈 화면에서 시작하면 아무도 안 만든다.
+기본_프로필틀 = [
+    ["학력", "{박사_학교} {박사_전공}({기간:박사_시작~박사_졸업}) {박사_학위상태}"],
+    ["", "{석사_학교} {석사_전공}({기간:석사_시작~석사_졸업})"],
+    ["현재", "{현재_소속} {현재_소속_상세}"],
+    ["경력", "{경력_회사}/{직책}({기간:경력_시작~경력_종료})"],
+    ["실적", "저널 {수:저널_수}편(주저자 {수:저널_주저자_수}) · "
+            "학회 {수:학회_수}편(주저자 {수:학회_주저자_수}) · "
+            "특허 등록 {수:특허_등록_수}/출원 {수:특허_출원_수}"],
+    ["채용", "{부서} {과제} — {최종상태}"],
+    ["매칭", "{매칭_과제} ({수:매칭_점수}점)"],
+]
+
+
+def _프로필값(cid: str) -> dict[str, str]:
+    """문장 틀에 넣을 한 사람의 값. 표에 보이는 것과 같은 값을 쓴다."""
+    rec = store.get(cid)
+    if rec is None:
+        return {}
+    행 = {k: str(v or "") for k, v in rec.to_row(registry).items()}
+    행["지원자_ID"] = cid
+    행.update(store.meta_map().get(cid, {}))
+    행.update(store.custom_values(cid))
+    p = recruit.get(cid)
+    부서명 = {d["id"]: d["이름"] for d in auth.departments()}
+    과제명 = {pr["id"]: pr["이름"] for pr in auth.projects()}
+    행["부서"] = 부서명.get(p.부서_id, "")
+    행["과제"] = 과제명.get(p.project_id, "")
+    행["최종상태"] = p.최종상태
+    행["비고"] = p.비고
+    for 단계 in STAGES:
+        행[단계] = p.단계상태.get(단계, "")
+    m = store.top_matches().get(cid) or {}
+    행["매칭_과제"] = m.get("과제명", "")
+    행["매칭_점수"] = str(m.get("점수", "") or "")
+    return 행
+
+
+def _쉼표목록(글: str) -> list[str]:
+    return [x.strip() for x in (글 or "").split(",") if x.strip()]
+
+
+def _수식검사(수식: str, 아는열: set[str]) -> str:
+    """수식이면 검사하고, 틀리면 사람이 읽을 오류를 돌려준다. 괜찮으면 빈 문자열.
+
+    **저장 단계에서 막는 게 핵심이다.** 없는 열 이름이 그대로 저장되면 화면에는
+    그냥 0 이 뜨고 아무도 틀린 줄 모른다.
+    """
+    수식 = (수식 or "").strip()
+    if not 수식 or not F.is_formula(수식):
+        return ""
+    try:
+        F.validate(수식, 아는열)
+    except F.FormulaError as exc:
+        return f"{수식} → {exc}"
+    return ""
+
+
+def _블록설정(b, data: dict) -> tuple[dict, str]:
+    """폼에서 온 값을 블록 설정으로. (설정, 오류메시지)"""
+    아는열 = 대시보드_열()
+    설정 = dict(b.설정)
+    형식 = (data.get("format") or [""])[0]
+    if 형식 in CELL_FORMATS:
+        설정["형식"] = 형식
+
+    if b.종류 == "글":
+        설정["글"] = (data.get("text") or [""])[0]
+        return 설정, ""
+
+    if b.종류 == "숫자":
+        수식 = (data.get("formula") or [""])[0].strip()
+        오류 = _수식검사(수식, 아는열)
+        if 오류:
+            return 설정, 오류
+        설정["수식"] = 수식
+        return 설정, ""
+
+    if b.종류 == "축표":
+        설정["행축"] = (data.get("rowaxis") or [""])[0]
+        설정["열축"] = (data.get("colaxis") or [""])[0]
+        설정["행"] = _쉼표목록((data.get("rows") or [""])[0])
+        설정["열"] = _쉼표목록((data.get("cols") or [""])[0])
+        칸수식 = (data.get("cellformula") or [""])[0].strip()
+        # {행}{열} 을 실제 값으로 한 번 바꿔 놓고 검사한다. 그대로 검사하면
+        # '{행}' 이 열 이름인 줄 알고 엉뚱한 오류가 난다.
+        축값 = 대시보드_축()
+        본보기 = (칸수식.replace("{행}", (축값.get(설정["행축"]) or 설정["행"] or [""])[0])
+                       .replace("{열}", (축값.get(설정["열축"]) or 설정["열"] or [""])[0]))
+        오류 = _수식검사(본보기, 아는열)
+        if 오류:
+            return 설정, 오류.replace(본보기, 칸수식)
+        설정["칸수식"] = 칸수식
+        return 설정, ""
+
+    if b.종류 == "프로필":
+        대상 = (data.get("target") or [""])[0].strip() or "=LIST(지원자)"
+        오류 = _수식검사(대상, 아는열)
+        if 오류:
+            return 설정, 오류
+        설정["대상"] = 대상
+        설정["머리"] = (data.get("head") or [""])[0]
+        라벨들 = data.get("label") or []
+        틀들 = data.get("line") or []
+        줄 = [[라벨.strip(), 틀.strip()]
+             for 라벨, 틀 in zip(라벨들, 틀들) if 틀.strip()]
+        모르는 = sorted({c for _l, 틀 in 줄 for c in P.columns(틀)
+                       if c and c not in 아는열}
+                      | {c for c in P.columns(설정["머리"]) if c and c not in 아는열})
+        if 모르는:
+            return 설정, ("표에 없는 열입니다: " + ", ".join(모르는)
+                        + " — 표 항목 탭에 있는 이름을 그대로 쓰세요.")
+        설정["줄"] = 줄
+        return 설정, ""
+
+    # 자유 표
+    행 = _쉼표목록((data.get("rows") or [""])[0])
+    열 = _쉼표목록((data.get("cols") or [""])[0])
+    칸값 = data.get("cell") or []
+    칸 = {}
+    if 칸값 and len(칸값) == len(b.행이름) * len(b.열이름):
+        # 폼은 옛 행·열 순서대로 왔다. 그 짝으로 읽고 새 행·열에 맞춰 남긴다.
+        i = 0
+        for r in b.행이름:
+            for c in b.열이름:
+                if 칸값[i].strip():
+                    칸[_칸키(r, c)] = 칸값[i].strip()
+                i += 1
+    else:
+        칸 = dict(b.칸)
+    for 키, 수식 in 칸.items():
+        오류 = _수식검사(수식, 아는열)
+        if 오류:
+            return 설정, f"[{키.replace(chr(9), ' / ')}] {오류}"
+    설정["행"], 설정["열"], 설정["칸"] = 행, 열, 칸
+    return 설정, ""
+
+
+def _예시블록(did: int) -> None:
+    """새 대시보드에 바로 볼 수 있는 블록을 넣어 준다.
+
+    빈 화면에서 시작하면 아무도 안 만든다. 예시가 곧 사용법이다.
+    """
+    boards.add_block(did, "숫자", 제목="채용 중",
+                     설정={"수식": "=COUNT(채용)", "형식": "명"})
+    boards.add_block(did, "축표", 제목="부서 × 단계",
+                     설정={"행축": "부서", "열축": "단계",
+                          "칸수식": '=COUNT(채용, 부서="{행}", {열}="합격")',
+                          "형식": "그대로"})
+    boards.add_block(did, "축표", 제목="등록년도 × 현재 신분",
+                     설정={"행축": "등록년도", "열축": "현재_신분",
+                          "칸수식": '=COUNT(지원자, 등록년도="{행}", 현재_신분="{열}")'})
+    boards.add_block(did, "프로필", 제목="채용 중인 사람",
+                     설정={"대상": "=LIST(채용)",
+                          "머리": "{한글_이름} ({현재_신분})",
+                          "줄": 기본_프로필틀})
+
+
+def _dash_list_page(me: User, error: str = "", msg: str = "") -> bytes:
+    보드 = boards.all()
+    편집 = can(me, "대시보드_조회")
+    rows = "".join(
+        f"<tr><td><a href='/dash/view?id={d.id}'>{html.escape(d.이름)}</a></td>"
+        f"<td style='white-space:normal' class='muted'>{html.escape(d.설명)}</td>"
+        f"<td class='muted'>{len(boards.blocks(d.id))}개</td>"
+        f"<td class='muted'>{html.escape(d.수정일시)}</td>"
+        f"<td><a class='btn' href='/dash/view?id={d.id}'>보기</a> "
+        + (f"<a class='btn sec' href='/dash/edit?id={d.id}'>편집</a> "
+           "<form method='post' action='/dash/copy' style='display:inline'>"
+           f"<input type='hidden' name='id' value='{d.id}'>"
+           "<button class='sec'>복제</button></form> "
+           "<form method='post' action='/dash/delete' style='display:inline'"
+           " onsubmit=\"return confirm('이 대시보드를 지웁니다.')\">"
+           f"<input type='hidden' name='id' value='{d.id}'>"
+           "<button class='danger'>삭제</button></form>" if 편집 else "")
+        + "</td></tr>"
+        for d in 보드
+    ) or "<tr><td colspan='5' class='muted'>아직 만든 대시보드가 없습니다.</td></tr>"
+
+    알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
+    오류 = f"<p class='flag'>{html.escape(error)}</p>" if error else ""
+    return _page(
+        "대시보드",
+        알림
+        + "<div class='card'><h2>대시보드 만들기</h2>" + 오류
+        + "<form method='post' action='/dash/add' style='display:flex;gap:8px;flex-wrap:wrap'>"
+        "<input type='text' name='name' placeholder='이름 (예: 주간 채용 현황판)'"
+        " required style='width:260px'>"
+        "<input type='text' name='desc' placeholder='설명 (선택)' style='width:320px'>"
+        "<label class='muted'><input type='checkbox' name='sample' value='1' checked>"
+        " 예시 블록 넣기</label>"
+        "<button type='submit'>만들기</button></form>"
+        "<p class='muted'>만든 뒤 <b>편집</b> 에서 블록을 쌓습니다. "
+        "예시 블록을 켜 두면 바로 볼 수 있는 것부터 들어갑니다.</p></div>"
+        + f"<div class='card'><h2>대시보드 {len(보드)}개</h2><div class='scroll'>"
+        "<table data-name='대시보드'><tr><th>이름</th><th>설명</th><th>블록</th>"
+        "<th>수정</th><th></th></tr>" + rows + "</table></div></div>",
+        me=me,
+    )
+
+
+def _블록그리기(b, rows, 축값, 아는열) -> str:
+    """블록 하나를 보기 화면용 HTML 로."""
+    if b.종류 == "글":
+        본문 = "<br>".join(html.escape(x) for x in (b.글 or "").splitlines())
+        return (f"<div class='card'><h2>{html.escape(b.제목)}</h2>{본문}</div>"
+                if (b.제목 or 본문) else "")
+
+    if b.종류 == "숫자":
+        try:
+            글, 값 = F.run(b.수식, rows, 아는열)
+            보임 = format_cell(글, 값, b.설정.get("형식") or "그대로")
+            아래 = f"<div class='muted'>{html.escape(b.수식)}</div>"
+        except F.FormulaError as exc:
+            보임, 아래 = "?", f"<div class='flag'>{html.escape(str(exc))}</div>"
+        return (
+            f"<div class='card'><h2>{html.escape(b.제목)}</h2>"
+            f"<div style='font-size:38px;font-weight:800;line-height:1.2'>{html.escape(보임)}</div>"
+            f"{아래}</div>"
+        )
+
+    if b.종류 == "프로필":
+        결과 = render_profile(b, rows, _프로필값, 아는열)
+        경고 = "".join(f"<p class='flag'>{html.escape(x)}</p>" for x in 결과.오류)
+        카드 = []
+        for 머리, 줄들 in 결과.사람:
+            줄 = "".join(
+                f"<tr><th style='width:80px'>{html.escape(라벨)}</th>"
+                f"<td style='white-space:pre-wrap;max-width:none'>{html.escape(값)}</td></tr>"
+                for 라벨, 값 in 줄들
+            )
+            카드.append(
+                "<div style='border:1px solid var(--line);border-radius:8px;"
+                "padding:12px 14px;margin-bottom:10px'>"
+                f"<div style='font-weight:800;margin-bottom:6px'>{html.escape(머리)}</div>"
+                f"<table>{줄}</table></div>"
+            )
+        몸 = "".join(카드) or "<p class='muted'>조건에 맞는 사람이 없습니다.</p>"
+        return (f"<div class='card'><h2>{html.escape(b.제목)} "
+                f"<span class='muted'>{len(결과.사람)}명</span></h2>{경고}{몸}</div>")
+
+    결과 = render_table(b, rows, 축값, 아는열)
+    경고 = "".join(f"<p class='flag'>{html.escape(x)}</p>" for x in 결과.오류)
+    머리 = "<th></th>" + "".join(f"<th>{html.escape(c)}</th>" for c in 결과.머리)
+    몸 = "".join(
+        f"<tr><th style='text-align:left'>{html.escape(r)}</th>"
+        + "".join(f"<td>{html.escape(v)}</td>" for v in 칸들) + "</tr>"
+        for r, 칸들 in 결과.행
+    ) or f"<tr><td colspan='{len(결과.머리) + 1}' class='muted'>줄이 없습니다.</td></tr>"
+    return (
+        f"<div class='card'><h2>{html.escape(b.제목)}</h2>{경고}"
+        f"<div class='scroll'><table data-name='{html.escape(b.제목 or '표')}'>"
+        f"<tr>{머리}</tr>{몸}</table></div></div>"
+    )
+
+
+def _dash_view_page(did: int, me: User) -> bytes:
+    d = boards.get(did)
+    if d is None:
+        return _page("없음", "<div class='card'>대시보드를 찾을 수 없습니다.</div>", me=me)
+    rows = 대시보드_행()
+    축값 = 대시보드_축()
+    아는열 = 대시보드_열()
+    블록들 = boards.blocks(did)
+    몸 = "".join(_블록그리기(b, rows, 축값, 아는열) for b in 블록들)
+    if not 블록들:
+        몸 = ("<div class='card'><p class='muted'>블록이 없습니다. "
+              f"<a href='/dash/edit?id={did}'>편집</a> 에서 추가하세요.</p></div>")
+    return _page(
+        d.이름,
+        f"<div class='card'><h2>{html.escape(d.이름)}"
+        f"<span class='muted'> {html.escape(d.설명)}</span></h2>"
+        f"<p><a class='btn sec' href='/dash'>목록</a> "
+        f"<a class='btn sec' href='/dash/edit?id={did}'>편집</a> "
+        f"<span class='muted'>인재 Pool {len(rows.지원자)}명 · 채용 중 "
+        f"{len(rows.채용)}명 기준 · {html.escape(now_kst().strftime('%Y-%m-%d %H:%M'))}"
+        "</span></p></div>" + 몸,
+        me=me,
+    )
+
+
+def _칸키(행: str, 열: str) -> str:
+    """자유 표 칸 하나를 가리키는 키. 탭으로 잇는다 (열 이름에 쉼표가 있어도 안전)."""
+    return f"{행}\t{열}"
+
+
+def _수식도움() -> str:
+    """수식을 처음 보는 사람이 읽을 안내. 화면에 늘 붙여 둔다."""
+    return (
+        "<details><summary class='muted'>수식 쓰는 법 (누르면 펼쳐집니다)</summary>"
+        "<div style='margin-top:8px'>"
+        "<p class='muted'>모양은 하나뿐입니다 — <code>=함수(대상, 조건...)</code>. "
+        "<b>SQL 이 아닙니다.</b> 할 수 있는 일이 정해져 있어 안전합니다.</p>"
+        "<table><tr><th>함수</th><th>뜻</th><th>예</th></tr>"
+        "<tr><td>COUNT</td><td>몇 명</td><td><code>=COUNT(채용, 부서=\"차세대공정\")</code></td></tr>"
+        "<tr><td>PCT</td><td>같은 대상 대비 비율(%)</td><td><code>=PCT(채용, 최종상태~\"*합격\")</code></td></tr>"
+        "<tr><td>AVG SUM MIN MAX</td><td>숫자 열을 셈</td><td><code>=AVG(지원자, 저널_수)</code></td></tr>"
+        "<tr><td>LIST</td><td>이름 나열</td><td><code>=LIST(채용, 부서=\"소재분석\")</code></td></tr>"
+        "</table>"
+        "<p class='muted' style='margin-top:8px'><b>대상</b>은 "
+        "<code>지원자</code>(인재 Pool 전체) 또는 <code>채용</code>(채용 시작한 사람).<br>"
+        "<b>조건</b>은 <code>열=\"값\"</code> <code>열~\"패턴*\"</code> "
+        "<code>열!~\"패턴*\"</code> <code>열&gt;숫자</code> <code>열!=\"값\"</code> — "
+        "쉼표로 이으면 전부 만족(AND).<br>"
+        "<b>열 이름</b>은 <a href='/fields'>표 항목</a> 에 있는 그대로 씁니다. "
+        "없는 이름을 쓰면 저장할 때 막습니다.</p>"
+        "<p class='muted'><code>=</code> 로 시작하지 않으면 그냥 글자로 들어갑니다.</p>"
+        "<div class='warn'><b>패턴 하나만 조심하세요.</b> "
+        '<code>최종상태~"*합격"</code> 은 <b>불합격도 맞습니다</b> '
+        "(글자 그대로 '합격' 으로 끝나니까요). 합격만 세려면 "
+        '<code>=COUNT(채용, 최종상태~"*합격", 최종상태!~"*불합격")</code> '
+        "처럼 빼는 조건을 같이 쓰세요.</div>"
+        "</div></details>"
+    )
+
+
+def _틀도움() -> str:
+    return (
+        "<details><summary class='muted'>문장 틀 쓰는 법</summary>"
+        "<div style='margin-top:8px'>"
+        "<p class='muted'>메일 자리표시자와 같습니다. 열 이름을 <code>{}</code> 로 감쌉니다.</p>"
+        "<table><tr><th>조각</th><th>나오는 모양</th></tr>"
+        "<tr><td><code>{박사_학교}</code></td><td>서울대학교</td></tr>"
+        "<tr><td><code>{기간:박사_시작~박사_졸업}</code></td><td>'22.2~'26.2</td></tr>"
+        "<tr><td><code>{날짜:박사_졸업}</code></td><td>'26.2</td></tr>"
+        "<tr><td><code>{수:저널_수}</code></td><td>3 (비면 0)</td></tr>"
+        "</table>"
+        "<p class='muted' style='margin-top:8px'><b>빈 값은 알아서 사라집니다.</b> "
+        "<code>{박사_학교} {박사_전공}({기간:박사_시작~박사_졸업})</code> 에서 기간이 비면 "
+        "괄호까지 같이 빠져 <code>서울대학교 기계공학</code> 만 남고, 그 줄 값이 "
+        "<b>전부</b> 비면 <b>줄 자체가</b> 빠집니다 — 석사를 안 한 사람 프로필에 "
+        "빈 석사 줄이 남지 않습니다.</p>"
+        "</div></details>"
+    )
+
+
+def _블록편집(b, 축값) -> str:
+    """블록 하나의 설정 폼."""
+    옵션 = lambda 값들, 지금: "".join(
+        f"<option{' selected' if v == 지금 else ''}>{html.escape(v)}</option>"
+        for v in 값들
+    )
+    머리 = (
+        f"<form method='post' action='/dash/block/save' id='bf{b.id}'>"
+        f"<input type='hidden' name='id' value='{b.id}'>"
+        f"<p><b>{html.escape(b.종류)}</b> "
+        f"<input type='text' name='title' value='{html.escape(b.제목)}'"
+        " placeholder='블록 제목' style='width:280px'></p>"
+    )
+    꼬리 = (
+        "<p><button type='submit'>이 블록 저장</button></form> "
+        "<form method='post' action='/dash/block/move' style='display:inline'>"
+        f"<input type='hidden' name='id' value='{b.id}'>"
+        "<button class='sec' name='dir' value='-1'>↑</button> "
+        "<button class='sec' name='dir' value='1'>↓</button></form> "
+        "<form method='post' action='/dash/block/delete' style='display:inline'"
+        " onsubmit=\"return confirm('이 블록을 지웁니다.')\">"
+        f"<input type='hidden' name='id' value='{b.id}'>"
+        "<button class='danger'>블록 삭제</button></form></p>"
+    )
+
+    if b.종류 == "글":
+        가운데 = (f"<textarea name='text' rows='4' style='width:100%'>"
+               f"{html.escape(b.글)}</textarea>")
+    elif b.종류 == "숫자":
+        가운데 = (
+            f"<p><input type='text' name='formula' value='{html.escape(b.수식)}'"
+            " style='width:100%' placeholder='=COUNT(채용)'></p>"
+            f"<p>형식 <select name='format'>{옵션(CELL_FORMATS, b.설정.get('형식') or '그대로')}"
+            "</select></p>"
+        )
+    elif b.종류 == "축표":
+        가운데 = (
+            f"<p>행 축 <select name='rowaxis'>{옵션(AXIS_SOURCES, b.행축)}</select> "
+            f"열 축 <select name='colaxis'>{옵션(AXIS_SOURCES, b.열축)}</select> "
+            f"형식 <select name='format'>{옵션(CELL_FORMATS, b.설정.get('형식') or '그대로')}"
+            "</select></p>"
+            "<p class='muted'>축을 <b>직접 입력</b> 으로 두면 아래 칸에 쉼표로 적은 값을 씁니다.</p>"
+            f"<p><input type='text' name='rows' value='{html.escape(', '.join(b.행이름))}'"
+            " placeholder='행 (직접 입력일 때만)' style='width:48%'> "
+            f"<input type='text' name='cols' value='{html.escape(', '.join(b.열이름))}'"
+            " placeholder='열 (직접 입력일 때만)' style='width:48%'></p>"
+            f"<p>칸 수식<br><input type='text' name='cellformula'"
+            f" value='{html.escape(b.칸수식)}' style='width:100%'"
+            " placeholder='=COUNT(채용, 부서=\"{행}\", 최종상태~\"{열}*\")'></p>"
+            "<p class='muted'><code>{행}</code> <code>{열}</code> 이 축 값으로 바뀝니다. "
+            "칸을 하나하나 안 적어도 되고, 부서가 늘면 표가 알아서 늘어납니다.</p>"
+        )
+    elif b.종류 == "프로필":
+        줄 = "".join(
+            f"<tr><td><input type='text' name='label' value='{html.escape(라벨)}'"
+            " style='width:90px'></td>"
+            f"<td><input type='text' name='line' value='{html.escape(틀)}'"
+            " style='width:100%'></td></tr>"
+            for 라벨, 틀 in (b.줄틀 + [("", "")])
+        )
+        가운데 = (
+            f"<p>누구를 <input type='text' name='target'"
+            f" value='{html.escape(b.대상조건)}' style='width:100%'"
+            " placeholder='=LIST(채용, 부서=\"차세대공정\")'></p>"
+            "<p class='muted'>조건에 맞는 사람마다 아래 양식이 한 장씩 나옵니다.</p>"
+            f"<p>머리 <input type='text' name='head' value='{html.escape(b.머리틀)}'"
+            " style='width:100%' placeholder='{한글_이름} ({현재_신분})'></p>"
+            "<div class='scroll'><table><tr><th style='width:90px'>라벨</th>"
+            f"<th>문장 틀</th></tr>{줄}</table></div>"
+            "<p class='muted'>빈 줄은 저장할 때 없어집니다. 맨 아래 빈 칸에 적으면 줄이 늘어납니다.</p>"
+        )
+    else:  # 자유 표
+        칸입력 = []
+        for r in b.행이름:
+            칸 = "".join(
+                "<td><input type='text' name='cell' value='"
+                + html.escape(b.칸.get(_칸키(r, c), ""))
+                + "' style='width:150px'></td>"
+                for c in b.열이름
+            )
+            칸입력.append(f"<tr><th style='text-align:left'>{html.escape(r)}</th>{칸}</tr>")
+        머리칸 = "<th></th>" + "".join(f"<th>{html.escape(c)}</th>" for c in b.열이름)
+        가운데 = (
+            f"<p><input type='text' name='rows' value='{html.escape(', '.join(b.행이름))}'"
+            " placeholder='행 이름 (쉼표로 구분)' style='width:48%'> "
+            f"<input type='text' name='cols' value='{html.escape(', '.join(b.열이름))}'"
+            " placeholder='열 이름 (쉼표로 구분)' style='width:48%'></p>"
+            f"<p>형식 <select name='format'>{옵션(CELL_FORMATS, b.설정.get('형식') or '그대로')}"
+            "</select> <span class='muted'>행·열을 먼저 저장하면 아래 칸이 생깁니다.</span></p>"
+            + (f"<div class='scroll'><table><tr>{머리칸}</tr>"
+               + "".join(칸입력) + "</table></div>" if b.행이름 and b.열이름 else "")
+        )
+    return f"<div class='card'>{머리}{가운데}{꼬리}</div>"
+
+
+def _dash_edit_page(did: int, me: User, error: str = "", msg: str = "") -> bytes:
+    d = boards.get(did)
+    if d is None:
+        return _page("없음", "<div class='card'>대시보드를 찾을 수 없습니다.</div>", me=me)
+    축값 = 대시보드_축()
+    블록들 = boards.blocks(did)
+    종류단추 = "".join(
+        f"<button name='kind' value='{k}'>{k}</button> " for k in BLOCK_KINDS
+    )
+    알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
+    오류 = f"<div class='warn'>{html.escape(error)}</div>" if error else ""
+    return _page(
+        f"{d.이름} 편집",
+        알림 + 오류
+        + "<div class='card'>"
+        f"<h2>{html.escape(d.이름)} 편집</h2>"
+        "<form method='post' action='/dash/rename' style='display:flex;gap:8px;flex-wrap:wrap'>"
+        f"<input type='hidden' name='id' value='{did}'>"
+        f"<input type='text' name='name' value='{html.escape(d.이름)}' style='width:260px'>"
+        f"<input type='text' name='desc' value='{html.escape(d.설명)}'"
+        " placeholder='설명' style='width:320px'>"
+        "<button type='submit'>이름·설명 저장</button></form>"
+        f"<p style='margin-top:10px'><a class='btn' href='/dash/view?id={did}'>보기</a> "
+        "<a class='btn sec' href='/dash'>목록</a></p>"
+        "<form method='post' action='/dash/block/add' style='margin-top:10px'>"
+        f"<input type='hidden' name='dash' value='{did}'>"
+        f"<p>블록 추가: {종류단추}</p></form>"
+        + _수식도움() + _틀도움() + "</div>"
+        + ("".join(_블록편집(b, 축값) for b in 블록들)
+           or "<div class='card'><p class='muted'>블록이 없습니다. 위에서 추가하세요.</p></div>"),
+        me=me,
+    )
+
+
+# ---------------------------------------------------------------------------
 # HTTP 핸들러
 # ---------------------------------------------------------------------------
 class Handler(BaseHTTPRequestHandler):
@@ -3745,6 +4282,21 @@ class Handler(BaseHTTPRequestHandler):
             if not can(me, "메일_템플릿"):
                 return self._deny()
             return self._send(_mail_log_page(me))
+        if path in ("/dash", "/dash/view", "/dash/edit"):
+            if not can(me, "대시보드_조회"):
+                return self._deny("대시보드는 채용담당자 이상만 볼 수 있습니다.")
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            err = (params.get("err") or [""])[0]
+            msg = (params.get("msg") or [""])[0]
+            if path == "/dash":
+                return self._send(_dash_list_page(me, err, msg))
+            try:
+                did = int((params.get("id") or ["0"])[0])
+            except ValueError:
+                return self._redirect("/dash")
+            if path == "/dash/view":
+                return self._send(_dash_view_page(did, me))
+            return self._send(_dash_edit_page(did, me, err, msg))
         if path == "/fields":
             if not can(me, "열_구성"):
                 return self._deny("표 항목 추가는 관리자만 할 수 있습니다.")
@@ -4345,6 +4897,106 @@ class Handler(BaseHTTPRequestHandler):
             if 건너뜀:
                 조각.append(f"{건너뜀}명은 보낼 수 없어 건너뛰었습니다")
             return self._redirect(뒤로 + "&msg=" + urllib.parse.quote(" / ".join(조각)))
+
+        if path.startswith("/dash"):
+            if not can(me, "대시보드_조회"):
+                return self._deny("대시보드는 채용담당자 이상만 다룰 수 있습니다.")
+            data = urllib.parse.parse_qs(
+                self._read_body().decode("utf-8", "replace"), keep_blank_values=True
+            )
+
+            def 정수(키: str, 기본: int = 0) -> int:
+                try:
+                    return int((data.get(키) or [str(기본)])[0])
+                except ValueError:
+                    return 기본
+
+            if path == "/dash/add":
+                이름 = (data.get("name") or [""])[0]
+                try:
+                    did = boards.add(이름, 만든이=me.아이디,
+                                     설명=(data.get("desc") or [""])[0])
+                except ValueError as exc:
+                    return self._redirect("/dash?err=" + urllib.parse.quote(str(exc)))
+                if data.get("sample"):
+                    _예시블록(did)
+                audit.record(me.아이디, "대시보드", str(did), 항목="만들기", 새값=이름)
+                return self._redirect(f"/dash/edit?id={did}")
+
+            if path == "/dash/rename":
+                did = 정수("id")
+                try:
+                    boards.rename(did, (data.get("name") or [""])[0],
+                                  (data.get("desc") or [""])[0])
+                except ValueError as exc:
+                    return self._redirect(f"/dash/edit?id={did}&err="
+                                          + urllib.parse.quote(str(exc)))
+                return self._redirect(f"/dash/edit?id={did}&msg="
+                                      + urllib.parse.quote("저장했습니다."))
+
+            if path == "/dash/copy":
+                did = 정수("id")
+                옛 = boards.get(did)
+                if 옛 is None:
+                    return self._redirect("/dash")
+                for n in range(2, 50):
+                    새이름 = f"{옛.이름} 복사본{'' if n == 2 else n}"
+                    if not boards.by_name(새이름):
+                        break
+                새id = boards.copy(did, 새이름, 만든이=me.아이디)
+                audit.record(me.아이디, "대시보드", str(새id), 항목="복제", 새값=새이름)
+                return self._redirect(f"/dash/edit?id={새id}")
+
+            if path == "/dash/delete":
+                이름 = boards.delete(정수("id"))
+                if 이름:
+                    audit.record(me.아이디, "대시보드", 이름, 비고="대시보드 삭제")
+                return self._redirect("/dash?msg=" + urllib.parse.quote(
+                    f"'{이름}' 을 지웠습니다." if 이름 else "없는 대시보드입니다."))
+
+            if path == "/dash/block/add":
+                did = 정수("dash")
+                종류 = (data.get("kind") or [""])[0]
+                try:
+                    설정 = {"줄": 기본_프로필틀, "머리": "{한글_이름} ({현재_신분})"} \
+                        if 종류 == "프로필" else {}
+                    boards.add_block(did, 종류, 제목=종류, 설정=설정)
+                except ValueError as exc:
+                    return self._redirect(f"/dash/edit?id={did}&err="
+                                          + urllib.parse.quote(str(exc)))
+                return self._redirect(f"/dash/edit?id={did}")
+
+            if path == "/dash/block/move":
+                bid = 정수("id")
+                b = boards.block(bid)
+                boards.move_block(bid, 정수("dir", 1))
+                return self._redirect(f"/dash/edit?id={b.dashboard_id if b else 0}")
+
+            if path == "/dash/block/delete":
+                bid = 정수("id")
+                b = boards.block(bid)
+                did = b.dashboard_id if b else 0
+                이름 = boards.delete_block(bid)
+                if 이름:
+                    audit.record(me.아이디, "대시보드", str(did), 항목="블록 삭제",
+                                 이전값=이름)
+                return self._redirect(f"/dash/edit?id={did}")
+
+            if path == "/dash/block/save":
+                bid = 정수("id")
+                b = boards.block(bid)
+                if b is None:
+                    return self._redirect("/dash")
+                설정, 오류 = _블록설정(b, data)
+                if 오류:
+                    return self._redirect(f"/dash/edit?id={b.dashboard_id}&err="
+                                          + urllib.parse.quote(오류))
+                boards.save_block(bid, 제목=(data.get("title") or [""])[0], 설정=설정)
+                audit.record(me.아이디, "대시보드", str(b.dashboard_id),
+                             항목=f"{b.종류} 블록", 새값=(data.get("title") or [""])[0])
+                return self._redirect(f"/dash/edit?id={b.dashboard_id}&msg="
+                                      + urllib.parse.quote("블록을 저장했습니다."))
+            return self._redirect("/dash")
 
         if path == "/fields/add":
             if not can(me, "열_구성"):
