@@ -313,7 +313,17 @@ button.danger,.btn.danger{background:#b91c1c}
 table{border-collapse:collapse;width:100%;font-size:12.5px}
 th,td{border:1px solid var(--line);padding:5px 7px;text-align:left;white-space:nowrap;
  max-width:260px;overflow:hidden;text-overflow:ellipsis}
-th{background:#eef2f7;position:sticky;top:0}
+/* 머리글은 줄바꿈을 허용한다. 안 그러면 '저널_주저자_수' 같은 긴 이름 하나가
+   값은 한 글자뿐인 열을 통째로 넓혀 버린다. keep-all 은 한국어 낱말을 안 쪼갠다. */
+th{background:#eef2f7;position:sticky;top:0;white-space:normal;word-break:keep-all;
+ line-height:1.25;vertical-align:bottom;font-size:12px;padding:4px 6px}
+/* 열 성격에 맞춘 너비. 다 같게 하면 어떤 건 남고 어떤 건 모자란다. */
+.w-xs{max-width:76px;min-width:52px}
+.w-sm{max-width:96px;min-width:64px}
+.w-md{max-width:150px;min-width:88px}
+.w-lg{max-width:230px;min-width:130px}
+td.w-xl,th.w-xl{max-width:380px;min-width:200px;white-space:normal;
+ word-break:break-word;text-overflow:clip}
 tr:nth-child(even) td{background:#fafbfc}
 .scroll{overflow:auto;max-height:70vh;border:1px solid var(--line);border-radius:6px}
 .flag{color:#b91c1c;font-weight:700}
@@ -343,6 +353,9 @@ td.saved{background:#dcfce7 !important}
 td.err{background:#fee2e2 !important}
 td.edit input,td.edit select{padding:2px 4px;font-size:12.5px;width:100%}
 td.ctl,th.ctl{white-space:normal;max-width:none;overflow:visible}
+/* 고르는 칸이 긴 항목 이름만큼 늘어나 표를 밀어내지 않게 한다 */
+td.ctl select{max-width:180px}
+td.ctl input[type=text]{max-width:220px}
 .mergebar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#eff6ff;
  border:1px solid #bfdbfe;border-radius:6px;padding:10px 12px;margin:0 0 12px}
 .mergebar select{min-width:280px;max-width:100%}
@@ -804,7 +817,8 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
     채용중 = recruit.started()
     채용가능 = can(me, "채용현황_수정")
     이름표 = 라벨(COLS)
-    head = "".join(f"<th>{html.escape(이름표[c])}</th>" for c in COLS)
+    head = "".join(
+        f"<th class='{열폭(c)}'>{머리글(이름표[c])}</th>" for c in COLS)
     body_rows = []
     for rec in records:
         row = rec.to_row(registry)
@@ -815,28 +829,31 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
             f"<td>{_채용칸(cid, cid in 채용중, 채용가능)}</td>",
         ]
         for c in COLS:
+            폭 = 열폭(c)
             if c in MANAGE_COLUMNS or c in 보기전용열:
                 # 등록·보관 정보, 채용 현황, 메일 이력은 여기서 고치지 않는다.
                 # 고치는 자리가 따로 있는 값이라 여기서 덮어쓰면 어긋난다.
                 v = html.escape(표값.get(cid, {}).get(c, ""))
-                cells.append(f"<td class='muted' title='{v}'>{v}</td>")
+                cells.append(f"<td class='muted {폭}' title='{v}'>{v}</td>")
                 continue
             if c in 사용자열정의:
                 값 = 사용자값맵.get(cid, {}).get(c, "")
                 if 수정가능:
                     cells.append(_cell(cid, c, 값, 값,
-                                       custom_field_spec(사용자열정의[c]), scope="사용자"))
+                                       custom_field_spec(사용자열정의[c]),
+                                       scope="사용자", cls=" " + 폭))
                 else:
-                    cells.append(f"<td title='{html.escape(값)}'>{html.escape(값)}</td>")
+                    cells.append(f"<td class='{폭}' title='{html.escape(값)}'>"
+                                 f"{html.escape(값)}</td>")
                 continue
             표시 = str(row.get(c, "") or "")
             cls = " flag" if c == "검토_필요" and 표시 == "Y" else ""
             if 수정가능 and _editable(c):
                 cells.append(_cell(cid, c, 표시, str(getattr(rec, c, "") or ""),
-                                   field_spec(c), cls=cls))
+                                   field_spec(c), cls=cls + " " + 폭))
             else:
                 v = html.escape(표시)
-                cells.append(f"<td class='{cls.strip()}' title='{v}'>{v}</td>")
+                cells.append(f"<td class='{cls.strip()} {폭}' title='{v}'>{v}</td>")
         body_rows.append("<tr>" + "".join(cells) + "</tr>")
 
     # 걸어 둔 검색 조건. 엑셀도, 메일 보낸 뒤 돌아올 곳도 이 조건을 그대로 쓴다.
@@ -866,7 +883,8 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
                onclick="return confirm('선택한 지원자를 삭제합니다. 되돌릴 수 없습니다.')"
                >선택 삭제</button>
              <span class='muted'>체크한 사람에게 적용합니다. </span></p>
-          <div class='scroll'><table>
+          <div class='scroll'><table data-name='인재 Pool'
+                data-export='/export.xlsx{조건쿼리}'>
             <tr><th><input type='checkbox' onclick="selectVisible(this)"
                 title='보이는 줄만 선택합니다'>
             </th><th></th><th>채용</th>{head}</tr>
@@ -904,8 +922,7 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
             <button type='submit'>검색</button>
             <a class='btn sec' href='/'>초기화</a>
           </form>
-          <p><a class='btn' href='/export.xlsx{조건쿼리}'>엑셀(.xlsx) 다운로드</a>
-             <span class='muted'>{내려받기안내}</span></p>
+
           {안내}
           {table}
         </div>""",
@@ -1178,14 +1195,28 @@ function addToolbar(tb){
     if(ev.target && ev.target.name === 'ids') showPicked(tb);
   });
   showPicked(tb);
+  // 내려받기 단추는 표마다 **하나뿐**이다 (예전에는 카드 위에도 있었다).
+  //
+  // 표에 data-export 가 달려 있으면 서버가 만든 엑셀을 받는다 — 전화번호
+  // 앞자리 0 이 살아 있고 열 너비도 잡혀 있다. 다만 서버는 화면에서 방금
+  // 걸러낸 것까지는 모르므로, **표 위 찾기·열 필터를 쓰고 있으면** 보이는
+  // 줄 그대로 만들어 보낸다. 화면과 파일이 다르면 안 된다.
   bar.querySelector('.txlsx').addEventListener('click', function(){
+    var 걸러냄 = (tb.__q || '').trim() !== ''
+      || Object.keys(tb.__filters || {}).length > 0;
+    var 서버 = tb.dataset.export || '';
+    window.__leaving = true;
+    if(서버 && !걸러냄){
+      location.href = 서버;
+      setTimeout(function(){ window.__leaving = false; }, 1000);
+      return;
+    }
     var form = document.createElement('form');
     form.method = 'post'; form.action = '/table.xlsx';
     form.innerHTML = "<input type='hidden' name='name'><input type='hidden' name='tsv'>";
     form.elements.name.value = tb.dataset.name || document.title;
     form.elements.tsv.value = tableTSV(tb);
     document.body.appendChild(form);
-    window.__leaving = true;
     form.submit();
     setTimeout(function(){ form.remove(); window.__leaving = false; }, 1000);
   });
@@ -1382,6 +1413,50 @@ def 표열(registry_=None) -> list[str]:
     """지원자 표에 실제로 나갈 열 (숨김·순서 설정 반영)."""
     cfg = store.column_config()
     return store.arrange([c for c in 지원자열(registry_) if not 기본숨김(c, cfg)])
+
+
+#: 열 이름별 너비 등급. 값이 짧은 열에 넓은 자리를 주면 정작 긴 글이 잘린다.
+_넓은열 = {
+    "경력_요약", "검토_사유", "연구분야_키워드", "1저자_해외논문_제출처",
+    "메일_발송이력", "비고", "현재_소속_상세", "중복_메모", "원본_파일명",
+}
+_중간열 = {
+    "한글_이름", "영문_이름", "이메일", "전화번호", "현재_소속", "부서", "과제",
+    "경력_회사", "직책", "최종상태", "박사_학교", "석사_학교", "학사_학교",
+    "박사_전공", "석사_전공", "학사_전공", "박사_지도교수", "석사_지도교수",
+    "현재_지도교수", "등록일시", "보관_만료일",
+}
+_짧은열 = {
+    "이름_추정여부", "검토_필요", "박사_석박통합", "등록년도", "현재_신분",
+    "박사_학위상태", "생년월일",
+}
+
+
+def 머리글(이름: str) -> str:
+    """표 머리글 HTML. 밑줄 뒤에서 줄바꿈해도 된다고 알려준다.
+
+    `저널_주저자_수` 처럼 공백 없는 긴 이름은 한 낱말로 취급돼 줄바꿈이 안
+    되고, 값은 한 글자뿐인 열을 통째로 넓혀 버린다. <wbr> 로 끊을 자리를
+    준다 (글자를 넣는 게 아니라 '여기서 끊어도 된다' 는 표시다).
+    """
+    return html.escape(이름).replace("_", "_<wbr>")
+
+
+def 열폭(col: str) -> str:
+    """이 열에 줄 너비 등급 (CSS 클래스 이름)."""
+    if col in _넓은열:
+        return "w-xl"
+    if col in _중간열:
+        return "w-lg"
+    if col in _짧은열:
+        return "w-sm"
+    if col.endswith("_수") or col.startswith(TIER_COLUMN_PREFIX):
+        return "w-xs"
+    if col.endswith(("_시작", "_졸업", "_종료")):
+        return "w-sm"
+    if col in STAGES:
+        return "w-sm"
+    return "w-md"
 
 
 def 라벨(열들: list[str]) -> dict[str, str]:
@@ -3383,56 +3458,95 @@ def _users_page(me: User, error: str = "") -> bytes:
 
 
 def _org_page(me: User, error: str = "") -> bytes:
-    """부서 · 과제 편집. 과제는 부서에 속한다."""
+    """부서 · 과제 편집. 과제는 부서에 속한다.
+
+    예전에는 과제마다 입력칸과 단추가 글머리표 목록으로 늘어서서, 단추가
+    줄바꿈되고 무엇이 무엇에 딸린 것인지 알기 어려웠다. 부서 하나를 카드
+    하나로 두고, 그 안은 **표**로 정리했다.
+    """
     depts = auth.departments()
     projects = auth.projects()
+
+    # 배정된 지원자 수. 지우기 전에 무엇이 딸려 있는지 보이면 실수가 준다.
+    배정수: dict[int, int] = {}
+    for p in recruit.all().values():
+        if p.project_id:
+            배정수[p.project_id] = 배정수.get(p.project_id, 0) + 1
 
     카드 = []
     for d in depts:
         소속 = [p for p in projects if p["부서_id"] == d["id"]]
-        항목 = "".join(
-            "<li style='margin-bottom:6px'>"
-            "<form method='post' action='/org/project/rename' style='display:flex;gap:6px'>"
+        사람 = sum(배정수.get(p["id"], 0) for p in 소속)
+        줄 = "".join(
+            "<tr>"
+            f"<td class='ctl'><input type='text' name='name' form='pf{p['id']}'"
+            f" value='{html.escape(p['이름'])}' style='width:240px'></td>"
+            f"<td class='ctl'><input type='password' name='invite' form='pf{p['id']}'"
+            " placeholder='바꿀 때만 입력' style='width:170px'"
+            " autocomplete='new-password'>"
+            + ("<br><span class='muted'>지금 걸려 있음</span>" if p["초대암호"]
+               else "<br><span class='muted'>없음</span>")
+            + "</td>"
+            f"<td class='w-sm'>{배정수.get(p['id'], 0)}명</td>"
+            "<td class='ctl' style='white-space:nowrap'>"
+            f"<form method='post' action='/org/project/rename' id='pf{p['id']}'"
+            " style='display:inline'>"
             f"<input type='hidden' name='id' value='{p['id']}'>"
-            f"<input type='text' name='name' value='{html.escape(p['이름'])}' style='width:200px'>"
-            "<input type='password' name='invite' placeholder='초대암호 변경(비우면 유지)'>"
-            "<button type='submit'>이름/암호 저장</button></form>"
-            + (" <span class='muted'>초대암호 있음</span>" if p["초대암호"] else "")
-            + " <form method='post' action='/org/project/delete' style='display:inline'"
-            " onsubmit=\"return confirm('과제를 삭제합니다. 배정도 함께 지워집니다.')\">"
+            "<button type='submit'>저장</button></form> "
+            "<form method='post' action='/org/project/delete' style='display:inline'"
+            f" onsubmit=\"return confirm('과제 \\'{html.escape(p['이름'])}\\' 를 "
+            f"삭제합니다. 배정된 지원자 {배정수.get(p['id'], 0)}명의 배정도 함께 "
+            "풀립니다.')\">"
             f"<input type='hidden' name='id' value='{p['id']}'>"
-            "<button class='danger'>삭제</button></form></li>"
+            "<button class='danger'>삭제</button></form></td></tr>"
             for p in 소속
-        ) or "<li class='muted'>과제 없음</li>"
+        ) or ("<tr><td colspan='4' class='muted'>아직 과제가 없습니다. "
+              "아래에서 추가하세요.</td></tr>")
+
         카드.append(
-            # 폼 안에 폼을 넣으면 브라우저가 안쪽을 버린다. 그래서 '부서 삭제' 를
-            # 눌러도 삭제가 아니라 이름 저장이 실행되고 있었다. 나란히 둔다.
-            "<div class='card'><h2 style='display:flex;gap:6px;align-items:center'>"
-            "<form method='post' action='/org/dept/rename' style='display:flex;gap:6px'>"
+            "<div class='card'>"
+            # 폼 안에 폼을 넣으면 브라우저가 안쪽을 버린다. 나란히 둔다.
+            "<div style='display:flex;gap:8px;align-items:center;flex-wrap:wrap;"
+            "margin-bottom:10px'>"
+            "<form method='post' action='/org/dept/rename'"
+            " style='display:flex;gap:6px;align-items:center'>"
             f"<input type='hidden' name='id' value='{d['id']}'>"
-            f"<input type='text' name='name' value='{html.escape(d['이름'])}' style='width:220px'>"
+            f"<input type='text' name='name' value='{html.escape(d['이름'])}'"
+            " style='width:220px;font-weight:700'>"
             "<button type='submit'>부서명 저장</button></form>"
-            "<form method='post' action='/org/dept/delete'"
-            " onsubmit=\"return confirm('부서를 삭제하면 그 아래 과제와 배정도 함께 지워집니다.')\">"
+            "<form method='post' action='/org/dept/delete' style='display:inline'"
+            f" onsubmit=\"return confirm('부서 \\'{html.escape(d['이름'])}\\' 와 "
+            f"그 아래 과제 {len(소속)}개를 삭제합니다. 배정도 함께 풀립니다.')\">"
             f"<input type='hidden' name='id' value='{d['id']}'>"
             "<button class='danger'>부서 삭제</button></form>"
-            f"<span class='muted'>과제 {len(소속)}개</span></h2><ul>{항목}</ul>"
-            "<form method='post' action='/org/project/add' style='display:flex;gap:8px'>"
+            f"<span class='muted'>과제 {len(소속)}개 · 배정된 지원자 {사람}명</span>"
+            "</div>"
+            "<table style='width:auto'><tr><th>과제 이름</th>"
+            "<th>초대암호</th><th class='w-sm'>배정</th>"
+            "<th></th></tr>" + 줄 + "</table>"
+            "<form method='post' action='/org/project/add'"
+            " style='display:flex;gap:8px;margin-top:10px;flex-wrap:wrap'>"
             f"<input type='hidden' name='dept' value='{d['id']}'>"
-            "<input type='text' name='name' placeholder='과제 이름' required>"
-            "<input type='password' name='invite' placeholder='초대암호(선택)'>"
-            "<button type='submit'>과제 추가</button></form></div>"
+            "<input type='text' name='name' placeholder='새 과제 이름' required"
+            " style='width:240px'>"
+            "<input type='password' name='invite' placeholder='초대암호 (선택)'"
+            " autocomplete='new-password' style='width:200px'>"
+            "<button type='submit'>과제 추가</button></form>"
+            "</div>"
         )
 
     오류 = f"<p class='flag'>{html.escape(error)}</p>" if error else ""
     본문 = (
-        "<div class='card'><p><a class='btn sec' href='/org'>부서·과제로</a></p></div>"
-        + "<div class='card'><h2>부서 추가</h2>" + 오류
-        + "<form method='post' action='/org/dept/add' style='display:flex;gap:8px'>"
-        "<input type='text' name='name' placeholder='부서 이름' required>"
-        "<button type='submit'>추가</button></form>"
-        "<p class='muted'>과제는 부서에 속합니다. 표에서 부서를 고르면 그 부서의 과제만 나옵니다.</p>"
-        "</div>"
+        "<div class='card'><h2>부서 추가 "
+        "<span class='muted'>과제는 부서에 속합니다</span></h2>" + 오류
+        + "<form method='post' action='/org/dept/add'"
+        " style='display:flex;gap:8px;flex-wrap:wrap'>"
+        "<input type='text' name='name' placeholder='부서 이름' required"
+        " style='width:240px'>"
+        "<button type='submit'>추가</button>"
+        "<a class='btn sec' href='/org'>부서·과제로</a></form>"
+        "<p class='muted'>현업 계정은 <b>과제</b>에 배정됩니다. 초대암호를 걸면 "
+        "그 암호를 아는 사람만 그 과제로 계정을 만들 수 있습니다.</p></div>"
         + ("".join(카드) or "<div class='card muted'>부서를 먼저 추가하세요.</div>")
     )
     return _page("부서·과제 편집", 본문, me=me)
@@ -3648,7 +3762,7 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
                 cells.append(f"<td{cls}>{v}</td>")
             else:
                 # 지원자 정보 열은 보기만 한다 (고치려면 인재 Pool/상세에서)
-                cells.append(f"<td title='{v}'>{v}</td>")
+                cells.append(f"<td class='{열폭(col)}' title='{v}'>{v}</td>")
         체크 = (f"<td><input type='checkbox' form='mailform' name='ids'"
               f" value='{html.escape(cid)}'></td>" if 메일가능 else "")
         링크 = f"<td><a href='/candidate?id={urllib.parse.quote(cid)}'>상세</a></td>"
@@ -3657,8 +3771,8 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
 
     체크머리 = ("<th><input type='checkbox' onclick='selectVisible(this)'"
              " title='보이는 줄만 선택합니다'></th>" if 메일가능 else "")
-    머리 = 체크머리 + "<th></th>" + "".join(
-        f"<th>{html.escape(이름표[c])}</th>" for c in 표열)
+    머리 = 체크머리 + "<th class='w-xs'></th>" + "".join(
+        f"<th class='{열폭(c)}'>{머리글(이름표[c])}</th>" for c in 표열)
     알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
     오류 = f"<div class='warn'>{html.escape(error)}</div>" if error else ""
     안내 = (
@@ -3674,23 +3788,36 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
         f"<input type='hidden' form='recruitform' name='사용자열_{n}'"
         f" value='{html.escape(c)}'>" for c, n in 열번호.items()
     )
-    메일바 = (
-        "<form method='post' action='/mail/compose' id='mailform' class='mergebar'>"
-        "<input type='hidden' name='back' value='/recruit'>"
-        "<button type='submit'>선택한 사람에게 메일</button>"
-        "<span class='muted'>여기서는 <b>누가 어느 단계인지 보면서</b> 고를 수 "
-        "있습니다. 표 위 찾기 칸으로 걸러 놓고 전체선택을 누르면 "
-        "<b>보이는 줄만</b> 선택됩니다.</span></form>"
+    # 파란 띠를 두 개 쌓으면 화면이 무겁다. 띠는 하나로 두고 그 안에 단추를
+    # 나란히 놓는다. 폼은 표 밖에 두고 form= 로 잇는다 (폼 중첩 금지).
+    메일폼 = (
+        "<form method='post' action='/mail/compose' id='mailform'>"
+        "<input type='hidden' name='back' value='/recruit'></form>"
         if rows and 메일가능 else ""
     )
-    저장바 = (
-        "<form method='post' action='/recruit/save' id='recruitform' class='mergebar'>"
-        + 열이름칸
-        + "<button type='submit'>고친 내용 저장</button>"
-        "<span class='muted'>여러 줄을 고친 뒤 <b>한 번만</b> 누르세요. "
-        "고친 칸은 노랗게 표시됩니다.</span></form>"
+    저장폼 = (
+        "<form method='post' action='/recruit/save' id='recruitform'>"
+        + 열이름칸 + "</form>"
         if rows and (수정가능 or 담당자) else ""
     )
+    단추들 = []
+    if 저장폼:
+        단추들.append("<button type='submit' form='recruitform'>고친 내용 저장</button>")
+    if 메일폼:
+        단추들.append("<button type='submit' form='mailform' class='sec'>"
+                    "선택한 사람에게 메일</button>")
+    저장바 = (
+        메일폼 + 저장폼
+        + "<div class='mergebar'>" + " ".join(단추들)
+        + "<span class='muted'>"
+        + ("여러 줄을 고친 뒤 <b>한 번만</b> 누르세요. 고친 칸은 노랗게 표시됩니다. "
+           if 저장폼 else "")
+        + ("메일은 체크한 사람에게만 갑니다 — 여기서는 <b>누가 어느 단계인지 "
+           "보면서</b> 고를 수 있습니다." if 메일폼 else "")
+        + "</span></div>"
+        if 단추들 else ""
+    )
+    메일바 = ""
     열구성 = (
         "<a class='btn sec' href='/recruit/columns'>표 열 구성</a> "
         if can(me, "열_구성") else ""
@@ -3701,7 +3828,9 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
            if can(me, "지원자_목록") else "채용담당자가 시작하면 보입니다.</p>")
     )
     표 = (
-        f"<div class='scroll'><table data-name='채용현황'><tr>{머리}</tr>{''.join(rows)}</table></div>"
+        "<div class='scroll'><table data-name='채용현황'"
+        " data-export='/recruit/export.xlsx'>"
+        f"<tr>{머리}</tr>{''.join(rows)}</table></div>"
         if rows else 빈화면
     )
     # 표가 비어 있을 때는 빈 화면 안내가 같은 말을 하므로 두 번 쓰지 않는다.
@@ -3713,7 +3842,7 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
         "채용 현황",
         f"""{알림}{오류}<div class='card'><h2>채용 현황 <span class='muted'>{len(records)}명</span></h2>
         <p class='muted'>{안내}{출처}</p>
-        <p>{열구성}<a class='btn' href='/recruit/export.xlsx'>엑셀(.xlsx) 다운로드</a></p>
+        <p>{열구성}</p>
         {메일바}{저장바}{표}</div>
         <script>var 과제표 = {과제표};{_RECRUIT_JS}</script>""",
         me=me,

@@ -82,8 +82,12 @@ class Project:
     담당: str = ""
     원본: dict = field(default_factory=dict)
 
-    def 요약(self, 최대: int = 1200) -> str:
-        """LLM 에 넘길 한 덩어리 글."""
+    def 요약(self, 최대: int = 4000) -> str:
+        """LLM 에 넘길 한 덩어리 글.
+
+        컨텍스트가 넉넉하므로 넉넉히 넘긴다. 설명을 잘라 내면 그 과제가
+        무엇을 하는 건지 모델이 덜 알게 되고, 그대로 점수에 반영된다.
+        """
         조각 = [f"과제명: {self.이름}"]
         if self.번호:
             조각.append(f"과제번호: {self.번호}")

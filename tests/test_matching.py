@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import json
 
 import pytest
@@ -594,3 +596,69 @@ def test_prompt_tells_the_model_to_weigh_recent_work():
 
     글 = "\n".join(m["content"] for m in _prompt("프로필", [Project(키="P", 이름="과제")]))
     assert "최근 연구" in 글 or "최근 연구·경력" in 글
+
+
+# --- 한 번에 다 묻고, 잘리면 그때만 쪼갠다 ----------------------------------------
+class 잘리는LLM:
+    """과제가 N개를 넘으면 잘렸다고 하는 가짜 모델."""
+
+    def __init__(self, 한계: int):
+        self.한계 = 한계
+        self.호출 = []
+
+    def chat_json(self, messages, schema, **kw):
+        from cvtool.clients.llm import LLMTruncated
+
+        글 = "\n".join(m["content"] for m in messages)
+        키들 = re.findall(r"\[과제키: ([^\]]+)\]", 글)
+        self.호출.append(len(키들))
+        if len(키들) > self.한계:
+            raise LLMTruncated("출력이 토큰 한도에 걸려 잘렸습니다.")
+        return {"결과": [{"과제키": k, "점수": 70, "사유": "그럴듯"} for k in 키들]}
+
+    def close(self):
+        pass
+
+
+def _과제들(n: int) -> list[Project]:
+    return [Project(키=f"P{i}", 이름=f"과제 {i}") for i in range(n)]
+
+
+def test_everything_goes_in_one_call_by_default():
+    """나눠 물으면 묶음 경계를 넘는 점수가 서로 안 맞는다. 한 번에 보여준다."""
+    llm = 잘리는LLM(한계=100)
+    결과 = match("프로필", _과제들(30), client=llm)
+    assert llm.호출 == [30]
+    assert len(결과) == 30 and all(m.평가됨 for m in 결과)
+
+
+def test_a_truncated_answer_is_split_in_half_and_retried():
+    """쪼개는 건 결과를 잃지 않기 위한 마지막 수단이다."""
+    llm = 잘리는LLM(한계=8)
+    결과 = match("프로필", _과제들(16), client=llm)
+    assert llm.호출[0] == 16                  # 일단 통째로 물어본다
+    assert 8 in llm.호출                      # 잘리자 반씩 나눴다
+    assert len(결과) == 16 and all(m.평가됨 for m in 결과)
+
+
+def test_splitting_recurses_until_it_fits():
+    llm = 잘리는LLM(한계=3)
+    결과 = match("프로필", _과제들(16), client=llm)
+    assert all(m.평가됨 for m in 결과)
+    assert max(llm.호출[1:]) <= 8             # 점점 작아진다
+
+
+def test_a_single_project_that_still_truncates_is_marked_unrated():
+    """하나로도 안 되면 그건 우리가 어쩔 수 없다. 조용히 빼지 않는다."""
+    llm = 잘리는LLM(한계=0)
+    결과 = match("프로필", _과제들(2), client=llm)
+    assert len(결과) == 2
+    assert all(not m.평가됨 for m in 결과)
+    assert all("채점하지 않았습니다" in m.사유 for m in 결과)
+
+
+def test_batch_setting_still_works_when_set():
+    """0 이 아니면 예전처럼 그 크기로 나눈다 (되돌릴 길은 남겨 둔다)."""
+    llm = 잘리는LLM(한계=100)
+    match("프로필", _과제들(10), client=llm, batch=4)
+    assert llm.호출 == [4, 4, 2]

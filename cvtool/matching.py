@@ -29,7 +29,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
-from .clients.llm import LLMClient, LLMError
+from .clients.llm import LLMClient, LLMError, LLMTruncated
 from .config import settings
 from .projects import Project
 
@@ -142,14 +142,18 @@ def candidate_profile(rec, registry=None) -> str:
 
     논문 = getattr(rec, "논문", []) or []
     # 제목이 분야를 가장 잘 알려준다. 제출처는 그 다음.
-    제목들 = [p.제목 for p in 논문 if getattr(p, "제목", "") and p.주저자][:15]
+    # 컨텍스트가 넉넉하다. 잘라 내면 그만큼 판단 근거가 줄어든다.
+    제목들 = [p.제목 for p in 논문 if getattr(p, "제목", "") and p.주저자][:60]
     if 제목들:
         줄.append("주저자 논문 제목: " + " / ".join(제목들))
-    제출처 = [p.제출처 for p in 논문 if getattr(p, "제출처", "") and p.주저자][:15]
+    공저제목 = [p.제목 for p in 논문 if getattr(p, "제목", "") and not p.주저자][:30]
+    if 공저제목:
+        줄.append("공저자 논문 제목: " + " / ".join(공저제목))
+    제출처 = [p.제출처 for p in 논문 if getattr(p, "제출처", "") and p.주저자][:60]
     if 제출처:
         줄.append("주저자 논문 제출처: " + " / ".join(제출처))
     특허 = getattr(rec, "특허", []) or []
-    제목들 = [pt.제목 for pt in 특허 if getattr(pt, "제목", "")][:8]
+    제목들 = [pt.제목 for pt in 특허 if getattr(pt, "제목", "")][:30]
     if 제목들:
         줄.append("특허: " + " / ".join(제목들))
     return "\n".join(줄)
@@ -230,13 +234,48 @@ def _한묶음(profile: str, 후보: list[Project], llm: LLMClient) -> dict[str,
     return 나온것
 
 
+def _물어보기(profile: str, 후보: list[Project], llm: LLMClient,
+            답: dict[str, dict], 메모: list[str]) -> None:
+    """한 묶음을 묻는다. 답이 잘리면 **반씩 쪼개** 다시 묻는다.
+
+    예전에는 작은 묶음으로 나눠 물어서 잘림을 피했다. 그런데 나눠 물으면
+    모델이 묶음 안에서만 상대 비교를 하게 돼서, 묶음 경계를 넘는 점수가
+    서로 안 맞는다. **한 번에 다 보여주는 쪽이 줄을 제대로 세운다.**
+
+    그래서 순서를 뒤집었다 — 일단 통째로 묻고, 정말 잘렸을 때만 쪼갠다.
+    쪼개는 건 결과를 잃지 않기 위한 마지막 수단이지 기본 방식이 아니다.
+    """
+    if not 후보:
+        return
+    try:
+        답.update(_한묶음(profile, 후보, llm))
+    except LLMTruncated:
+        if len(후보) == 1:
+            메모.append(f"'{후보[0].이름}' 하나로도 답이 잘렸습니다 "
+                      "(CVTOOL_LLM_MAX_TOKENS 를 늘려 보세요)")
+            return
+        가운데 = len(후보) // 2
+        메모.append(f"과제 {len(후보)}개를 한 번에 물으니 답이 잘려 "
+                  f"{가운데}개씩 나눠 다시 물었습니다")
+        _물어보기(profile, 후보[:가운데], llm, 답, 메모)
+        _물어보기(profile, 후보[가운데:], llm, 답, 메모)
+        return
+
+    빠진것 = [p for p in 후보 if p.키 not in 답]
+    if 빠진것 and len(빠진것) < len(후보):   # 일부만 빠졌으면 그것만 다시
+        try:
+            답.update(_한묶음(profile, 빠진것, llm))
+        except LLMTruncated:
+            pass
+
+
 def match(profile: str, projects: list[Project], *, client: LLMClient | None = None,
           embed_client=None, batch: int | None = None) -> list[Match]:
     """지원자 요약 -> **모든 과제**의 점수·사유 (점수 높은 순).
 
-    한 번에 다 묻지 않고 몇 개씩 나눠 묻는다. 답이 길어져 잘리면 결과가 통째로
-    사라지기 때문이다. 답하지 않은 과제는 한 번 더 묻고, 그래도 없으면
-    '미평가' 로 남긴다 — 조용히 빼면 사람이 비교된 줄 안다.
+    기본은 **한 번에 전부** 묻는다. 그래야 모델이 과제들을 나란히 놓고 줄을
+    세운다. 답이 잘리면 반씩 쪼개 다시 묻고, 그래도 답 없는 과제는 '미평가'
+    로 남긴다 — 조용히 빼면 사람이 비교된 줄 안다.
     """
     if not projects:
         return []
@@ -244,20 +283,18 @@ def match(profile: str, projects: list[Project], *, client: LLMClient | None = N
         raise LLMError("매칭할 지원자 정보가 비어 있습니다. CV 추출 결과를 확인하세요.")
 
     유사도 = similarities(profile, projects, embed_client)
-    # 비슷해 보이는 것부터 묻는다 (결과는 같지만 앞쪽 묶음이 더 유용하다)
+    # 비슷해 보이는 것부터 묻는다 (결과는 같지만 앞쪽이 더 눈에 든다)
     순서 = sorted(projects, key=lambda p: -유사도.get(p.키, 0.0)) if 유사도 else list(projects)
-    크기 = max(1, batch or settings.match_batch)
+    정한크기 = batch if batch is not None else settings.match_batch
+    크기 = len(순서) if 정한크기 <= 0 else max(1, 정한크기)
 
     llm = client or LLMClient()
     닫아야 = client is None
     답: dict[str, dict] = {}
+    메모: list[str] = []
     try:
         for i in range(0, len(순서), 크기):
-            묶음 = 순서[i:i + 크기]
-            답.update(_한묶음(profile, 묶음, llm))
-            빠진것 = [p for p in 묶음 if p.키 not in 답]
-            if 빠진것:                       # 한 번만 다시 묻는다
-                답.update(_한묶음(profile, 빠진것, llm))
+            _물어보기(profile, 순서[i:i + 크기], llm, 답, 메모)
     finally:
         if 닫아야:
             llm.close()

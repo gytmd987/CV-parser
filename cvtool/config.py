@@ -26,7 +26,12 @@ class Settings:
     llm_api_key: str = _env("CVTOOL_LLM_API_KEY", "EMPTY")  # 인증 없음
     llm_timeout: float = float(_env("CVTOOL_LLM_TIMEOUT", "180"))
     # 명시하지 않으면 서버 설정에 따라 출력이 조용히 잘린다.
-    llm_max_tokens: int = int(_env("CVTOOL_LLM_MAX_TOKENS", "8192"))
+    #
+    # 이 값은 **한 번에 생성할 출력 상한**이지 목표치가 아니다. 모델은 답이
+    # 끝나면 멈추므로 크게 잡아도 평소 속도에는 영향이 없다. 반대로 작으면
+    # 논문 많은 사람이나 과제 많은 매칭에서 **JSON 이 중간에 잘려 통째로**
+    # 날아간다. 정확도가 먼저라 넉넉히 잡는다.
+    llm_max_tokens: int = int(_env("CVTOOL_LLM_MAX_TOKENS", "32768"))
 
     # 2단계 추출: 먼저 자유롭게 읽고 정리(추론 허용) -> 그 결과를 JSON 으로 강제.
     # guided_json 은 첫 토큰부터 문법을 강제해서 추론 모델이 생각할 자리를 없앤다.
@@ -71,7 +76,13 @@ class Settings:
     # 이 파일이 있으면 매칭은 **원본 대신 이 파일**을 쓴다.
     projects_curated: str = _env("CVTOOL_PROJECTS_CURATED", "")
     # 한 번에 물어볼 과제 수. **과제는 전부 비교하고**, 답이 잘리지 않게 나눠 묻는다.
-    match_batch: int = int(_env("CVTOOL_MATCH_BATCH", "5"))
+    # 한 번에 몇 개 과제를 물어볼지. **0 이면 전부 한 번에** 넣는다(기본).
+    #
+    # 나눠 물으면 모델이 묶음 안에서만 상대 비교를 하게 돼서, 묶음 경계를
+    # 넘는 점수가 서로 안 맞는다. 한 번에 다 보여줘야 줄을 제대로 세운다.
+    # 답이 잘리면 자동으로 반씩 쪼개 다시 물으므로(_한묶음 참고) 크게 잡아도
+    # 결과를 잃지 않는다.
+    match_batch: int = int(_env("CVTOOL_MATCH_BATCH", "0"))
     # 화면에 기본으로 보여줄 상위 과제 수 (나머지는 '전체 보기')
     match_show: int = int(_env("CVTOOL_MATCH_SHOW", "3"))
     # CV 를 분석한 뒤 매칭까지 자동으로 돌릴지. 과제 파일이 있을 때만 뜻이 있다.

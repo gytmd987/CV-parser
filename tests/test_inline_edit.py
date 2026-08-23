@@ -948,7 +948,8 @@ def test_pool_table_shows_recruit_and_mail_columns(web, cid):
     for c in ("부서", "과제", "서류 검토", "최종상태", "비고", "메일_발송이력"):
         assert c in 열, c
     page = web.get("/")
-    assert "메일_발송이력" in page
+    # 머리글은 밑줄 뒤에 <wbr> 를 넣어 줄바꿈을 허용한다
+    assert "메일_<wbr>발송이력" in page
 
 
 def test_recruit_columns_are_read_only_in_the_pool(web, cid):
@@ -1164,3 +1165,38 @@ def test_redirect_headers_survive_korean_fragments(web, 검토cid):
     코드, _ = web.post_raw("/candidate/review/done", id=검토cid,
                           사유="현재_신분을 판단하지 못함")
     assert 코드 in (200, 303)
+
+
+def test_long_column_names_may_wrap_in_the_header(web):
+    """'저널_주저자_수' 같은 이름은 공백이 없어 한 낱말로 취급된다.
+    끊을 자리를 안 주면 값이 한 글자뿐인 열을 통째로 넓혀 버린다."""
+    assert web.module.머리글("저널_주저자_수") == "저널_<wbr>주저자_<wbr>수"
+    assert web.module.머리글("이름") == "이름"
+
+
+def test_column_widths_match_what_the_column_holds(web):
+    """다 같은 너비면 어떤 건 남고 어떤 건 모자란다."""
+    폭 = web.module.열폭
+    assert 폭("저널_주저자_수") == "w-xs"          # 숫자 한두 자리
+    assert 폭("박사_졸업") == "w-sm"               # 202602
+    assert 폭("한글_이름") == "w-lg"
+    assert 폭("경력_요약") == "w-xl"               # 길어서 줄바꿈까지 허용
+    assert 폭("서류 검토") == "w-sm"
+
+
+def test_only_one_excel_button_per_table(web, cid):
+    """카드 위에도 있고 표 위에도 있어서 두 개였다."""
+    for 길 in ("/", "/recruit"):
+        page = web.get(길)
+        본문 = page.split("<main>", 1)[1]
+        assert "엑셀(.xlsx) 다운로드" not in 본문
+        # 표 우상단 단추는 공용 스크립트가 만든다
+        assert "txlsx" in page
+
+
+def test_the_pool_table_carries_its_server_export_link(web, cid):
+    """단추 하나로 서버가 만든 엑셀(전화번호 앞자리 0 보존)을 받는다."""
+    page = web.get("/")
+    assert "data-export='/export.xlsx" in page
+    page = web.get("/?q=" + urllib.parse.quote("홍길동"))
+    assert "data-export='/export.xlsx?q=" in page

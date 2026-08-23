@@ -530,8 +530,10 @@ def test_paper_titles_go_into_the_matching_profile():
         Paper(제목="공저자 논문", 제출처="Optics Express", 저자구분="공저자"),
     ])
     프로필 = candidate_profile(rec)
-    assert "Plasma etching of Si" in 프로필
-    assert "공저자 논문" not in 프로필
+    assert "주저자 논문 제목: Plasma etching of Si" in 프로필
+    # 공저자 논문도 넣되 **줄을 나눠** 어느 쪽인지 알려준다
+    assert "공저자 논문 제목: 공저자 논문" in 프로필
+    assert "Optics Express" not in 프로필      # 제출처는 주저자 것만
 
 
 def test_old_records_without_titles_still_work():
