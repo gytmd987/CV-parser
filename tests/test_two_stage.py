@@ -294,3 +294,109 @@ def test_falls_through_to_plain_when_both_structured_modes_fail():
     rec = extract_cv_from_text("이력서", client=client, two_stage=False)
     assert seen[:3] == ["guided_json", "response_format", "plain"]
     assert rec.현재_신분 == "박사"
+
+
+# --- 한 번에 추출 ------------------------------------------------------------
+def _oneshot_client(reply=None, finish="stop"):
+    """네 부분을 한 덩어리로 돌려주는 목 클라이언트."""
+    calls: list[dict] = []
+    통짜 = reply if reply is not None else {
+        "basic": {"한글_이름": "홍길동", "영문_이름": "Gildong Hong",
+                  "한글_이름_출처": "원문", "영문_이름_출처": "원문",
+                  "현재_신분": "박사"},
+        "education": {"박사_학교": "서울대학교"},
+        "research": {"논문": [], "특허": [], "연구분야_키워드": ["그래프 신경망"]},
+        "career": {"경력": []},
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        calls.append(payload)
+        schema = payload.get("guided_json") or (
+            payload.get("response_format", {}).get("json_schema", {}).get("schema")
+        )
+        if schema is None:
+            return httpx.Response(200, json={"choices": [
+                {"finish_reason": "stop", "message": {"content": DIGEST}}]})
+        props = set(schema.get("properties", {}))
+        if "basic" in props:                      # 한 덩어리 요청
+            return httpx.Response(200, json={"choices": [{
+                "finish_reason": finish,
+                "message": {"content": json.dumps(통짜, ensure_ascii=False)}}]})
+        # 부분별 요청 (되돌아왔을 때)
+        조각 = {"basic": {"한글_이름": "홍길동", "영문_이름": "Gildong Hong",
+                        "한글_이름_출처": "원문", "영문_이름_출처": "원문",
+                        "현재_신분": "박사"},
+              "education": {"박사_학교": "서울대학교"},
+              "research": {"논문": [], "특허": [], "연구분야_키워드": ["복구됨"]},
+              "career": {"경력": []}}[_section_of(props)]
+        return httpx.Response(200, json={"choices": [{
+            "finish_reason": "stop",
+            "message": {"content": json.dumps(조각, ensure_ascii=False)}}]})
+
+    return calls, LLMClient(client=httpx.Client(transport=httpx.MockTransport(handler)))
+
+
+def test_oneshot_asks_only_twice():
+    """CV 전문을 네 번 다시 보내는 게 느린 원인이었다. 한 번만 보낸다."""
+    calls, client = _oneshot_client()
+    rec = extract_cv_from_text("이력서 본문", client=client, oneshot=True)
+    assert len(calls) == 2                       # 통독 1 + 구조화 1
+    assert rec.한글_이름 == "홍길동"
+    assert rec.박사_학교 == "서울대학교"
+    assert "그래프 신경망" in rec.연구분야_키워드
+
+
+def test_split_mode_still_asks_five_times():
+    """기본은 그대로다. 켜야만 바뀐다."""
+    calls, client = _recording_client()
+    extract_cv_from_text("이력서 본문", client=client, oneshot=False)
+    assert len(calls) == 5
+
+
+def test_oneshot_falls_back_when_the_answer_is_cut(monkeypatch):
+    """답이 잘리면 부분별로 다시 받는다 — 느려질 뿐 틀리지 않는다."""
+    calls, client = _oneshot_client(finish="length")
+    rec = extract_cv_from_text("이력서 본문", client=client, oneshot=True)
+    assert rec.한글_이름 == "홍길동"              # 통째로 날아가지 않는다
+    assert "복구됨" in rec.연구분야_키워드         # 부분별 답으로 채워졌다
+    assert "잘려" in rec.검토_사유                # 무슨 일이 있었는지 남는다
+
+
+def test_oneshot_keeps_what_came_and_refetches_what_did_not():
+    """절반만 온 답도 버리지 않는다. 온 것은 쓰고 빠진 것만 다시 받는다."""
+    calls, client = _oneshot_client(reply={
+        "basic": {"한글_이름": "김철수", "영문_이름": "Chulsoo Kim",
+                  "한글_이름_출처": "원문", "영문_이름_출처": "원문",
+                  "현재_신분": "박사"},
+        "education": {"박사_학교": "카이스트"},
+        # research · career 가 통째로 빠졌다
+    })
+    rec = extract_cv_from_text("이력서 본문", client=client, oneshot=True)
+    assert rec.한글_이름 == "김철수"              # 온 것은 그대로 쓰고
+    assert rec.박사_학교 == "카이스트"
+    assert "복구됨" in rec.연구분야_키워드         # 빠진 것만 따로 받았다
+    assert "빠져" in rec.검토_사유
+
+
+def test_oneshot_and_split_use_the_same_rules():
+    """안내문을 새로 쓰면 두 길이 다른 규칙으로 답한다. 그대로 물려받는다."""
+    from cvtool.extract import _ALL_HINT, _BASIC_HINT, _CAREER_HINT, _EDU_HINT
+
+    합친것 = _ALL_HINT.format(basic=_BASIC_HINT, edu=_EDU_HINT,
+                            research=_RESEARCH_HINT.format(이름="아무개"),
+                            career=_CAREER_HINT)
+    for 조각 in (_BASIC_HINT, _EDU_HINT, _CAREER_HINT):
+        assert 조각 in 합친것
+
+
+def test_oneshot_schema_reuses_the_section_schemas():
+    """스키마도 마찬가지다. 한쪽만 고치면 두 길이 조용히 어긋난다."""
+    from cvtool.schemas import (SECTION_ALL, SECTION_BASIC, SECTION_CAREER,
+                                SECTION_EDUCATION, SECTION_RESEARCH)
+
+    assert SECTION_ALL["properties"] == {
+        "basic": SECTION_BASIC, "education": SECTION_EDUCATION,
+        "research": SECTION_RESEARCH, "career": SECTION_CAREER,
+    }
+    assert set(SECTION_ALL["required"]) == {"basic", "education", "research", "career"}

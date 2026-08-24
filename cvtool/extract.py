@@ -18,13 +18,14 @@ import json
 import uuid
 from pathlib import Path
 
-from .clients.llm import LLMClient, LLMError
+from .clients.llm import LLMClient, LLMError, LLMTruncated
 from . import normalize as N
 from .config import settings
 from .ingestion.parsers import extract_text
 from .schemas import (
     학위상태_ENUM,
     현재_신분_ENUM,
+    SECTION_ALL,
     SECTION_BASIC,
     SECTION_CAREER,
     SECTION_EDUCATION,
@@ -153,6 +154,34 @@ _CAREER_HINT = """앞의 정리 내용과 이력서 원문에서 **일한 경력
 - 시작/종료는 YYYYMM 6자리. 재직 중이면 종료를 "재직중"으로."""
 
 
+#: 한 번에 뽑을 때의 안내문.
+#:
+#: 네 안내문을 **그대로** 이어 붙인다. 여기서 문구를 새로 쓰면 나눠 부를 때와
+#: 한 번에 부를 때가 서로 다른 규칙으로 답하게 되고, 둘을 비교할 수가 없다.
+#: 앞에 지도만 하나 붙여서 어느 덩어리에 무엇을 넣는지 알려준다.
+_ALL_HINT = """앞의 정리 내용과 이력서 원문에서 **네 부분을 한 번에** 채워라.
+
+  basic      인적사항
+  education  학력
+  research   논문 · 특허 · 연구분야 키워드
+  career     일한 경력
+
+네 부분 모두 반드시 내야 한다. **하나라도 비우거나 건너뛰지 마라.**
+아래 각 부분의 규칙을 그 부분에만 적용해라.
+
+════════ basic ════════
+{basic}
+
+════════ education ════════
+{edu}
+
+════════ research ════════
+{research}
+
+════════ career ════════
+{career}"""
+
+
 def guard_length(cv_text: str, limit: int | None = None) -> tuple[str, str]:
     """CV 본문이 모델 컨텍스트를 넘지 않게 자른다.
 
@@ -213,6 +242,86 @@ def _read_pass(llm: LLMClient, cv_text: str) -> str:
     return llm.chat_text(messages, temperature=settings.llm_temperature)
 
 
+def _섹션마다(llm: LLMClient, text: str, digest: str,
+             data: dict, 사유: list[str]) -> None:
+    """네 섹션을 따로따로. 한 부분이 실패해도 나머지는 건진다.
+
+    기본정보를 먼저 뽑아야 논문 단계에서 지원자 이름을 대조할 수 있다.
+    이미 채워진 부분은 건드리지 않는다 — 한 번에 부르기가 절반만 성공했을 때
+    나머지만 이어서 받기 위해서다.
+    """
+    order = [
+        ("기본정보", _BASIC_HINT, SECTION_BASIC, "basic"),
+        ("학력", _EDU_HINT, SECTION_EDUCATION, "education"),
+        ("연구", _RESEARCH_HINT, SECTION_RESEARCH, "research"),
+        ("경력", _CAREER_HINT, SECTION_CAREER, "career"),
+    ]
+    for label, hint, schema, name in order:
+        if data.get(name):
+            continue
+        if name == "research":
+            hint = hint.format(이름=_지원자이름(data))
+        try:
+            data[name] = _ask(llm, hint, schema, text, digest, name)
+        except LLMError as exc:
+            data[name] = {}
+            사유.append(f"{label} 추출 실패: {exc}")
+
+
+def _지원자이름(data: dict) -> str:
+    """논문 저자 목록에서 대조할 이름. 못 뽑았으면 그렇다고 말해 준다."""
+    basic = data.get("basic") or {}
+    이름 = " / ".join(
+        v for v in (basic.get("한글_이름"), basic.get("영문_이름")) if v
+    )
+    return 이름 or "(파악 실패)"
+
+
+def _한번에(llm: LLMClient, text: str, digest: str,
+          data: dict, 사유: list[str]) -> bool:
+    """네 부분을 **한 호출로**. 성공하면 True.
+
+    나눠 부르면 2~5번째 호출이 CV 전문을 매번 다시 보낸다. 느린 원인의 대부분이
+    그 반복이라, 합치면 분석 시간이 절반 아래로 떨어진다.
+
+    실패했을 때 조용히 빈 값을 남기지 않는다. **False 를 돌려주면 부르는 쪽이
+    네 섹션으로 나눠 다시 받는다** — 느려질 뿐 결과는 같다. 답이 잘리는
+    (LLMTruncated) 경우가 정확히 이 길을 타라고 있는 것이다.
+
+    이름 대조만 아쉬운 점이다. 나눠 부를 때는 기본정보를 먼저 받아서 그 이름을
+    논문 안내문에 넣어 줄 수 있는데, 한 번에 받으면 그럴 수가 없다. 그래서
+    이력서에 적힌 이름으로 스스로 판단하라고 일러둔다.
+    """
+    hint = _ALL_HINT.format(
+        basic=_BASIC_HINT,
+        edu=_EDU_HINT,
+        research=_RESEARCH_HINT.format(
+            이름="이력서 맨 앞에 적힌 본인 이름 (한글·영문 모두 같은 사람으로 봐라)"
+        ),
+        career=_CAREER_HINT,
+    )
+    try:
+        답 = _ask(llm, hint, SECTION_ALL, text, digest, "all")
+    except LLMTruncated as exc:
+        사유.append(f"한 번에 추출한 답이 잘려 부분별로 다시 뽑았습니다: {exc}")
+        return False
+    except LLMError as exc:
+        사유.append(f"한 번에 추출 실패, 부분별로 다시 뽑았습니다: {exc}")
+        return False
+
+    for name in ("basic", "education", "research", "career"):
+        조각 = 답.get(name)
+        if isinstance(조각, dict):
+            data[name] = 조각
+    빠진것 = [n for n in ("basic", "education", "research", "career")
+            if not isinstance(답.get(n), dict)]
+    if 빠진것:
+        # 통째로 버리지 않는다. 나온 부분은 쓰고 빠진 것만 따로 받는다.
+        사유.append("한 번에 추출에서 " + ", ".join(빠진것) + " 부분이 빠져 따로 뽑았습니다")
+        return False
+    return True
+
+
 def extract_cv_from_text(
     cv_text: str,
     *,
@@ -220,6 +329,7 @@ def extract_cv_from_text(
     지원자_ID: str | None = None,
     원본_파일명: str = "",
     two_stage: bool | None = None,
+    oneshot: bool | None = None,
 ) -> CVRecord:
     """이력서 텍스트 -> CVRecord."""
     if not cv_text or not cv_text.strip():
@@ -243,25 +353,11 @@ def extract_cv_from_text(
             except LLMError as exc:
                 사유.append(f"1단계 읽기 실패(원문만으로 진행): {exc}")
 
-        # 기본정보를 먼저 뽑아야 논문 단계에서 지원자 이름을 대조할 수 있다
-        order = [
-            ("기본정보", _BASIC_HINT, SECTION_BASIC, "basic"),
-            ("학력", _EDU_HINT, SECTION_EDUCATION, "education"),
-            ("연구", _RESEARCH_HINT, SECTION_RESEARCH, "research"),
-            ("경력", _CAREER_HINT, SECTION_CAREER, "career"),
-        ]
-        for label, hint, schema, name in order:
-            if name == "research":
-                basic = data.get("basic", {})
-                이름 = " / ".join(
-                    v for v in (basic.get("한글_이름"), basic.get("영문_이름")) if v
-                ) or "(파악 실패)"
-                hint = hint.format(이름=이름)
-            try:
-                data[name] = _ask(llm, hint, schema, text, digest, name)
-            except LLMError as exc:
-                data[name] = {}
-                사유.append(f"{label} 추출 실패: {exc}")
+        나눠부르기 = True
+        if settings.oneshot if oneshot is None else oneshot:
+            나눠부르기 = not _한번에(llm, text, digest, data, 사유)
+        if 나눠부르기:
+            _섹션마다(llm, text, digest, data, 사유)
     finally:
         if owns:
             llm.close()
@@ -478,6 +574,7 @@ def extract_cv_from_file(
     client: LLMClient | None = None,
     지원자_ID: str | None = None,
     two_stage: bool | None = None,
+    oneshot: bool | None = None,
 ) -> CVRecord:
     """CV 파일(PDF/docx/txt) -> CVRecord."""
     p = Path(path)
@@ -487,4 +584,5 @@ def extract_cv_from_file(
         지원자_ID=지원자_ID,
         원본_파일명=p.name,
         two_stage=two_stage,
+        oneshot=oneshot,
     )
