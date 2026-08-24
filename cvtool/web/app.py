@@ -322,8 +322,13 @@ th{background:#eef2f7;position:sticky;top:0;white-space:normal;word-break:keep-a
 .w-sm{max-width:96px;min-width:64px}
 .w-md{max-width:150px;min-width:88px}
 .w-lg{max-width:230px;min-width:130px}
-td.w-xl,th.w-xl{max-width:380px;min-width:200px;white-space:normal;
- word-break:break-word;text-overflow:clip}
+.w-xl{max-width:380px;min-width:200px}
+/* 표 안에서는 **줄을 바꾸지 않는다.** 한 줄이 길어지면 그 줄만 키가 커져서
+   표가 들쭉날쭉해지고 눈이 줄을 못 따라간다. 넘치는 글은 … 으로 자르고,
+   마우스를 올리면 전체가 뜬다(title). **내용은 그대로 있다** — 자르는 건
+   보이는 것뿐이고, 복사·엑셀·검색은 원래 글을 쓴다. */
+.scroll table td{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.scroll table td.ctl{overflow:visible}
 tr:nth-child(even) td{background:#fafbfc}
 .scroll{overflow:auto;max-height:70vh;border:1px solid var(--line);border-radius:6px}
 .flag{color:#b91c1c;font-weight:700}
@@ -578,7 +583,8 @@ def _status_table() -> str:
         rows.append(
             f"<tr><td>{html.escape(n)}</td>"
             f"<td><span class='pill p-{s['state']}'>{s['state']}</span></td>"
-            f"<td style='white-space:normal'>{html.escape(s.get('message',''))}</td>"
+            f"<td title='{html.escape(s.get('message',''))}'>"
+            f"{html.escape(s.get('message',''))}</td>"
             f"<td>{s['시각']}</td>"
             f"<td class='ctl'>{할일}</td></tr>"
         )
@@ -1893,7 +1899,8 @@ def _curate_page(me: User, error: str = "", msg: str = "") -> bytes:
         + ("<br><span class='muted'>과제 이름이라 항상 남습니다</span>" if f.필수 else "")
         + f"</td><td class='muted'>{html.escape(f.이름)}</td>"
         f"<td>{f.채운수}/{f.전체수} <span class='muted'>({f.비율}%)</span></td>"
-        f"<td style='white-space:normal' class='muted'>{html.escape(f.예시)}</td></tr>"
+        f"<td class='muted' title='{html.escape(f.예시)}'>"
+        f"{html.escape(f.예시)}</td></tr>"
         for f in 필드
     ) or "<tr><td colspan='4' class='muted'>읽은 필드가 없습니다.</td></tr>"
 
@@ -1911,7 +1918,8 @@ def _curate_page(me: User, error: str = "", msg: str = "") -> bytes:
             f"<td><b>{html.escape(p.이름)}</b>"
             f"<br><span class='muted'>{html.escape(키)}</span></td>"
             f"<td>{html.escape(', '.join(p.키워드[:8]))}</td>"
-            f"<td style='white-space:normal' class='muted'>{html.escape(p.설명[:150])}"
+            f"<td class='muted' title='{html.escape(p.설명[:400])}'>"
+        f"{html.escape(p.설명[:150])}"
             f"{'…' if len(p.설명) > 150 else ''}</td></tr>"
         )
     과제표 = "".join(과제줄) or \
@@ -2005,7 +2013,8 @@ def _projects_page(me: User, error: str = "", msg: str = "") -> bytes:
         f"<tr><td>{html.escape(p.번호 or p.키)}</td><td><b>{html.escape(p.이름)}</b></td>"
         f"<td>{html.escape(', '.join(p.키워드))}</td>"
         f"<td>{html.escape(p.담당)}</td>"
-        f"<td style='white-space:normal' class='muted'>{html.escape(p.설명[:160])}"
+        f"<td class='muted' title='{html.escape(p.설명[:400])}'>"
+        f"{html.escape(p.설명[:160])}"
         f"{'…' if len(p.설명) > 160 else ''}</td></tr>"
         for p in 목록
     ) or "<tr><td colspan='5' class='muted'>읽은 과제가 없습니다.</td></tr>"
@@ -2291,7 +2300,8 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
     논문행 = "".join(
         f"<tr><td>{주저자배지 if v['주저자'] else 공저자배지}</td>"
         f"<td>{html.escape(v['유형'])}</td>"
-        f"<td style='white-space:normal'>{html.escape(v.get('제목') or '')}"
+        f"<td title='{html.escape(v.get('제목') or v['표시명'])}'>"
+        f"{html.escape(v.get('제목') or '')}"
         + (f"<br><span class='muted'>{html.escape(v['표시명'])}</span>"
            if v.get('제목') else html.escape(v['표시명']))
         + f"</td><td>{html.escape(v['연도'])}</td>"
@@ -2301,7 +2311,7 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
     )
     특허행 = "".join(
         f"<tr><td>{html.escape(pt.상태)}</td>"
-        f"<td style='white-space:normal'>{html.escape(pt.제목) or '-'}</td>"
+        f"<td title='{html.escape(pt.제목)}'>{html.escape(pt.제목) or '-'}</td>"
         f"<td>{html.escape(pt.연도)}</td><td>{html.escape(pt.번호)}</td></tr>"
         for pt in rec.특허
     )
@@ -2406,7 +2416,8 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
                 f"<tr><td>{m['순위']}</td><td><b>{html.escape(m['과제명'])}</b>"
                 f"<br><span class='muted'>{html.escape(m['과제키'])}</span>{유사}</td>"
                 f"<td>{점수칸}</td>"
-                f"<td style='white-space:normal'>{html.escape(m['사유'])}"
+                f"<td class='w-xl' title='{html.escape(m['사유'])}'>"
+                f"{html.escape(m['사유'])}"
                 + ("<br><span class='muted'>근거: "
                    + html.escape(" · ".join(m["근거"])) + "</span>" if m["근거"] else "")
                 + "</td></tr>"
@@ -2460,7 +2471,8 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
         f"<td>{html.escape(m['템플릿이름'])}</td>"
         f"<td>{html.escape(m['받는사람'])}</td>"
         f"<td>{html.escape(m['상태'])}</td>"
-        f"<td class='muted' style='white-space:normal'>{html.escape(m['오류'] or '')}</td></tr>"
+        f"<td class='muted' title='{html.escape(m['오류'] or '')}'>"
+        f"{html.escape(m['오류'] or '')}</td></tr>"
         for m in 메일기록
     )
     메일카드 = (
@@ -2476,7 +2488,7 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
     이력 = audit.for_target("지원자", 지원자_ID)
     이력행 = "".join(
         f"<tr><td>{html.escape(e.일시)}</td><td>{html.escape(e.사용자)}</td>"
-        f"<td style='white-space:normal'>{html.escape(e.summary())}</td></tr>"
+        f"<td title='{html.escape(e.summary())}'>{html.escape(e.summary())}</td></tr>"
         for e in 이력
     ) or "<tr><td colspan=3 class='muted'>아직 수정 내역이 없습니다.</td></tr>"
 
@@ -2650,7 +2662,7 @@ def _names_page(종류: str, me: User | None = None,
         )
         rows.append(
             f"<tr>"
-            f"<td style='white-space:normal'>{html.escape(i.원표기)}{미분류표시}</td>"
+            f"<td title='{html.escape(i.원표기)}'>{html.escape(i.원표기)}{미분류표시}</td>"
             f"<td>{i.발견횟수}</td>"
             f"<td class='ctl'>"
             f"<input type='hidden' form='saveform' name='id' value='{i.id}'>"
@@ -2768,7 +2780,7 @@ def _mail_page(me: User, error: str = "", msg: str = "") -> bytes:
     rows = "".join(
         f"<tr><td><a href='/mail/template?id={t.id}'>{html.escape(t.이름)}</a></td>"
         f"<td>{탈락배지 if t.탈락메일 else ''}</td>"
-        f"<td style='white-space:normal'>{html.escape(t.제목)}</td>"
+        f"<td title='{html.escape(t.제목)}'>{html.escape(t.제목)}</td>"
         f"<td class='muted'>{html.escape(t.참조)}</td>"
         f"<td class='muted'>{len(mailing.attachments(t.id)) or ''}</td>"
         f"<td class='muted'>{html.escape(t.수정일시)}</td>"
@@ -3145,14 +3157,16 @@ def _mail_compose_page(ids: list[str], tid: int, me: User, 뒤로: str = "/",
     미리 = lambda b: (html_to_text(b) if tpl.html else b)
     갈줄 = "".join(
         f"<tr><td>{html.escape(x['이름'])}</td><td>{html.escape(x['받는사람'])}</td>"
-        f"<td style='white-space:normal'>{html.escape(x['제목'])}</td>"
-        f"<td style='white-space:normal' class='muted'>{html.escape(미리(x['본문'])[:120])}"
+        f"<td title='{html.escape(x['제목'])}'>{html.escape(x['제목'])}</td>"
+        f"<td class='muted' title='{html.escape(미리(x['본문'])[:400])}'>"
+        f"{html.escape(미리(x['본문'])[:120])}"
         f"{'…' if len(미리(x['본문'])) > 120 else ''}</td></tr>"
         for x in 갈사람
     ) or "<tr><td colspan='4' class='muted'>보낼 수 있는 사람이 없습니다.</td></tr>"
     막힌줄 = "".join(
         f"<tr class='dup'><td>{html.escape(x['이름'])}</td>"
-        f"<td class='flag' style='white-space:normal'>{html.escape(x['막힘'])}</td></tr>"
+        f"<td class='flag' title='{html.escape(x['막힘'])}'>"
+        f"{html.escape(x['막힘'])}</td></tr>"
         for x in 막힌사람
     )
 
@@ -3379,7 +3393,8 @@ def _mail_log_page(me: User) -> bytes:
         f"<td>{html.escape(r['템플릿이름'])}"
         f"{탈락배지 if r['탈락메일'] else ''}</td>"
         f"<td>{html.escape(r['상태'])}</td>"
-        f"<td style='white-space:normal' class='muted'>{html.escape(r['오류'] or '')}</td>"
+        f"<td class='muted' title='{html.escape(r['오류'] or '')}'>"
+        f"{html.escape(r['오류'] or '')}</td>"
         f"<td class='muted'>{html.escape(r['보낸이'])}</td></tr>"
         for r in 기록
     ) or "<tr><td colspan='7' class='muted'>보낸 메일이 없습니다.</td></tr>"
@@ -3557,7 +3572,7 @@ def _history_page(me: User, 대상종류: str = "", limit: int = 300) -> bytes:
     rows = "".join(
         f"<tr><td>{html.escape(e.일시)}</td><td>{html.escape(e.사용자)}</td>"
         f"<td>{html.escape(e.대상종류)}</td><td>{html.escape(e.대상)}</td>"
-        f"<td style='white-space:normal'>{html.escape(e.summary())}</td></tr>"
+        f"<td title='{html.escape(e.summary())}'>{html.escape(e.summary())}</td></tr>"
         for e in entries
     ) or "<tr><td colspan='5' class='muted'>이력이 없습니다.</td></tr>"
     탭 = " ".join(
@@ -4227,7 +4242,7 @@ def _dash_list_page(me: User, error: str = "", msg: str = "") -> bytes:
     편집 = can(me, "대시보드_조회")
     rows = "".join(
         f"<tr><td><a href='/dash/view?id={d.id}'>{html.escape(d.이름)}</a></td>"
-        f"<td style='white-space:normal' class='muted'>{html.escape(d.설명)}</td>"
+        f"<td class='muted' title='{html.escape(d.설명)}'>{html.escape(d.설명)}</td>"
         f"<td class='muted'>{len(boards.blocks(d.id))}개</td>"
         f"<td class='muted'>{html.escape(d.수정일시)}</td>"
         f"<td><a class='btn' href='/dash/view?id={d.id}'>보기</a> "

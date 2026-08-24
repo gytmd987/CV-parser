@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import html
 import importlib
 import json
 import os
@@ -1200,3 +1201,25 @@ def test_the_pool_table_carries_its_server_export_link(web, cid):
     assert "data-export='/export.xlsx" in page
     page = web.get("/?q=" + urllib.parse.quote("홍길동"))
     assert "data-export='/export.xlsx?q=" in page
+
+
+def test_table_cells_are_cut_not_wrapped(web, cid):
+    """긴 글은 줄바꿈이 아니라 … 로 잘려 보인다.
+
+    한 줄이 길어지면 그 줄만 키가 커져서 표가 들쭉날쭉해지고 눈이 줄을 못
+    따라간다. **자르는 건 보이는 것뿐이고 내용은 그대로다** — 복사·엑셀·검색은
+    원래 글을 쓴다.
+    """
+    css = web.get("/").split("<style>", 1)[1].split("</style>", 1)[0]
+    assert ".scroll table td{white-space:nowrap" in css
+    assert "text-overflow:ellipsis" in css
+    # 예전에는 긴 글 열이 줄바꿈했다
+    assert "w-xl{max-width:380px;min-width:200px}" in css
+
+
+def test_the_full_text_stays_in_the_cell(web, cid):
+    """잘려 보여도 DOM 에는 전체가 있어야 복사·엑셀이 온전하다."""
+    긴글 = "플라즈마 식각 | 박막 증착 | 반도체 공정 | 표면 분석 | MOSFET | 그래프 신경망"
+    web.cell(id=cid, 항목="연구분야_키워드", 새값=긴글, 이전값="")
+    page = web.get("/")
+    assert html.escape(긴글) in page          # 자르지 않고 통째로 실린다
