@@ -106,10 +106,22 @@ class Name:
     표시명: str                  # 표·엑셀에 나갈 이름. 여기만 고친다.
     발견횟수: int
     최초등록: str
+    확인자: str = ""             # 사람이 이 줄을 보고 맞다고 한 사람·때.
+    확인일시: str = ""            # 비어 있으면 **아직 LLM 이 넣어 둔 그대로**다.
     등급: str = "미분류"          # 아래 넷은 '표시명' 에 붙는 값이다
     국내해외: str = "불명"
     유형: str = "불명"            # 학회 / 저널
     IF: str = ""                 # Impact Factor (저널)
+
+    @property
+    def 확인(self) -> bool:
+        """사람이 본 줄인가.
+
+        명칭은 처음 등록될 때 CV 에 적힌 표기를 그대로 이름으로 삼고, 등급·
+        국내해외는 LLM 이 짐작한 값이다. **짐작과 확정을 눈으로 못 가리면**
+        무엇을 더 봐야 하는지 알 수가 없다. 이 값이 그 경계다.
+        """
+        return bool((self.확인일시 or "").strip())
 
     def google_url(self, 무엇: str = "impact factor") -> str:
         """IF 를 찾아보기 쉽게 검색어를 미리 채운 구글 링크."""
@@ -127,6 +139,8 @@ CREATE TABLE IF NOT EXISTS names (
     표시명        TEXT NOT NULL,
     발견횟수      INTEGER DEFAULT 0,
     최초등록      TEXT DEFAULT '',
+    확인자        TEXT DEFAULT '',
+    확인일시      TEXT DEFAULT '',
     UNIQUE(종류, 원표기)
 );
 CREATE INDEX IF NOT EXISTS names_key ON names (종류, 정규화키);
@@ -160,6 +174,7 @@ class NameRegistry:
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._migrate()
         self._conn.executescript(_SCHEMA)
+        self._add_missing_columns()
         self._seed_tiers()
         self._conn.commit()
         for suffix in ("", "-wal", "-shm"):
@@ -168,6 +183,17 @@ class NameRegistry:
     # -- 마이그레이션 -------------------------------------------------------
     def _table_cols(self, table: str) -> set[str]:
         return {r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})")}
+
+    def _add_missing_columns(self) -> None:
+        """쓰던 DB 에 나중에 생긴 열을 붙인다.
+
+        이미 사전을 채워 둔 서버에서 열이 없다고 죽으면 안 되고, 그렇다고
+        표를 다시 만들면 그동안 고쳐 둔 이름이 날아간다. 없는 것만 붙인다.
+        """
+        있는열 = self._table_cols("names")
+        for 열 in ("확인자", "확인일시"):
+            if 열 not in 있는열:
+                self._conn.execute(f"ALTER TABLE names ADD COLUMN {열} TEXT DEFAULT ''")
 
     def _migrate(self) -> None:
         """예전 구조(한 줄 = 대표명 하나 + 별칭표)를 표기별 한 줄로 옮긴다."""
@@ -453,6 +479,32 @@ class NameRegistry:
         if 값들:
             self._set_class(나.종류, 이름, **값들)
         self._conn.commit()
+
+    def confirm(self, name_id: int, 사람: str = "") -> None:
+        """이 표기를 사람이 봤다고 표시한다."""
+        self._conn.execute(
+            "UPDATE names SET 확인자=?, 확인일시=? WHERE id=?",
+            (사람, now_kst().strftime("%Y-%m-%d %H:%M"), name_id),
+        )
+        self._conn.commit()
+
+    def unconfirm(self, name_id: int) -> None:
+        """확인 표시를 뗀다 (다시 봐야 할 것으로 되돌린다)."""
+        self._conn.execute(
+            "UPDATE names SET 확인자='', 확인일시='' WHERE id=?", (name_id,)
+        )
+        self._conn.commit()
+
+    def unconfirmed_count(self, 종류: str | None = None) -> int:
+        """아직 사람이 안 본 **표기** 수."""
+        if 종류:
+            return self._conn.execute(
+                "SELECT COUNT(*) FROM names WHERE 종류=? AND 확인일시=''",
+                (canonical_kind(종류),),
+            ).fetchone()[0]
+        return self._conn.execute(
+            "SELECT COUNT(*) FROM names WHERE 확인일시=''"
+        ).fetchone()[0]
 
     def forget(self, name_id: int) -> str:
         """표기 한 줄을 지운다 (오타로 들어온 것 정리용)."""

@@ -47,7 +47,7 @@ def web(tmp_path_factory):
             body = urllib.parse.urlencode(fields, doseq=True, encoding="utf-8").encode()
             req = urllib.request.Request(self.base + path, data=body)
             try:
-                with self._opener.open(req) as r:
+                with self._opener.open(req, timeout=20) as r:
                     return r.status, r.read().decode("utf-8", "replace")
             except urllib.error.HTTPError as e:            # 4xx 도 본문을 봐야 한다
                 return e.code, e.read().decode("utf-8", "replace")
@@ -57,18 +57,18 @@ def web(tmp_path_factory):
             return code, json.loads(body)
 
         def get(self, path: str) -> str:
-            with self._opener.open(self.base + path) as r:
+            with self._opener.open(self.base + path, timeout=20) as r:
                 return r.read().decode("utf-8", "replace")
 
         def raw(self, path: str) -> bytes:
-            with self._opener.open(self.base + path) as r:
+            with self._opener.open(self.base + path, timeout=20) as r:
                 return r.read()
 
         def post_raw(self, path: str, **fields):
             body = urllib.parse.urlencode(fields, doseq=True, encoding="utf-8").encode()
             req = urllib.request.Request(self.base + path, data=body)
             try:
-                with self._opener.open(req) as r:
+                with self._opener.open(req, timeout=20) as r:
                     return r.status, r.read()
             except urllib.error.HTTPError as e:      # 4xx 도 코드를 봐야 한다
                 return e.code, e.read()
@@ -1223,3 +1223,108 @@ def test_the_full_text_stays_in_the_cell(web, cid):
     web.cell(id=cid, 항목="연구분야_키워드", 새값=긴글, 이전값="")
     page = web.get("/")
     assert html.escape(긴글) in page          # 자르지 않고 통째로 실린다
+
+
+def test_confirmed_review_reasons_leave_the_table(web, 검토cid):
+    """'확인함' 을 누르면 표에서 그 사유가 사라져야 한다.
+
+    예전에는 전부 확인해도 원문이 표에 그대로 남아, 아직 볼 게 있는 것처럼
+    보였다. **DB 원문은 그대로 두고 보이는 글만** 줄인다.
+
+    표 전체가 아니라 그 지원자 한 줄만 불러서 본다 (`?q=` 는 지원자 ID 로도
+    걸린다). 다른 사람 줄까지 끌고 오면 무엇 때문에 통과했는지 알 수 없다.
+    """
+    한줄 = "/?q=" + urllib.parse.quote(검토cid)
+    assert "현재_신분을 판단하지 못함" in web.get(한줄)
+
+    web.post("/candidate/review/done", id=검토cid, 사유="현재_신분을 판단하지 못함")
+    표 = web.get(한줄)
+    assert "현재_신분을 판단하지 못함" not in 표      # 확인한 것은 빠지고
+    assert "연구분야 키워드를 뽑지 못함" in 표        # 남은 것만 남는다
+
+    web.post("/candidate/review/done", id=검토cid,
+             사유="연구분야 키워드를 뽑지 못함 (확인 필요)")
+    표 = web.get(한줄)
+    assert "연구분야 키워드를 뽑지 못함" not in 표
+    assert web.module.review.DONE_MARK in 표          # 한 번 걸렸던 흔적은 남는다
+
+    # 원문은 DB 에 그대로 있다 — 무엇을 확신 못 했는지의 기록이다
+    rec = web.module.store.get(검토cid)
+    assert "현재_신분을 판단하지 못함" in rec.검토_사유
+
+
+def test_the_review_reason_column_cannot_be_typed_over(web, 검토cid):
+    """사유 글자가 '확인함' 기록의 열쇠라, 고치면 짝이 어긋난다."""
+    원문 = web.module.store.get(검토cid).검토_사유
+    code, 답 = web.cell(id=검토cid, 항목="검토_사유", 새값="아무거나", 이전값=원문)
+    assert code == 400
+    assert "수정할 수 없습니다" in 답.get("error", "")
+
+
+def test_excel_also_drops_the_confirmed_reasons(web, 검토cid):
+    """화면과 엑셀이 어긋나면 둘 중 하나를 믿을 수 없게 된다."""
+    for 사유 in ("현재_신분을 판단하지 못함", "연구분야 키워드를 뽑지 못함 (확인 필요)"):
+        web.post("/candidate/review/done", id=검토cid, 사유=사유)
+    표값 = web.module._표값맵()
+    assert 표값[검토cid]["검토_사유"] == web.module.review.DONE_MARK
+
+
+# --- 명칭: 내가 본 것과 아직 안 본 것 -------------------------------------------
+def test_new_names_start_unconfirmed(web):
+    """CV 에서 자동으로 들어온 표기는 **아직 사람이 안 본 것**이다."""
+    나 = web.module.registry.observe("소속", "가나다대학교")
+    assert not 나.확인
+    페이지 = web.get("/names?kind=" + urllib.parse.quote("소속"))
+    본문 = 페이지.split("가나다대학교", 1)[0]
+    assert "needs" in 본문.rsplit("<tr", 1)[-1]       # 그 줄이 노랗게 표시된다
+
+
+def test_saving_a_row_marks_it_confirmed(web):
+    """값을 고쳐 저장하면 체크를 깜박해도 본 것으로 친다."""
+    reg = web.module.registry
+    나 = reg.observe("소속", "포항공과대학교")
+    web.post("/names/save", kind="소속", id=나.id,
+             **{f"표시명_{나.id}": "포항공대"})
+    이후 = reg.get(나.id)
+    assert 이후.확인 and 이후.확인자 == "admin"
+
+
+def test_confirming_without_changing_anything(web):
+    """LLM 이 넣은 값이 이미 맞을 때 — 체크만 켜서 본 것으로 남긴다."""
+    reg = web.module.registry
+    나 = reg.observe("학회", "ICML")
+    _, body = web.post("/names/save", kind="학회·저널", id=나.id,
+                       **{f"표시명_{나.id}": "ICML", f"확인_{나.id}": "on"})
+    assert reg.get(나.id).확인
+    assert "확인 표시를 바꿨습니다" in body
+
+    # 체크를 다시 끄면 되돌아간다 (잘못 눌렀을 때)
+    web.post("/names/save", kind="학회·저널", id=나.id,
+             **{f"표시명_{나.id}": "ICML"})
+    assert not reg.get(나.id).확인
+
+
+def test_unconfirmed_rows_come_first_and_can_be_filtered(web):
+    reg = web.module.registry
+    본것 = reg.observe("소속", "AAA대학교")
+    reg.confirm(본것.id, "admin")
+    reg.observe("소속", "ZZZ대학교")             # 이름 순서로는 뒤인데 안 본 것
+
+    페이지 = web.get("/names?kind=" + urllib.parse.quote("소속"))
+    assert 페이지.index("ZZZ대학교") < 페이지.index("AAA대학교")
+
+    할일 = web.get("/names?kind=" + urllib.parse.quote("소속") + "&todo=1")
+    표 = 할일.split("<table>", 1)[1].split("</table>", 1)[0]   # 자동완성 목록 말고 표
+    assert "ZZZ대학교" in 표 and "AAA대학교" not in 표
+
+
+def test_the_tab_badge_counts_unseen_names(web):
+    """등급을 안 매긴 것만 세면 소속·전공은 늘 0 이라 아무 표시가 없었다."""
+    reg = web.module.registry
+    나 = reg.observe("소속", "표시안됨대학교")
+    딱지 = 'class="pill p-안본것"'          # 탭 옆 숫자 (CSS 정의와 헷갈리지 않게)
+    assert 딱지 in web.get("/")
+    reg.confirm(나.id, "admin")
+    for 남은 in reg.list_all():
+        reg.confirm(남은.id, "admin")
+    assert 딱지 not in web.get("/")

@@ -352,6 +352,8 @@ tr.grouphead td{background:#eef2ff;border-top:2px solid #c7d2fe}
 /* 검토가 필요한 줄. 색만으로 알리지 않고 배지도 같이 붙는다. */
 tr.needs th,tr.needs td{background:#fffbeb}
 tr.needs th{border-left:3px solid #f59e0b}
+tr.needs td:first-child{border-left:3px solid #f59e0b}
+.p-안본것{background:#fef3c7;color:#92400e}
 td.edit{cursor:cell}
 td.edit:hover{outline:2px solid var(--accent);outline-offset:-2px}
 td.saved{background:#dcfce7 !important}
@@ -502,8 +504,10 @@ def _지금탭(경로: str, 소속: tuple[str, ...]) -> bool:
 
 
 def _page(title: str, body: str, nav: bool = True, me: User | None = None) -> bytes:
-    미분류 = registry.unclassified_count() if nav else 0
-    badge = f' <span class="pill p-미분류">{미분류}</span>' if 미분류 else ""
+    # 탭 옆 숫자 = **아직 사람이 안 본 표기 수.** 등급을 안 매긴 것만 세면
+    # 소속·전공은 늘 0 이라, 학교 이름이 엉뚱하게 들어와도 아무 표시가 없었다.
+    안본것 = registry.unconfirmed_count() if nav else 0
+    badge = f' <span class="pill p-안본것">{안본것}</span>' if 안본것 else ""
     경로 = 현재경로.get()
     켜진것 = ""
     for _라벨, 주소, 소속 in _탭들(me, badge):
@@ -721,12 +725,15 @@ def 대시보드_행() -> F.Rows:
     관리값 = store.meta_map()
     시작한사람 = recruit.started()
     상위매칭 = store.top_matches()
+    끝낸검토 = store.review_done_map()
 
     지원자행, 채용행 = [], []
     for rec in store.list_all():
         cid = rec.지원자_ID
         행 = rec.to_row(registry)
         행["지원자_ID"] = cid
+        # 표·엑셀과 같은 규칙: 확인한 사유는 세지 않는다.
+        행["검토_사유"] = review.display(rec.검토_사유, 끝낸검토.get(cid, set()))
         행.update(관리값.get(cid, {}))
         행.update(사용자값.get(cid, {}))
         p = 진행맵.get(cid)
@@ -836,6 +843,18 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
         ]
         for c in COLS:
             폭 = 열폭(c)
+            if c == "검토_사유":
+                # 검토 카드가 관리하는 열이다. 여기서 글을 고치면 '확인함'
+                # 기록과 글자가 어긋나 되돌릴 수 없다. 그래서 고칠 수 없고,
+                # **아직 안 본 항목만** 보인다 (전부 봤으면 '확인함').
+                v = html.escape(표값.get(cid, {}).get(c, ""))
+                남음 = bool(v) and v != review.DONE_MARK
+                cells.append(
+                    f"<td class='{'flag' if 남음 else 'muted'} {폭}' title='{v}'>"
+                    + (f"<a href='/candidate?id={urllib.parse.quote(cid)}#검토'>{v}</a>"
+                       if 남음 else v)
+                    + "</td>")
+                continue
             if c in MANAGE_COLUMNS or c in 보기전용열:
                 # 등록·보관 정보, 채용 현황, 메일 이력은 여기서 고치지 않는다.
                 # 고치는 자리가 따로 있는 값이라 여기서 덮어쓰면 어긋난다.
@@ -1491,6 +1510,16 @@ def _표값맵() -> dict[str, dict[str, str]]:
             칸[단계] = p.단계상태.get(단계, "")
     for cid, 보낸것 in mailing.sent_summary().items():
         합침.setdefault(cid, {})[MAIL_COLUMN] = 보낸것
+
+    # 검토 사유는 **남은 것만** 보여준다. 사람이 '확인함' 을 눌렀는데도 원문이
+    # 표에 그대로 남아 있으면 아직 볼 게 있는 것처럼 보인다. DB 원문은 그대로
+    # 두고 (LLM 이 무엇을 확신 못 했는지의 기록이다) 보이는 글만 줄인다.
+    끝낸것 = store.review_done_map()
+    for rec in store.list_all():
+        if not (rec.검토_사유 or "").strip():
+            continue
+        보일글 = review.display(rec.검토_사유, 끝낸것.get(rec.지원자_ID, set()))
+        합침.setdefault(rec.지원자_ID, {})["검토_사유"] = 보일글
     return 합침
 
 
@@ -2170,8 +2199,11 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
         값 = str(row.get(c, "") or "")
         보기 = html.escape(값) or "<span class='muted'>-</span>"
         if c == "검토_사유" and 검토항목:
+            # 확인한 항목은 여기서 빠진다. 원문은 위 검토 카드에 회색으로 남아
+            # 있으니 무엇을 봤는지 되짚을 수 있고, 이 줄은 **남은 것만** 말한다.
+            보일글 = review.display(rec.검토_사유, 끝낸검토)
             보기 = ("<a href='#검토'>위 검토 카드에서 항목별로 봅니다 →</a>"
-                  f"<br><span class='muted'>{html.escape(값)}</span>")
+                  f"<br><span class='muted'>{html.escape(보일글)}</span>")
         줄표시 = " class='needs'" if c in 검토열 else ""
         # 검토_사유는 위 검토 카드가 관리한다. 여기서 글을 고치면 '확인함'
         # 표시와 짝이 안 맞는다.
@@ -2568,7 +2600,7 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
 
 
 def _names_page(종류: str, me: User | None = None,
-                error: str = "", msg: str = "") -> bytes:
+                error: str = "", msg: str = "", 안본것만: bool = False) -> bytes:
     """소속·학회·저널·전공을 같은 화면에서 관리한다.
 
     **CV 에 적힌 표기마다 한 줄**이다. 여러 표기를 한 줄로 합쳐 대표명만 남기면,
@@ -2581,19 +2613,24 @@ def _names_page(종류: str, me: User | None = None,
     종류 = canonical_kind(종류)
     if 종류 not in KINDS:
         종류 = "학회·저널"
-    items = registry.list_all(종류)          # 표시명 오름차순이 기본
+    전부 = registry.list_all(종류)           # 표시명 오름차순이 기본
     등급목록 = registry.tier_names()
     등급종류 = 종류 in GRADED_KINDS
 
+    # 아직 사람이 안 본 줄을 **위로** 올린다. 할 일이 화면 아래로 밀려나면
+    # 스무 줄만 넘어도 못 보고 지나친다. (그 안에서는 원래 순서 그대로)
+    안본것 = [i for i in 전부 if not i.확인]
+    items = 안본것 if 안본것만 else (안본것 + [i for i in 전부 if i.확인])
+
     무리: dict[str, list] = {}
-    for i in items:
+    for i in 전부:
         무리.setdefault(i.표시명, []).append(i)
 
     탭 = " ".join(
         f"<a class='btn {'' if k == 종류 else 'sec'}' href='/names?kind={urllib.parse.quote(k)}'>"
         f"{k}"
-        + (f" <b>{registry.unclassified_count(k)}</b>" if k in GRADED_KINDS
-           and registry.unclassified_count(k) else "")
+        + (f" <span class='pill p-안본것'>{registry.unconfirmed_count(k)}</span>"
+           if registry.unconfirmed_count(k) else "")
         + "</a>"
         for k in KINDS
     )
@@ -2618,6 +2655,7 @@ def _names_page(종류: str, me: User | None = None,
 
     이름목록 = registry.display_names(종류)
     이름옵션 = "".join(f"<option value='{html.escape(n)}'>" for n in 이름목록)
+    아직안내 = "아직 사람이 안 본 줄입니다 (LLM 이 넣어 둔 그대로)"
 
     rows = []
     for i in items:
@@ -2660,8 +2698,20 @@ def _names_page(종류: str, me: User | None = None,
             " <span class='pill p-미분류'>미분류</span>"
             if 등급종류 and i.등급 == "미분류" else ""
         )
+        # 확인칸 — 이 줄을 **사람이 봤는가**. 안 본 줄은 LLM 이 넣어 둔 그대로다.
+        본때 = (f"{i.확인일시} {i.확인자}".strip() if i.확인 else "")
+        확인칸 = (
+            f"<td class='ctl' title='{html.escape(본때) or 아직안내}'>"
+            f"<label><input type='checkbox' form='saveform' name='확인_{i.id}'"
+            f"{' checked' if i.확인 else ''} data-orig='{'y' if i.확인 else ''}'"
+            f" onchange='markDirty(this)'> "
+            + (f"<span class='muted'>{html.escape(i.확인일시)}</span>" if i.확인
+               else "<b class='flag'>확인</b>")
+            + "</label></td>"
+        )
         rows.append(
-            f"<tr>"
+            f"<tr class='{'' if i.확인 else 'needs'}'>"
+            f"{확인칸}"
             f"<td title='{html.escape(i.원표기)}'>{html.escape(i.원표기)}{미분류표시}</td>"
             f"<td>{i.발견횟수}</td>"
             f"<td class='ctl'>"
@@ -2669,10 +2719,10 @@ def _names_page(종류: str, me: User | None = None,
             f"<input type='text' form='saveform' name='표시명_{i.id}' list='이름목록'"
             f" value='{html.escape(i.표시명)}' style='width:220px'"
             f" data-orig='{html.escape(i.표시명)}' oninput='markDirty(this)'></td>"
-            f"<td style='white-space:normal'>{형제칸}</td>"
+            f"<td>{형제칸}</td>"
             f"{등급칸}"
             f"<td><form method='post' action='/names/forget'"
-            f" onsubmit=\"return confirm('이 표기를 사전에서 지웁니다. "
+            f" onsubmit=\"return window.confirm('이 표기를 사전에서 지웁니다. "
             f"다시 CV 에 나오면 새로 등록됩니다.')\">"
             f"<input type='hidden' name='kind' value='{html.escape(종류)}'>"
             f"<input type='hidden' name='id' value='{i.id}'>"
@@ -2682,9 +2732,11 @@ def _names_page(종류: str, me: User | None = None,
     저장바 = (
         f"<form method='post' action='/names/save' id='saveform' class='mergebar'>"
         f"<input type='hidden' name='kind' value='{html.escape(종류)}'>"
+        f"<input type='hidden' name='todo' value='{'1' if 안본것만 else ''}'>"
         f"<button type='submit'>고친 내용 저장</button>"
         f"<span class='muted'>여러 줄을 고친 뒤 <b>한 번만</b> 누르세요. "
-        f"고친 칸은 노랗게 표시됩니다.</span></form>"
+        f"고친 칸은 노랗게 표시됩니다. <b>고친 줄은 저절로 확인 표시</b>가 됩니다."
+        f"</span></form>"
         if items else ""
     )
 
@@ -2694,11 +2746,24 @@ def _names_page(종류: str, me: User | None = None,
         if 등급종류 else ""
     )
     표 = (
-        "<table><tr><th>CV 에 적힌 표기</th><th style='width:56px'>발견</th>"
+        "<table><tr><th class='ctl w-sm' title='사람이 보고 맞다고 한 줄'>확인</th>"
+        "<th>CV 에 적힌 표기</th><th style='width:56px'>발견</th>"
         f"<th class='ctl'>표에 보일 이름</th><th>같은 이름으로 묶인 표기</th>"
         f"{등급머리}<th></th></tr>{''.join(rows)}</table>"
         if rows
-        else "<p class='muted'>아직 등록된 항목이 없습니다. CV를 업로드하면 자동으로 등록됩니다.</p>"
+        else ("<p class='muted'>안 본 항목이 없습니다. 전부 확인했습니다.</p>"
+              if 안본것만 and 전부 else
+              "<p class='muted'>아직 등록된 항목이 없습니다. "
+              "CV를 업로드하면 자동으로 등록됩니다.</p>")
+    )
+
+    # 안 본 것만 보기 — 표기가 수백 줄이 되면 이게 유일하게 쓸 만한 길이 된다
+    주소 = f"/names?kind={urllib.parse.quote(종류)}"
+    거르개 = (
+        f"<a class='btn {'sec' if 안본것만 else ''}' href='{주소}'>전체 {len(전부)}</a> "
+        f"<a class='btn {'' if 안본것만 else 'sec'}' href='{주소}&todo=1'>"
+        f"아직 안 본 것 {len(안본것)}</a>"
+        if 전부 else ""
     )
     알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
     오류 = f"<div class='warn'>{html.escape(error)}</div>" if error else ""
@@ -2718,10 +2783,16 @@ def _names_page(종류: str, me: User | None = None,
         <p class='muted'>{설명}
         <b>CV 에 적힌 표기마다 한 줄</b>이고, 각 줄의 <b>표에 보일 이름</b>만 고칩니다.
         같은 곳이면 같은 이름을 적으세요 — 지원자 표에는 그 이름으로 함께 나옵니다.
-        잘못 묶였으면 그 줄의 이름만 다시 고치면 됩니다.{분류설명}</p></div>
+        잘못 묶였으면 그 줄의 이름만 다시 고치면 됩니다.{분류설명}</p>
+        <p class='muted'>표기는 CV 에서 발견하는 대로 <b>자동으로</b> 등록되고,
+        등급·국내해외는 LLM 이 짐작한 값입니다. 그래서 각 줄에
+        <b>확인</b> 칸이 있습니다 — 사람이 보고 맞다고 한 줄은 체크가 켜지고,
+        <span class='pill p-안본것'>아직 안 본 줄</span>은 노랗게 남습니다.
+        값을 고쳐서 저장하면 그 줄은 저절로 확인 처리됩니다.</p></div>
         {등급열}
-        <div class='card'><h2>{html.escape(종류)} <span class='muted'>표기 {len(items)}개 ·
+        <div class='card'><h2>{html.escape(종류)} <span class='muted'>표기 {len(전부)}개 ·
         이름 {len(무리)}개</span></h2>
+        <p>{거르개}</p>
         {저장바}
         <div class='scroll'>{표}</div>
         <datalist id='이름목록'>{이름옵션}</datalist></div>""",
@@ -4100,6 +4171,7 @@ def _프로필값(cid: str) -> dict[str, str]:
         return {}
     행 = {k: str(v or "") for k, v in rec.to_row(registry).items()}
     행["지원자_ID"] = cid
+    행["검토_사유"] = review.display(rec.검토_사유, store.review_done(cid))
     행.update(store.meta_map().get(cid, {}))
     행.update(store.custom_values(cid))
     p = recruit.get(cid)
@@ -4859,6 +4931,7 @@ class Handler(BaseHTTPRequestHandler):
                 me,
                 error=(params.get("err") or [""])[0],
                 msg=(params.get("msg") or [""])[0],
+                안본것만=bool((params.get("todo") or [""])[0]),
             ))
         if path == "/favicon.ico":
             return self._send(b"", "image/x-icon", code=204)
@@ -6192,9 +6265,12 @@ class Handler(BaseHTTPRequestHandler):
             )
             kind = canonical_kind((data.get("kind") or ["학회·저널"])[0])
             뒤로 = f"/names?kind={urllib.parse.quote(kind)}"
+            if (data.get("todo") or [""])[0]:
+                뒤로 += "&todo=1"
 
             # 화면에 있던 줄 전부가 들어온다. 실제로 값이 달라진 것만 저장한다.
             바뀐것: list[str] = []
+            확인바뀜 = 0
             for 원시 in data.get("id") or []:
                 try:
                     nid = int(원시)
@@ -6235,11 +6311,29 @@ class Handler(BaseHTTPRequestHandler):
                     바뀐것.append(f"{이후.원표기}: " + 머리
                                 + (f" ({', '.join(나머지)})" if 나머지 else ""))
 
+                # 확인 표시. 체크칸을 켰거나, **값을 실제로 고쳤으면** 본 것이다.
+                # 고쳐 놓고 체크를 깜박하면 그 줄이 영영 '안 본 것' 으로 남는다.
+                켬 = bool(data.get(f"확인_{nid}")) or bool(변경)
+                if 켬 and not 이전.확인:
+                    registry.confirm(nid, 사람=me.아이디)
+                    확인바뀜 += 1
+                    audit.record(me.아이디, "명칭", f"{kind}:{이후.원표기}",
+                                 항목="확인", 이전값="", 새값="확인함")
+                elif not 켬 and 이전.확인:
+                    registry.unconfirm(nid)
+                    확인바뀜 += 1
+                    audit.record(me.아이디, "명칭", f"{kind}:{이후.원표기}",
+                                 항목="확인", 이전값="확인함", 새값="")
+
+            if not 바뀐것 and 확인바뀜:
+                return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(
+                    f"{확인바뀜}줄의 확인 표시를 바꿨습니다."))
             if not 바뀐것:
                 return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote("바뀐 내용이 없습니다."))
             보임 = ", ".join(바뀐것[:5]) + (" 외" if len(바뀐것) > 5 else "")
+            꼬리 = f" (확인 표시 {확인바뀜}줄)" if 확인바뀜 else ""
             return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(
-                f"{len(바뀐것)}건 저장했습니다 — {보임}"))
+                f"{len(바뀐것)}건 저장했습니다 — {보임}{꼬리}"))
 
         if path == "/names/forget":
             if not can(me, "명칭_관리"):
