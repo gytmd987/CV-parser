@@ -94,6 +94,7 @@ POST_정책 = {
     "/dash/copy": 거부,
     "/dash/delete": 거부,
     "/dash/block/add": 거부,
+    "/dash/block/draft": 거부,        # 말로 만드는 목록 표 초안
     "/dash/block/save": 거부,
     "/dash/block/move": 거부,
     "/dash/block/delete": 거부,

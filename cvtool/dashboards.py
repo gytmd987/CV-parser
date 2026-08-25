@@ -23,7 +23,10 @@ from .fsutil import secure_dir, secure_file
 from .timeutil import now_kst
 
 #: 블록 종류
-BLOCK_KINDS = ("표", "축표", "숫자", "글", "프로필")
+#: "목록" 이 제일 앞이다 — 사람들이 만들고 싶어 하는 표의 대부분이 이것이다.
+#: 한 사람이 한 줄, 열은 만드는 사람이 정한다 (엑셀에서 표를 만들듯이).
+#: "축표" 는 피벗(부서 × 단계 인원수)이고, "표" 는 칸을 하나하나 적는 자유표다.
+BLOCK_KINDS = ("목록", "축표", "표", "숫자", "글", "프로필")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS dashboards (
@@ -90,6 +93,36 @@ class Block:
     @property
     def 글(self) -> str:
         return self.설정.get("글") or ""
+
+    # -- 목록 표 ----------------------------------------------------------
+    @property
+    def 목록대상(self) -> str:
+        return self.설정.get("목록대상") or "지원자"
+
+    @property
+    def 목록조건(self) -> str:
+        """행을 고르는 수식. `=최종상태="합격"` 처럼 참/거짓을 낸다. 비면 전부."""
+        return self.설정.get("목록조건") or ""
+
+    @property
+    def 목록열(self) -> list[tuple[str, str]]:
+        """[(머리글, 수식)] — **열을 만드는 사람이 정한다.**"""
+        return [(str(a), str(b)) for a, b in (self.설정.get("목록열") or [])]
+
+    @property
+    def 목록정렬(self) -> str:
+        return self.설정.get("목록정렬") or ""
+
+    @property
+    def 목록내림차순(self) -> bool:
+        return bool(self.설정.get("목록내림차순"))
+
+    @property
+    def 목록최대(self) -> int:
+        try:
+            return max(0, int(self.설정.get("목록최대") or 0))
+        except (TypeError, ValueError):
+            return 0
 
     # -- 프로필 -----------------------------------------------------------
     @property
@@ -329,6 +362,101 @@ class RenderedProfile:
     제목: str
     사람: list[tuple[str, list[tuple[str, str]]]] = field(default_factory=list)
     오류: list[str] = field(default_factory=list)
+
+
+@dataclass
+class RenderedList:
+    제목: str
+    머리: list[str] = field(default_factory=list)
+    행: list[list[str]] = field(default_factory=list)
+    오류: list[str] = field(default_factory=list)
+    전체: int = 0                      # 조건에 맞는 사람 수 (줄여 보여줄 때)
+
+
+def render_list(b: Block, rows, 아는열: set[str] | None = None) -> RenderedList:
+    """목록 표 — **한 사람이 한 줄, 열은 만드는 사람이 정한다.**
+
+    피벗(축표)으로는 만들 수 없는 표가 대부분이다. "채용 중인 사람을 줄로 놓고
+    옆에 이것저것 붙이고 싶다" 가 사람들이 실제로 만들려는 것이고, 그건 집계가
+    아니라 목록이다.
+
+    행 고르기·열 값·정렬이 **전부 같은 수식 언어**(`expr`)를 쓴다. 행 문맥이라
+    열 이름은 그 사람의 값을 뜻한다.
+
+    행 값은 화면들이 이미 만들어 둔 것을 그대로 쓴다(`Rows`). 사람마다 DB 를
+    다시 읽으면 백 명짜리 표에서 백 번을 읽게 된다.
+    """
+    from . import expr
+
+    오류: list[str] = []
+    열들 = [(머리, 식) for 머리, 식 in b.목록열 if str(식).strip()]
+    if not 열들:
+        return RenderedList(제목=b.제목, 오류=["열이 없습니다. 아래에서 열을 추가하세요."])
+
+    골라낸 = []
+    for r in rows.of(b.목록대상):
+        값들 = {k: ("" if v is None else str(v)) for k, v in r.items()}
+        cid = 값들.get("지원자_ID") or ""
+        if b.목록조건.strip():
+            보임, 잘못 = expr.render(b.목록조건, 값들)
+            if 잘못:
+                return RenderedList(제목=b.제목,
+                                    오류=[f"행 고르기 → {잘못}"])
+            if str(보임).strip().upper() in ("", "FALSE", "0"):
+                continue
+        골라낸.append((cid, 값들))
+
+    if b.목록정렬.strip():
+        def 열쇠(짝):
+            보임, 잘못 = expr.render(b.목록정렬, 짝[1])
+            if 잘못:
+                return ""
+            # 숫자로 읽히면 숫자로 (문자열 정렬이면 10 이 9 보다 앞에 온다)
+            try:
+                return (0, float(str(보임).replace(",", "")), "")
+            except ValueError:
+                return (1, 0.0, str(보임))
+        try:
+            골라낸.sort(key=열쇠, reverse=b.목록내림차순)
+        except TypeError:
+            pass
+
+    전체 = len(골라낸)
+    if b.목록최대:
+        골라낸 = 골라낸[:b.목록최대]
+
+    표행 = []
+    본오류 = set()
+    for _cid, 값들 in 골라낸:
+        칸들 = []
+        for 머리, 식 in 열들:
+            if not expr.is_formula(식):
+                칸들.append(식)                  # 그냥 글자는 그대로
+                continue
+            보임, 잘못 = expr.render(식, 값들)
+            if 잘못:
+                칸들.append("?")
+                본오류.add(f"'{머리 or 식}' → {잘못}")
+            else:
+                칸들.append(보임)
+        표행.append(칸들)
+
+    오류 += sorted(본오류)
+    if 아는열 is not None:
+        쓴열: set[str] = set()
+        for 식 in [식 for _머리, 식 in 열들] + [b.목록조건, b.목록정렬]:
+            if not expr.is_formula(식):
+                continue
+            try:
+                쓴열 |= set(expr.columns(식))
+            except expr.ExprError:
+                pass                             # 문법 오류는 저장할 때 걸린다
+        모르는 = sorted(c for c in 쓴열 if c not in 아는열)
+        if 모르는:
+            오류.append("표에 없는 열입니다: " + ", ".join(모르는))
+
+    머리 = [머리 or 식 for 머리, 식 in 열들]
+    return RenderedList(제목=b.제목, 머리=머리, 행=표행, 오류=오류, 전체=전체)
 
 
 def render_table(b: Block, rows, 축값: dict[str, list[str]],

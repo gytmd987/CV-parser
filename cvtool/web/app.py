@@ -36,9 +36,11 @@ from ..dashboards import (
     CELL_FORMATS,
     DashboardStore,
     format_cell,
+    render_list,
     render_profile,
     render_table,
 )
+from .. import dash_draft
 from .. import expr
 from .. import formula as F
 from .. import profile_form as P
@@ -709,6 +711,32 @@ def _status_table() -> str:
 #: 상세 화면과 같은 검사·같은 이력을 타므로 규칙이 갈라지지 않는다.
 #: 페이지를 새로 그리지 않아 넓은 표에서 스크롤 위치가 유지된다.
 _INLINE_JS = """
+/* ---- 저장하면 보던 자리로 돌아온다 -----------------------------------------
+   폼을 내면 페이지가 다시 그려지고 **맨 위로 튄다.** 상세 화면 아래쪽 칸을
+   고치거나, 명칭 관리에서 백 줄짜리 표 중간을 고칠 때마다 다시 스크롤해서
+   내려와야 했다. 고칠 게 여러 개면 그걸 매번 한다.
+
+   낼 때 지금 위치를 적어 두고, 같은 주소로 돌아오면 그 자리로 되돌린다.
+   브라우저가 스스로 복원하려 드는 것도 꺼서 두 번 움직이지 않게 한다. */
+try { if('scrollRestoration' in history) history.scrollRestoration = 'manual'; } catch(e) {}
+function 자리키(){ return '자리:' + location.pathname; }
+document.addEventListener('submit', function(){
+  try { sessionStorage.setItem(자리키(), String(window.scrollY)); } catch(e) {}
+}, true);
+document.addEventListener('DOMContentLoaded', function(){
+  var y = null;
+  try { y = sessionStorage.getItem(자리키()); } catch(e) {}
+  if(y === null) return;
+  try { sessionStorage.removeItem(자리키()); } catch(e) {}
+  /* 주소에 #조각이 있으면 그쪽이 먼저다 — 검토 카드처럼 일부러 보낸 자리다 */
+  if(location.hash) return;
+  var 되돌리기 = function(){ window.scrollTo(0, +y); };
+  되돌리기();
+  /* 표가 늦게 그려지면 높이가 바뀐다. 한 번 더 맞춘다. */
+  window.requestAnimationFrame(되돌리기);
+  setTimeout(되돌리기, 60);
+});
+
 document.addEventListener('click', function(ev){
   if(window.__rangeDragged){ window.__rangeDragged = false; return; }  // 범위 선택 중이었다
   var td = ev.target.closest && ev.target.closest('td.edit');
@@ -4790,6 +4818,36 @@ def _블록설정(b, data: dict) -> tuple[dict, str]:
         설정["칸수식"] = 칸수식
         return 설정, ""
 
+    if b.종류 == "목록":
+        설정["목록대상"] = ((data.get("listtarget") or ["지원자"])[0]
+                        if (data.get("listtarget") or ["지원자"])[0] in ("지원자", "채용")
+                        else "지원자")
+        설정["목록조건"] = (data.get("listwhere") or [""])[0].strip()
+        설정["목록정렬"] = (data.get("listsort") or [""])[0].strip()
+        설정["목록내림차순"] = bool(data.get("listdesc"))
+        try:
+            설정["목록최대"] = max(0, int((data.get("listmax") or ["0"])[0] or 0))
+        except ValueError:
+            설정["목록최대"] = 0
+        머리들 = data.get("colhead") or []
+        식들 = data.get("colformula") or []
+        열 = [[머리.strip(), 식.strip()]
+             for 머리, 식 in zip(머리들, 식들) if 식.strip()]
+        if not 열:
+            return 설정, "열이 하나도 없습니다. 머리글과 수식을 적으세요."
+        # 문법부터 틀렸으면 저장을 막는다. 조용히 넘어가면 화면에서 ? 만 보인다.
+        볼것 = [("행 고르기", 설정["목록조건"]), ("정렬", 설정["목록정렬"])]
+        볼것 += [(머리 or 식, 식) for 머리, 식 in 열]
+        for 자리, 식 in 볼것:
+            if not expr.is_formula(식):
+                continue
+            try:
+                expr.validate(식, 아는열)
+            except expr.ExprError as exc:
+                return 설정, f"'{자리}' 수식이 잘못됐습니다 — {exc}"
+        설정["목록열"] = 열
+        return 설정, ""
+
     if b.종류 == "프로필":
         대상 = (data.get("target") or [""])[0].strip() or "=LIST(지원자)"
         오류 = _수식검사(대상, 아는열)
@@ -4924,6 +4982,29 @@ def _블록그리기(b, rows, 축값, 아는열) -> str:
             f"<div class='card'><h2>{html.escape(b.제목)}</h2>"
             f"<div style='font-size:38px;font-weight:800;line-height:1.2'>{html.escape(보임)}</div>"
             f"{아래}</div>"
+        )
+
+    if b.종류 == "목록":
+        결과 = render_list(b, rows, 아는열)
+        경고 = "".join(f"<p class='flag'>{html.escape(x)}</p>" for x in 결과.오류)
+        머리 = "".join(f"<th class='{열폭(c)}'>{머리글(c)}</th>" for c in 결과.머리)
+        몸 = "".join(
+            "<tr>" + "".join(
+                f"<td class='{열폭(결과.머리[i] if i < len(결과.머리) else '')}'"
+                f" title='{html.escape(v)}'>{html.escape(v)}</td>"
+                for i, v in enumerate(칸들)
+            ) + "</tr>"
+            for 칸들 in 결과.행
+        ) or (f"<tr><td colspan='{max(1, len(결과.머리))}' class='muted'>"
+              "조건에 맞는 사람이 없습니다.</td></tr>")
+        센것 = (f"{len(결과.행)}줄"
+              + (f" <span class='muted'>/ 전체 {결과.전체}</span>"
+                 if 결과.전체 != len(결과.행) else ""))
+        return (
+            f"<div class='card'><h2>{html.escape(b.제목)} "
+            f"<span class='muted'>{센것}</span></h2>{경고}"
+            f"<div class='scroll'><table data-name='{html.escape(b.제목 or '목록')}'>"
+            f"<tr>{머리}</tr>{몸}</table></div></div>"
         )
 
     if b.종류 == "프로필":
@@ -5103,6 +5184,7 @@ def _블록편집(b, 축값, 미리볼사람: str = "") -> str:
         f"<option{' selected' if v == 지금 else ''}>{html.escape(v)}</option>"
         for v in 값들
     )
+    앞머리 = ""          # 블록 폼 **밖**에 놓아야 하는 것 (폼 안에 폼을 못 넣는다)
     머리 = (
         f"<form method='post' action='/dash/block/save' id='bf{b.id}'>"
         f"<input type='hidden' name='id' value='{b.id}'>"
@@ -5149,6 +5231,68 @@ def _블록편집(b, 축값, 미리볼사람: str = "") -> str:
             "<p class='muted'><code>{행}</code> <code>{열}</code> 이 축 값으로 바뀝니다. "
             "칸을 하나하나 안 적어도 되고, 부서가 늘면 표가 알아서 늘어납니다.</p>"
         )
+    elif b.종류 == "목록":
+        # **한 사람이 한 줄, 열은 만드는 사람이 정한다.** 축표(피벗)로는 만들 수
+        # 없는 표가 대부분인데, 사람들이 실제로 만들려는 건 대개 이 목록이다.
+        열줄 = "".join(
+            f"<tr><td><input type='text' name='colhead' value='{html.escape(머리)}'"
+            " style='width:100%' placeholder='머리글'></td>"
+            f"<td><input type='text' name='colformula' value='{html.escape(식)}'"
+            " style='width:100%' class='fx' oninput='fxPreview(this)'"
+            f" data-cid='{html.escape(미리볼사람)}' placeholder='=한글_이름'>"
+            "<div class='fxout muted'></div></td>"
+            "<td class='ctl'><button type='button' class='sec'"
+            " onclick='rowMove(this,-1)' title='위로'>↑</button> "
+            "<button type='button' class='sec' onclick='rowMove(this,1)'"
+            " title='아래로'>↓</button> "
+            "<button type='button' class='danger ghost' onclick='rowDrop(this)'"
+            " title='이 열 빼기'>×</button></td></tr>"
+            for 머리, 식 in (b.목록열 + [("", "")])
+        )
+        # 빈 화면에 =한글_이름 부터 쳐 넣는 건 문법이 쉬워도 부담스럽다.
+        # 초안이 있으면 **고치는 일**이 되고, 고치는 건 훨씬 쉽다.
+        #
+        # 이 폼은 블록 폼 **밖에** 둔다 (앞머리). 폼 안에 폼을 넣으면 브라우저가
+        # 안쪽을 버리면서 바깥 폼도 그 자리에서 끊겨, 아래 칸들이 통째로 안 넘어간다.
+        앞머리 = (
+            "<details class='draft'><summary>말로 적어서 초안 만들기</summary>"
+            "<form method='post' action='/dash/block/draft' style='margin-top:8px'>"
+            f"<input type='hidden' name='id' value='{b.id}'>"
+            "<p><input type='text' name='말' style='width:100%'"
+            " placeholder='예) 채용 중인 사람, 이름과 학력과 주저자 논문 수."
+            " 논문 많은 순으로'></p>"
+            "<p><button type='submit'>초안 만들기</button> "
+            "<span class='muted'>지금 열은 <b>덮어씁니다.</b> 만든 뒤 보고 고쳐서 "
+            "저장하세요 — 저장하기 전에는 아무것도 바뀌지 않습니다.</span></p>"
+            "</form></details>"
+        )
+        가운데 = (
+            "<p class='bar'>누구를 "
+            f"<select name='listtarget'>{옵션(('지원자', '채용'), b.목록대상)}</select>"
+            "<input type='text' name='listwhere' class='fx' oninput='fxPreview(this)'"
+            f" data-cid='{html.escape(미리볼사람)}'"
+            f" value='{html.escape(b.목록조건)}' style='flex:1;min-width:280px'"
+            " placeholder=\'=최종상태=&quot;최종 합격&quot;  (비우면 전부)\'>"
+            "<span class='fxout muted'></span></p>"
+            "<p class='bar'>정렬 "
+            "<input type='text' name='listsort' class='fx' oninput='fxPreview(this)'"
+            f" data-cid='{html.escape(미리볼사람)}'"
+            f" value='{html.escape(b.목록정렬)}' style='flex:1;min-width:240px'"
+            " placeholder='=저널_주저자_수  (비우면 그대로)'>"
+            "<label class='rt-lbl'><input type='checkbox' name='listdesc'"
+            + (" checked" if b.목록내림차순 else "")
+            + "> 큰 값부터</label>"
+            "<label class='rt-lbl'>최대 <input type='number' name='listmax'"
+            f" value='{b.목록최대 or ''}' min='0' style='width:70px'"
+            " placeholder='전부'>줄</label>"
+            "<span class='fxout muted'></span></p>"
+            "<div class='scroll'><table><tr><th style='width:150px'>머리글</th>"
+            f"<th>열 수식</th><th class='ctl' style='width:130px'></th></tr>"
+            f"{열줄}</table></div>"
+            "<p class='muted'>맨 아래 빈 줄에 적으면 열이 늘어납니다. "
+            "머리글을 비우면 수식이 그대로 머리글이 됩니다. "
+            "<b>수식 대신 그냥 글자</b>를 적으면 모든 줄에 그 글자가 들어갑니다.</p>"
+        )
     elif b.종류 == "프로필":
         줄 = "".join(
             f"<tr><td><input type='text' name='label' value='{html.escape(라벨)}'"
@@ -5194,7 +5338,7 @@ def _블록편집(b, 축값, 미리볼사람: str = "") -> str:
             + (f"<div class='scroll'><table><tr>{머리칸}</tr>"
                + "".join(칸입력) + "</table></div>" if b.행이름 and b.열이름 else "")
         )
-    return f"<div class='card'>{머리}{가운데}{꼬리}</div>"
+    return f"<div class='card'>{앞머리}{머리}{가운데}{꼬리}</div>"
 
 
 def _dash_edit_page(did: int, me: User, error: str = "", msg: str = "") -> bytes:
@@ -5287,6 +5431,20 @@ function fxPreview(el){
 document.addEventListener('DOMContentLoaded', function(){
   document.querySelectorAll('.fx').forEach(fxPreview);
 });
+/* 열 순서 바꾸기·빼기. 저장하러 갔다 오지 않고 여기서 끝낸다 — 열 하나 옮기려고
+   페이지를 왕복하면 표를 만들 엄두가 안 난다. */
+function rowMove(btn, 어디){
+  var tr = btn.closest('tr'), 형제 = 어디 < 0 ? tr.previousElementSibling
+                                            : tr.nextElementSibling;
+  if(!형제 || !형제.querySelector('input')) return;   /* 머리글 줄은 건너뛴다 */
+  if(어디 < 0) tr.parentNode.insertBefore(tr, 형제);
+  else tr.parentNode.insertBefore(형제, tr);
+}
+function rowDrop(btn){
+  var tr = btn.closest('tr'), 몸 = tr.parentNode;
+  tr.querySelectorAll('input').forEach(function(el){ el.value = ''; });
+  if(몸.querySelectorAll('tr').length > 2) tr.remove();   /* 빈 줄 하나는 남긴다 */
+}
 </script>"""
 
 
@@ -6312,6 +6470,26 @@ class Handler(BaseHTTPRequestHandler):
                     audit.record(me.아이디, "대시보드", str(did), 항목="블록 삭제",
                                  이전값=이름)
                 return self._redirect(f"/dash/edit?id={did}")
+
+            if path == "/dash/block/draft":
+                # 말 -> 열 정의 초안. **LLM 은 값을 만들지 않는다** — 정의만
+                # 내고, 표는 언제나 우리 계산기가 그린다.
+                bid = 정수("id")
+                b = boards.block(bid)
+                if b is None or b.종류 != "목록":
+                    return self._redirect("/dash")
+                설정, 메모 = dash_draft.draft((data.get("말") or [""])[0],
+                                            대시보드_열())
+                뒤로 = f"/dash/edit?id={b.dashboard_id}"
+                if not 설정.get("목록열"):
+                    return self._redirect(
+                        f"{뒤로}&err=" + urllib.parse.quote(" / ".join(메모)))
+                boards.save_block(bid, 제목=b.제목 or "목록",
+                                  설정={**b.설정, **설정})
+                audit.record(me.아이디, "대시보드", str(b.dashboard_id),
+                             항목="목록 초안", 새값=(data.get("말") or [""])[0][:80])
+                return self._redirect(
+                    f"{뒤로}&msg=" + urllib.parse.quote(" / ".join(메모)))
 
             if path == "/dash/block/save":
                 bid = 정수("id")
