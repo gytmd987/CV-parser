@@ -209,3 +209,36 @@ def test_a_cell_with_a_line_break_is_marked_so_it_can_wrap():
     ])
     r = render_list(b, ROWS)
     assert r.행[0] == ["홍길동", "서울대학교\n기계공학"]
+
+
+# --- 보이는 모양 ------------------------------------------------------------------
+def test_a_column_can_be_given_a_width():
+    """열 너비를 못 정하면 표가 화면 폭을 나눠 갖느라 쓸데없이 넓어진다."""
+    b = 블록(목록대상="채용", 목록열=[
+        ["이름", "=한글_이름", "90"],
+        ["학력", "=박사_학교", ""],
+    ])
+    r = render_list(b, ROWS)
+    assert r.폭 == ["90", ""]
+    assert r.머리 == ["이름", "학력"]
+
+
+def test_old_two_column_rows_still_load():
+    """쓰던 대시보드가 깨지면 안 된다 — 너비는 나중에 생긴 칸이다."""
+    b = 블록(목록대상="채용", 목록열=[["이름", "=한글_이름"]])
+    r = render_list(b, ROWS)
+    assert r.폭 == [""] and r.행[0] == ["홍길동"]
+
+
+def test_the_table_shape_has_sensible_defaults():
+    b = 블록(목록대상="채용", 목록열=[["이름", "=한글_이름"]])
+    assert b.테두리 == "가로줄" and b.표너비 == "창에 맞춤"
+    assert not b.줄무늬 and not b.촘촘히 and not b.머리배경
+
+
+def test_the_table_shape_is_remembered():
+    b = 블록(목록대상="채용", 목록열=[["이름", "=한글_이름"]],
+            테두리="격자", 줄무늬=True, 촘촘히=True,
+            표너비="내용에 맞춤", 머리배경="#eef2f7")
+    assert (b.테두리, b.표너비) == ("격자", "내용에 맞춤")
+    assert b.줄무늬 and b.촘촘히 and b.머리배경 == "#eef2f7"

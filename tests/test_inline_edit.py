@@ -1554,3 +1554,35 @@ def test_every_preview_box_fills_in_not_just_the_last_one(web, cid):
     page = web.get(f"/dash/edit?id={did}")
     assert "el.__fxt" in page          # 타이머는 칸마다 따로
     assert "var FXt" not in page       # 하나로 쓰던 것은 없앴다
+
+
+def test_the_dashboard_table_can_be_styled(web, cid):
+    """칸 구분이 안 되면 격자를 켠다 — 이름 옆 학력이 어디까지인지 눈으로 못 자른다."""
+    did = web.module.boards.add("모양", "admin")
+    bid = web.module.boards.add_block(did, "목록", 제목="표", 설정={
+        "목록대상": "지원자", "목록열": [["이름", "=한글_이름", "90"]],
+        "테두리": "격자", "줄무늬": True, "촘촘히": True,
+    })
+    보기 = web.get(f"/dash/view?id={did}")
+    assert "class='dtbl b-grid zebra tight'" in 보기
+    assert "style='width:90px'" in 보기
+
+    편집 = web.get(f"/dash/edit?id={did}")
+    assert "name='border'" in 편집 and "name='colwidth'" in 편집
+    assert "name='zebra'" in 편집 and "name='headbg'" in 편집
+
+
+def test_the_dashboard_width_can_be_changed(web):
+    did = web.module.boards.add("폭", "admin")
+    처음 = web.get(f"/dash/view?id={did}").split("<body", 1)[1][:40]
+    assert "--mainw:1600px" in 처음
+    web.post("/dash/rename", id=str(did), name="폭", desc="", width="넓게")
+    뒤 = web.get(f"/dash/view?id={did}").split("<body", 1)[1][:40]
+    assert "--mainw:100%" in 뒤
+    assert web.module.boards.get(did).너비 == "넓게"
+
+
+def test_other_pages_keep_the_normal_width(web, cid):
+    """대시보드 폭 설정이 다른 화면까지 넓히면 안 된다."""
+    본문시작 = web.get("/").split("<body", 1)[1][:40]
+    assert "--mainw" not in 본문시작        # CSS 안의 기본값은 그대로 둔다

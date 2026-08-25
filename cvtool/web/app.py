@@ -33,6 +33,7 @@ from .. import review
 from ..dashboards import (
     AXIS_SOURCES,
     BLOCK_KINDS,
+    WIDTHS,
     CELL_FORMATS,
     DashboardStore,
     format_cell,
@@ -332,7 +333,7 @@ header a[href='/logout']{font-weight:500}
 a{color:var(--accent);text-decoration:none}
 a:hover{text-decoration:underline}
 .card h2 a{color:inherit}
-main{padding:22px 20px 40px;max-width:1600px;margin:0 auto}
+main{padding:22px 20px 40px;max-width:var(--mainw,1600px);margin:0 auto}
 .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);
  padding:18px 20px;margin-bottom:16px;box-shadow:var(--sh)}
 h2{margin:0 0 12px;font-size:15px;font-weight:700;letter-spacing:-.01em}
@@ -471,6 +472,14 @@ button.tiny{padding:1px 6px;font-size:12px;min-width:22px;line-height:1.3}
 #colform button.dirty{background:#b45309;border-color:#b45309}
 /* 수식 미리보기 — 친 대로 바로 아래에 결과가 뜬다 */
 .fxout{display:block;font-size:12px;margin-top:3px;min-height:16px;word-break:break-all;white-space:pre-line}
+/* 대시보드 표 모양 — 만드는 사람이 고른다 */
+table.dtbl th{background:var(--headbg,var(--bg))}
+table.dtbl.b-grid th,table.dtbl.b-grid td{border:1px solid var(--line)}
+table.dtbl.b-none th,table.dtbl.b-none td{border:0}
+table.dtbl.b-none th{border-bottom:1px solid var(--line)}
+table.dtbl.zebra tr:nth-child(even) td{background:#fafbfc}
+table.dtbl.zebra tr:hover td{background:var(--accent-w)}
+table.dtbl.tight th,table.dtbl.tight td{padding:3px 6px;font-size:12px}
 /* CHAR(10) 을 넣은 칸만 줄을 바꾼다. 나머지는 한 줄로 잘린 채 둔다 */
 .scroll table td.multi{white-space:normal;overflow:visible;text-overflow:clip;line-height:1.45}
 .fxout.fxok{color:#15803d}
@@ -599,7 +608,8 @@ def _지금탭(경로: str, 소속: tuple[str, ...]) -> bool:
     return False
 
 
-def _page(title: str, body: str, nav: bool = True, me: User | None = None) -> bytes:
+def _page(title: str, body: str, nav: bool = True, me: User | None = None,
+          폭: str = "") -> bytes:
     # 탭 옆 숫자 = **아직 사람이 안 본 표기 수.** 등급을 안 매긴 것만 세면
     # 소속·전공은 늘 0 이라, 학교 이름이 엉뚱하게 들어와도 아무 표시가 없었다.
     안본것 = registry.unconfirmed_count() if nav else 0
@@ -629,7 +639,7 @@ def _page(title: str, body: str, nav: bool = True, me: User | None = None) -> by
         f"<!doctype html><html lang='ko'><head><meta charset='utf-8'>"
         f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
         f"<title>{html.escape(title)}</title><style>{_CSS}</style></head>"
-        f"<body>{header}<main>{body}</main>"
+        f"<body{f' style=--mainw:{폭}' if 폭 else ''}>{header}<main>{body}</main>"
         + (f"<script>{_TABLE_JS}{_INLINE_JS}</script>" if nav else "")
         + "</body></html>"
     ).encode("utf-8")
@@ -4898,10 +4908,27 @@ def _수식검사(수식: str, 아는열: set[str]) -> str:
     return ""
 
 
+def _표모양설정(설정: dict, data: dict) -> None:
+    """표 모양 고르개에서 온 값. 안 보낸 칸은 건드리지 않는다."""
+    테두리 = (data.get("border") or [""])[0]
+    if 테두리 in ("가로줄", "격자", "없음"):
+        설정["테두리"] = 테두리
+    폭 = (data.get("tablewidth") or [""])[0]
+    if 폭 in ("창에 맞춤", "내용에 맞춤"):
+        설정["표너비"] = 폭
+    if "border" in data:            # 이 폼이 표 모양을 담고 있었다는 뜻
+        설정["줄무늬"] = bool(data.get("zebra"))
+        설정["촘촘히"] = bool(data.get("tight"))
+        # '기본색' 을 켜 두면 색을 저장하지 않는다 — 화면 테마를 따라가게.
+        색 = (data.get("headbg") or [""])[0].strip()
+        설정["머리배경"] = "" if data.get("headbgoff") else 색
+
+
 def _블록설정(b, data: dict) -> tuple[dict, str]:
     """폼에서 온 값을 블록 설정으로. (설정, 오류메시지)"""
     아는열 = 대시보드_열()
     설정 = dict(b.설정)
+    _표모양설정(설정, data)
     형식 = (data.get("format") or [""])[0]
     if 형식 in CELL_FORMATS:
         설정["형식"] = 형식
@@ -4948,13 +4975,14 @@ def _블록설정(b, data: dict) -> tuple[dict, str]:
             설정["목록최대"] = 0
         머리들 = data.get("colhead") or []
         식들 = data.get("colformula") or []
-        열 = [[머리.strip(), 식.strip()]
-             for 머리, 식 in zip(머리들, 식들) if 식.strip()]
+        폭들 = (data.get("colwidth") or []) + [""] * len(식들)
+        열 = [[머리.strip(), 식.strip(), 폭.strip()]
+             for 머리, 식, 폭 in zip(머리들, 식들, 폭들) if 식.strip()]
         if not 열:
             return 설정, "열이 하나도 없습니다. 머리글과 수식을 적으세요."
         # 문법부터 틀렸으면 저장을 막는다. 조용히 넘어가면 화면에서 ? 만 보인다.
         볼것 = [("행 고르기", 설정["목록조건"]), ("정렬", 설정["목록정렬"])]
-        볼것 += [(머리 or 식, 식) for 머리, 식 in 열]
+        볼것 += [(머리 or 식, 식) for 머리, 식, _폭 in 열]
         for 자리, 식 in 볼것:
             if not expr.is_formula(식):
                 continue
@@ -5104,18 +5132,33 @@ def _블록그리기(b, rows, 축값, 아는열) -> str:
     if b.종류 == "목록":
         결과 = render_list(b, rows, 아는열)
         경고 = "".join(f"<p class='flag'>{html.escape(x)}</p>" for x in 결과.오류)
-        머리 = "".join(f"<th class='{열폭(c)}'>{머리글(c)}</th>" for c in 결과.머리)
+
+        def 폭스타일(i: int) -> str:
+            """정한 너비가 있으면 그 폭으로 못박는다. 없으면 열 이름으로 짐작."""
+            정한것 = 결과.폭[i] if i < len(결과.폭) else ""
+            if 정한것:
+                return f" style='width:{html.escape(정한것)}px'"
+            return ""
+
+        def 폭클래스(i: int) -> str:
+            if i < len(결과.폭) and 결과.폭[i]:
+                return ""                       # 직접 정했으면 짐작하지 않는다
+            return 열폭(결과.머리[i] if i < len(결과.머리) else "")
+
+        머리 = "".join(
+            f"<th class='{폭클래스(i)}'{폭스타일(i)}>{머리글(c)}</th>"
+            for i, c in enumerate(결과.머리)
+        )
 
         def 칸(i: int, v: str) -> str:
             # 줄바꿈(CHAR(10))을 일부러 넣은 칸은 **줄을 바꿔서** 보여준다.
             # 다른 칸은 그대로 한 줄로 잘린다 — 줄 높이가 들쭉날쭉해지면 표를
             # 훑기 어려우니, 바꾸는 건 그러라고 적은 칸뿐이다.
-            폭 = 열폭(결과.머리[i] if i < len(결과.머리) else "")
-            if "\n" in v:
-                return (f"<td class='{폭} multi' title='{html.escape(v)}'>"
-                        + "<br>".join(html.escape(줄) for 줄 in v.split("\n"))
-                        + "</td>")
-            return f"<td class='{폭}' title='{html.escape(v)}'>{html.escape(v)}</td>"
+            cls = 폭클래스(i) + (" multi" if "\n" in v else "")
+            속 = ("<br>".join(html.escape(줄) for 줄 in v.split("\n"))
+                 if "\n" in v else html.escape(v))
+            return (f"<td class='{cls.strip()}'{폭스타일(i)}"
+                    f" title='{html.escape(v)}'>{속}</td>")
 
         몸 = "".join(
             "<tr>" + "".join(칸(i, v) for i, v in enumerate(칸들)) + "</tr>"
@@ -5128,7 +5171,8 @@ def _블록그리기(b, rows, 축값, 아는열) -> str:
         return (
             f"<div class='card'><h2>{html.escape(b.제목)} "
             f"<span class='muted'>{센것}</span></h2>{경고}"
-            f"<div class='scroll'><table data-name='{html.escape(b.제목 or '목록')}'>"
+            f"<div class='scroll'><table {_표모양(b)}"
+            f" data-name='{html.escape(b.제목 or '목록')}'>"
             f"<tr>{머리}</tr>{몸}</table></div></div>"
         )
 
@@ -5162,9 +5206,30 @@ def _블록그리기(b, rows, 축값, 아는열) -> str:
     ) or f"<tr><td colspan='{len(결과.머리) + 1}' class='muted'>줄이 없습니다.</td></tr>"
     return (
         f"<div class='card'><h2>{html.escape(b.제목)}</h2>{경고}"
-        f"<div class='scroll'><table data-name='{html.escape(b.제목 or '표')}'>"
+        f"<div class='scroll'><table {_표모양(b)}"
+        f" data-name='{html.escape(b.제목 or '표')}'>"
         f"<tr>{머리}</tr>{몸}</table></div></div>"
     )
+
+
+def _표모양(b) -> str:
+    """블록에 정한 모양을 표 태그의 class·style 로.
+
+    기본은 가로줄만 있는 조용한 표다. 그런데 **줄이 길어지면 칸 구분이 안 된다**
+    — 이름 옆의 학력이 어디까지인지 눈으로 못 자른다. 그럴 때 격자를 켠다.
+    """
+    cls = ["dtbl", f"b-{ {'격자': 'grid', '없음': 'none'}.get(b.테두리, 'row') }"]
+    if b.줄무늬:
+        cls.append("zebra")
+    if b.촘촘히:
+        cls.append("tight")
+    style = "" if b.표너비 == "창에 맞춤" else "width:auto"
+    if b.머리배경:
+        # 머리글 배경은 CSS 변수로 넘긴다 (인라인 스타일은 th 에 못 닿는다)
+        style += f";--headbg:{b.머리배경}"
+    style = style.strip(";")
+    return (f"class='{' '.join(cls)}'"
+            + (f" style='{html.escape(style)}'" if style else ""))
 
 
 def _dash_view_page(did: int, me: User) -> bytes:
@@ -5189,6 +5254,7 @@ def _dash_view_page(did: int, me: User) -> bytes:
         f"{len(rows.채용)}명 기준 · {html.escape(now_kst().strftime('%Y-%m-%d %H:%M'))}"
         "</span></p></div>" + 몸,
         me=me,
+        폭=d.폭,
     )
 
 
@@ -5308,6 +5374,41 @@ def _틀도움() -> str:
     )
 
 
+def _표모양편집(b) -> str:
+    """표 모양 고르개. 목록·축표·자유표가 함께 쓴다.
+
+    기본은 가로줄만 있는 조용한 표인데, 줄이 길어지면 **칸 구분이 안 된다** —
+    이름 옆의 학력이 어디까지인지 눈으로 못 자른다. 그럴 때 격자를 켠다.
+    """
+    고르기 = lambda 이름, 값들, 지금: (
+        f"<select name='{이름}'>" + "".join(
+            f"<option{' selected' if v == 지금 else ''}>{html.escape(v)}</option>"
+            for v in 값들) + "</select>"
+    )
+    return (
+        "<details class='draft'><summary>표 모양</summary>"
+        "<p class='bar' style='margin-top:8px'>"
+        "<label class='rt-lbl'>테두리 "
+        + 고르기("border", ("가로줄", "격자", "없음"), b.테두리) + "</label>"
+        "<label class='rt-lbl'>표 너비 "
+        + 고르기("tablewidth", ("창에 맞춤", "내용에 맞춤"), b.표너비) + "</label>"
+        "<label class='rt-lbl'><input type='checkbox' name='zebra'"
+        + (" checked" if b.줄무늬 else "") + "> 줄무늬</label>"
+        "<label class='rt-lbl'><input type='checkbox' name='tight'"
+        + (" checked" if b.촘촘히 else "") + "> 촘촘히</label>"
+        "<label class='rt-lbl'>머리글 배경 "
+        f"<input type='color' name='headbg' value='{html.escape(b.머리배경 or '#f7f8fa')}'>"
+        "</label>"
+        "<label class='rt-lbl'><input type='checkbox' name='headbgoff'"
+        + ("" if b.머리배경 else " checked") + "> 기본색</label>"
+        "</p>"
+        "<p class='muted'>칸 구분이 안 되면 <b>격자</b>를 켜세요. 줄이 많으면 "
+        "<b>줄무늬</b>가, 한 화면에 더 담고 싶으면 <b>촘촘히</b>가 도움이 됩니다. "
+        "열 너비를 하나라도 정했으면 <b>내용에 맞춤</b>이 그 폭을 그대로 지킵니다.</p>"
+        "</details>"
+    )
+
+
 def _블록편집(b, 축값, 미리볼사람: str = "") -> str:
     """블록 하나의 설정 폼.
 
@@ -5369,6 +5470,7 @@ def _블록편집(b, 축값, 미리볼사람: str = "") -> str:
             "<span class='fxout muted'></span></p>"
             "<p class='muted'><code>{행}</code> <code>{열}</code> 이 축 값으로 바뀝니다. "
             "칸을 하나하나 안 적어도 되고, 부서가 늘면 표가 알아서 늘어납니다.</p>"
+            + _표모양편집(b)
         )
     elif b.종류 == "목록":
         # **한 사람이 한 줄, 열은 만드는 사람이 정한다.** 축표(피벗)로는 만들 수
@@ -5380,13 +5482,16 @@ def _블록편집(b, 축값, 미리볼사람: str = "") -> str:
             " style='width:100%' class='fx' oninput='fxPreview(this)'"
             f" data-cid='{html.escape(미리볼사람)}' placeholder='=한글_이름'>"
             "<span class='fxout muted'></span></td>"
-            "<td class='ctl'><button type='button' class='sec'"
+            f"<td class='ctl'><input type='number' name='colwidth'"
+            f" value='{html.escape(폭)}' min='30' max='900' step='10'"
+            " style='width:72px' placeholder='자동'></td>"
+            "<td class='ctl'><button type='button' class='sec tiny'"
             " onclick='rowMove(this,-1)' title='위로'>↑</button> "
-            "<button type='button' class='sec' onclick='rowMove(this,1)'"
+            "<button type='button' class='sec tiny' onclick='rowMove(this,1)'"
             " title='아래로'>↓</button> "
-            "<button type='button' class='danger ghost' onclick='rowDrop(this)'"
+            "<button type='button' class='danger ghost tiny' onclick='rowDrop(this)'"
             " title='이 열 빼기'>×</button></td></tr>"
-            for 머리, 식 in (b.목록열 + [("", "")])
+            for 머리, 식, 폭 in (b.목록열 + [("", "", "")])
         )
         # 빈 화면에 =한글_이름 부터 쳐 넣는 건 문법이 쉬워도 부담스럽다.
         # 초안이 있으면 **고치는 일**이 되고, 고치는 건 훨씬 쉽다.
@@ -5426,11 +5531,15 @@ def _블록편집(b, 축값, 미리볼사람: str = "") -> str:
             " placeholder='전부'>줄</label>"
             "<span class='fxout muted'></span></p>"
             "<div class='scroll'><table><tr><th style='width:150px'>머리글</th>"
-            f"<th>열 수식</th><th class='ctl' style='width:130px'></th></tr>"
+            "<th>열 수식</th>"
+            "<th class='ctl' style='width:84px' title='칸 너비 (px). 비우면 알아서'>"
+            "너비</th>"
+            f"<th class='ctl' style='width:120px'></th></tr>"
             f"{열줄}</table></div>"
             "<p class='muted'>맨 아래 빈 줄에 적으면 열이 늘어납니다. "
             "머리글을 비우면 수식이 그대로 머리글이 됩니다. "
             "<b>수식 대신 그냥 글자</b>를 적으면 모든 줄에 그 글자가 들어갑니다.</p>"
+            + _표모양편집(b)
         )
     elif b.종류 == "프로필":
         줄 = "".join(
@@ -5520,6 +5629,10 @@ def _dash_edit_page(did: int, me: User, error: str = "", msg: str = "") -> bytes
         f"<input type='text' name='name' value='{html.escape(d.이름)}' style='width:260px'>"
         f"<input type='text' name='desc' value='{html.escape(d.설명)}'"
         " placeholder='설명' style='width:320px'>"
+        "<label class='rt-lbl'>화면 폭 <select name='width'>"
+        + "".join(f"<option{' selected' if w == (d.너비 or '보통') else ''}>{w}</option>"
+                  for w in WIDTHS)
+        + "</select></label>"
         "<button type='submit'>이름·설명 저장</button></form>"
         f"<p style='margin-top:10px'><a class='btn' href='/dash/view?id={did}'>보기</a> "
         "<a class='btn sec' href='/dash'>목록</a></p>"
@@ -6595,6 +6708,7 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError as exc:
                     return self._redirect(f"/dash/edit?id={did}&err="
                                           + urllib.parse.quote(str(exc)))
+                boards.set_width(did, (data.get("width") or [""])[0])
                 return self._redirect(f"/dash/edit?id={did}&msg="
                                       + urllib.parse.quote("저장했습니다."))
 

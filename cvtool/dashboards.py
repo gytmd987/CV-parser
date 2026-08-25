@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS dashboards (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     이름         TEXT NOT NULL UNIQUE,
     설명         TEXT DEFAULT '',
+    너비         TEXT DEFAULT '',
     만든이        TEXT DEFAULT '',
     만든일시      TEXT DEFAULT '',
     수정일시      TEXT DEFAULT ''
@@ -105,9 +106,40 @@ class Block:
         return self.설정.get("목록조건") or ""
 
     @property
-    def 목록열(self) -> list[tuple[str, str]]:
-        """[(머리글, 수식)] — **열을 만드는 사람이 정한다.**"""
-        return [(str(a), str(b)) for a, b in (self.설정.get("목록열") or [])]
+    def 목록열(self) -> list[tuple[str, str, str]]:
+        """[(머리글, 수식, 너비)] — **열을 만드는 사람이 정한다.**
+
+        너비는 px 숫자거나 빈 문자열(알아서). 예전에 저장한 두 칸짜리 줄도
+        그대로 읽는다 — 쓰던 대시보드가 깨지면 안 된다.
+        """
+        나온것 = []
+        for 줄 in (self.설정.get("목록열") or []):
+            줄 = list(줄) + ["", "", ""]
+            나온것.append((str(줄[0]), str(줄[1]), str(줄[2] or "").strip()))
+        return 나온것
+
+    # -- 표 모양 (목록·축표·자유표가 함께 쓴다) --------------------------------
+    @property
+    def 테두리(self) -> str:
+        """`가로줄`(기본) · `격자` · `없음`"""
+        return self.설정.get("테두리") or "가로줄"
+
+    @property
+    def 줄무늬(self) -> bool:
+        return bool(self.설정.get("줄무늬"))
+
+    @property
+    def 촘촘히(self) -> bool:
+        return bool(self.설정.get("촘촘히"))
+
+    @property
+    def 표너비(self) -> str:
+        """`창에 맞춤`(기본) · `내용에 맞춤`"""
+        return self.설정.get("표너비") or "창에 맞춤"
+
+    @property
+    def 머리배경(self) -> str:
+        return self.설정.get("머리배경") or ""
 
     @property
     def 목록정렬(self) -> str:
@@ -140,6 +172,11 @@ class Block:
         return self.설정.get("대상") or "=LIST(지원자, 열=지원자_ID)"
 
 
+#: 대시보드 폭. 표가 넓으면 화면을 다 쓰고 싶고, 글이 많으면 좁은 게 읽기 좋다.
+WIDTHS = ("보통", "넓게", "좁게")
+_WIDTH_PX = {"보통": "1600px", "넓게": "100%", "좁게": "1100px"}
+
+
 @dataclass
 class Dashboard:
     id: int
@@ -148,6 +185,12 @@ class Dashboard:
     만든이: str
     만든일시: str
     수정일시: str
+    너비: str = ""
+
+    @property
+    def 폭(self) -> str:
+        """`main` 에 줄 max-width. 안 정했으면 다른 화면과 같은 폭."""
+        return _WIDTH_PX.get(self.너비 or "보통", _WIDTH_PX["보통"])
 
 
 class DashboardStore:
@@ -159,6 +202,11 @@ class DashboardStore:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
+        # 쓰던 DB 에 나중에 생긴 열을 붙인다. 표를 다시 만들면 만들어 둔
+        # 대시보드가 날아간다.
+        있는열 = {r["name"] for r in self._conn.execute("PRAGMA table_info(dashboards)")}
+        if "너비" not in 있는열:
+            self._conn.execute("ALTER TABLE dashboards ADD COLUMN 너비 TEXT DEFAULT ''")
         self._conn.commit()
         for suffix in ("", "-wal", "-shm"):
             secure_file(Path(str(self.path) + suffix))
@@ -195,6 +243,12 @@ class DashboardStore:
             "SELECT * FROM dashboards WHERE 이름=?", ((이름 or "").strip(),)
         ).fetchone()
         return Dashboard(**dict(row)) if row else None
+
+    def set_width(self, did: int, 너비: str) -> None:
+        if 너비 not in WIDTHS:
+            return
+        self._conn.execute("UPDATE dashboards SET 너비=? WHERE id=?", (너비, did))
+        self._conn.commit()
 
     def rename(self, did: int, 이름: str, 설명: str | None = None) -> None:
         이름 = (이름 or "").strip()
@@ -368,6 +422,7 @@ class RenderedProfile:
 class RenderedList:
     제목: str
     머리: list[str] = field(default_factory=list)
+    폭: list[str] = field(default_factory=list)      # 열마다 px, 빈 값은 알아서
     행: list[list[str]] = field(default_factory=list)
     오류: list[str] = field(default_factory=list)
     전체: int = 0                      # 조건에 맞는 사람 수 (줄여 보여줄 때)
@@ -389,7 +444,7 @@ def render_list(b: Block, rows, 아는열: set[str] | None = None) -> RenderedLi
     from . import expr
 
     오류: list[str] = []
-    열들 = [(머리, 식) for 머리, 식 in b.목록열 if str(식).strip()]
+    열들 = [(머리, 식, 폭) for 머리, 식, 폭 in b.목록열 if str(식).strip()]
     if not 열들:
         return RenderedList(제목=b.제목, 오류=["열이 없습니다. 아래에서 열을 추가하세요."])
 
@@ -429,7 +484,7 @@ def render_list(b: Block, rows, 아는열: set[str] | None = None) -> RenderedLi
     본오류 = set()
     for _cid, 값들 in 골라낸:
         칸들 = []
-        for 머리, 식 in 열들:
+        for 머리, 식, _폭 in 열들:
             if not expr.is_formula(식):
                 칸들.append(식)                  # 그냥 글자는 그대로
                 continue
@@ -444,7 +499,7 @@ def render_list(b: Block, rows, 아는열: set[str] | None = None) -> RenderedLi
     오류 += sorted(본오류)
     if 아는열 is not None:
         쓴열: set[str] = set()
-        for 식 in [식 for _머리, 식 in 열들] + [b.목록조건, b.목록정렬]:
+        for 식 in [식 for _머리, 식, _폭 in 열들] + [b.목록조건, b.목록정렬]:
             if not expr.is_formula(식):
                 continue
             try:
@@ -455,8 +510,9 @@ def render_list(b: Block, rows, 아는열: set[str] | None = None) -> RenderedLi
         if 모르는:
             오류.append("표에 없는 열입니다: " + ", ".join(모르는))
 
-    머리 = [머리 or 식 for 머리, 식 in 열들]
-    return RenderedList(제목=b.제목, 머리=머리, 행=표행, 오류=오류, 전체=전체)
+    머리 = [머리 or 식 for 머리, 식, _폭 in 열들]
+    폭들 = [폭 for _머리, _식, 폭 in 열들]
+    return RenderedList(제목=b.제목, 머리=머리, 폭=폭들, 행=표행, 오류=오류, 전체=전체)
 
 
 def render_table(b: Block, rows, 축값: dict[str, list[str]],
