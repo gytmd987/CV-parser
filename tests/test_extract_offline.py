@@ -548,3 +548,82 @@ def test_old_records_without_titles_still_work():
     rec = CVRecord(지원자_ID="X", 논문=[Paper(제출처="NeurIPS", 저자구분="주저자")])
     assert rec.논문[0].제목 == ""
     assert rec.papers_view()[0]["표시명"] == "NeurIPS"
+
+
+# --- 지도교수 · IF · 구글 스칼라 -----------------------------------------------------
+def test_the_supervisor_prompt_asks_for_korean_then_the_original():
+    """`Prof. Gil-Ho Lee` 만 적혀 있으면 누구인지 알아보기 어렵다."""
+    from cvtool.extract import _BASIC_HINT, _EDU_HINT
+
+    for hint in (_BASIC_HINT, _EDU_HINT):
+        assert "한글명(원문명)" in hint
+        assert "이길호(Gil-Ho Lee)" in hint
+        assert "지어내지 마라" in hint          # 유추 못 하면 원문만
+
+
+def test_the_scholar_link_uses_the_original_name_and_affiliation():
+    """우리가 추정한 한글명으로 찾으면 해외 저널에 실린 이름과 안 맞는다."""
+    from cvtool.extract import scholar_url
+
+    assert scholar_url("Gil Dong Hong", "KAIST") == (
+        "https://scholar.google.com/scholar?q=Gil+Dong+Hong+KAIST")
+    assert scholar_url("홍길동", "") .endswith("q=%ED%99%8D%EA%B8%B8%EB%8F%99")
+    assert scholar_url("", "") == ""
+
+
+def test_the_scholar_link_falls_back_to_the_last_school():
+    """현재 소속을 모르면 마지막 학교로 — 그 이름으로 논문을 냈을 것이다."""
+    rec = extract_cv_from_text("이력서", client=_sectioned_client())
+    assert rec.구글_스칼라_링크.startswith("https://scholar.google.com/scholar?q=")
+
+
+def test_the_impact_factor_only_counts_first_author_overseas_journals():
+    """학회에는 IF 가 없고, 공저자 논문은 그 사람 성과로 보기 어렵다."""
+    import os
+    import tempfile
+
+    from cvtool.names import NameRegistry
+    from cvtool.schemas import CVRecord, Paper
+
+    reg = NameRegistry(os.path.join(tempfile.mkdtemp(), "n.db"))
+    for 이름, IF, 유형 in [("Nature", "64.8", "저널"), ("Small", "13.3", "저널"),
+                         ("ICML", "99", "학회")]:
+        n = reg.observe(유형, 이름, 국내해외="해외", 유형=유형)
+        reg.classify(n.id, IF=IF, 국내해외="해외", 유형=유형)
+
+    def 만들기(*논문):
+        return CVRecord(지원자_ID="X", 논문=list(논문)).최고_임팩트팩터(reg)
+
+    주Nature = Paper(제목="a", 제출처="Nature", 유형="저널", 저자구분="주저자", 국내해외="해외")
+    공Nature = Paper(제목="b", 제출처="Nature", 유형="저널", 저자구분="공저자", 국내해외="해외")
+    주Small = Paper(제목="c", 제출처="Small", 유형="저널", 저자구분="주저자", 국내해외="해외")
+    주ICML = Paper(제목="d", 제출처="ICML", 유형="학회", 저자구분="주저자", 국내해외="해외")
+    사전밖 = Paper(제목="e", 제출처="어디에도 없는 저널", 유형="저널",
+                 저자구분="주저자", 국내해외="해외")
+
+    assert 만들기(주Small, 주Nature) == "64.8"      # 가장 높은 것
+    assert 만들기(공Nature, 주Small) == "13.3"      # 공저자는 안 센다
+    assert 만들기(주ICML) == ""                     # 학회는 안 센다
+    assert 만들기(사전밖) == ""                     # IF 를 안 넣은 곳은 셀 수 없다
+    assert 만들기() == ""
+
+
+def test_the_dictionary_decides_domestic_or_overseas_not_the_llm():
+    """명칭 관리에서 사람이 정한 값이 LLM 추측을 이긴다 — IF 도 그 판정을 따른다."""
+    import os
+    import tempfile
+
+    from cvtool.names import NameRegistry
+    from cvtool.schemas import CVRecord, Paper
+
+    reg = NameRegistry(os.path.join(tempfile.mkdtemp(), "n.db"))
+    n = reg.observe("저널", "Nature", 국내해외="해외", 유형="저널")
+    reg.classify(n.id, IF="64.8", 국내해외="해외", 유형="저널")
+
+    # LLM 은 국내라고 했지만 사전에는 해외로 적혀 있다
+    rec = CVRecord(지원자_ID="X", 논문=[
+        Paper(제목="a", 제출처="Nature", 유형="저널", 저자구분="주저자", 국내해외="국내")])
+    assert rec.최고_임팩트팩터(reg) == "64.8"
+
+    reg.classify(n.id, 국내해외="국내")             # 담당자가 국내로 고치면
+    assert rec.최고_임팩트팩터(reg) == ""            # IF 도 같이 빠진다

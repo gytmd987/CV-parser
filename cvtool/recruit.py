@@ -32,7 +32,12 @@ STATUSES = ("", "진행중", "합격", "불합격", "보류")
 FIXED_STATUSES = ("", "합격", "불합격")
 
 #: 채용 현황 표에만 있는 열 (지원자 DB 열과 합쳐서 보여준다)
-RECRUIT_COLUMNS = ("부서", "과제", *STAGES, "최종상태", "비고")
+#: 채용을 시작한 사람인가. 인재 Pool 표 맨 앞에 뱃지로 나오던 것인데, 열로
+#: 두지 않으면 **표 항목 탭에서 이름을 바꾸거나 숨길 수가 없다** (화면에는
+#: 보이는데 관리 목록에는 없는 열이 된다).
+STARTED_COLUMN = "채용"
+
+RECRUIT_COLUMNS = (STARTED_COLUMN, "부서", "과제", *STAGES, "최종상태", "비고")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS recruit (

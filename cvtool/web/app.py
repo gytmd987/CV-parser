@@ -87,6 +87,7 @@ from ..clients import mailer as mailapi
 from ..recruit import (
     FIXED_STATUSES,
     RECRUIT_COLUMNS,
+    STARTED_COLUMN,
     STAGES,
     STATUSES,
     RecruitStore,
@@ -889,17 +890,6 @@ def 대시보드_축() -> dict[str, list[str]]:
     }
 
 
-def _채용칸(cid: str, 시작함: bool, 고칠수있나: bool) -> str:
-    """인재 Pool 표의 '채용' 칸 — 지금 뽑고 있는 사람인가.
-
-    **줄마다 있던 단추는 없앴다.** 같은 일을 표 위 묶음 단추가 이미 하고, 줄마다
-    두면 화면이 단추로 뒤덮이는 데다 한 명씩만 처리하게 된다. 여기는 상태만
-    보여준다 (체크해서 위에서 한 번에 처리하는 게 원래 쓰던 길이다).
-    """
-    return ("<span class='pill p-처리중'>채용 중</span>" if 시작함
-            else "<span class='pill p-대기중'>인재 Pool</span>")
-
-
 def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "",
                msg: str = "") -> bytes:
     records = store.list_filtered(q, review_only, 년도)
@@ -945,7 +935,6 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
         cells = [
             f"<td><input type='checkbox' name='ids' value='{html.escape(cid)}'></td>",
             f"<td><a href='/candidate?id={urllib.parse.quote(cid)}'>상세</a></td>",
-            f"<td>{_채용칸(cid, cid in 채용중, 채용가능)}</td>",
         ]
         for c in COLS:
             폭 = 열폭(c)
@@ -960,6 +949,23 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
                     + (f"<a href='/candidate?id={urllib.parse.quote(cid)}#검토'>{v}</a>"
                        if 남음 else v)
                     + "</td>")
+                continue
+            if c == "구글_스칼라_링크":
+                # 표에서는 **눌러서 여는 링크**다. 여기서 칸을 눌러 고치게 하면
+                # 링크를 열 수가 없다 — 고치는 건 상세 화면에서 한다.
+                v = str(row.get(c, "") or "")
+                cells.append(
+                    f"<td class='{폭}' title='{html.escape(v)}'>"
+                    + (f"<a href='{html.escape(v)}' target='_blank' rel='noopener'>"
+                       "구글 스칼라 ↗</a>" if v.startswith("http") else html.escape(v))
+                    + "</td>")
+                continue
+            if c == STARTED_COLUMN:
+                v = 표값.get(cid, {}).get(c, "")
+                모양 = "p-처리중" if v == "채용 중" else "p-대기중"
+                cells.append(f"<td class='{폭}'>"
+                             + (f"<span class='pill {모양}'>{html.escape(v)}</span>"
+                                if v else "") + "</td>")
                 continue
             if c in MANAGE_COLUMNS or c in 보기전용열:
                 # 등록·보관 정보, 채용 현황, 메일 이력은 여기서 고치지 않는다.
@@ -1018,7 +1024,7 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
                 data-export='/export.xlsx{조건쿼리}'>
             <tr><th><input type='checkbox' onclick="selectVisible(this)"
                 title='보이는 줄만 선택합니다'>
-            </th><th></th><th>채용</th>{head}</tr>
+            </th><th></th>{head}</tr>
             {''.join(body_rows)}
           </table></div>
         </form>"""
@@ -1503,7 +1509,9 @@ def 열목록(registry_=None) -> list[tuple[str, str, bool]]:
     out: list[tuple[str, str, bool]] = []
     out += [("지원자 정보", c, False) for c in table_columns(reg)]
     out += [("지원자 정보", c, True) for c in 추가열("지원자 정보")]
-    out += [("관리 정보", c, False) for c in MANAGE_COLUMNS]
+    # 표에 나오는데 여기 없으면 이름을 바꾸거나 숨길 방법이 없다.
+    # 지원자_ID 는 내부 열쇠지만 표에 올릴 수 있어야 한다 (엑셀에서 대조할 때 쓴다).
+    out += [("관리 정보", c, False) for c in ("지원자_ID", *MANAGE_COLUMNS, MAIL_COLUMN)]
     out += [("채용 현황", c, False) for c in RECRUIT_COLUMNS]
     out += [("채용 현황", c, True) for c in 추가열("채용 현황")]
     return out
@@ -1525,14 +1533,15 @@ def 지원자열(registry_=None) -> list[str]:
     한 사람에 대해 아는 것을 보려고 화면을 옮겨 다니지 않아도 되게.
     채용 열은 여기서 **보기만** 한다 (고치는 건 채용 현황 화면 몫).
     """
-    return (list(table_columns(registry_ or registry)) + list(MANAGE_COLUMNS)
+    return (list(table_columns(registry_ or registry))
+            + ["지원자_ID"] + list(MANAGE_COLUMNS)
             + 추가열("지원자 정보") + list(RECRUIT_COLUMNS)
             + 추가열("채용 현황") + [MAIL_COLUMN])
 
 
 #: 관리 정보 중 처음에는 접어 두는 열. 표가 넓어지기만 하고 평소엔 안 본다.
 #: 표 항목 탭에서 숨김을 풀면(설정이 생기면) 그때부터 보인다.
-MANAGE_HIDDEN_BY_DEFAULT = ("등록일시", "원본_파일명", "보관_만료일")
+MANAGE_HIDDEN_BY_DEFAULT = ("지원자_ID", "등록일시", "원본_파일명", "보관_만료일")
 
 
 def 기본숨김(col: str, cfg: dict) -> bool:
@@ -1621,11 +1630,15 @@ def _표값맵() -> dict[str, dict[str, str]]:
     # 표에 그대로 남아 있으면 아직 볼 게 있는 것처럼 보인다. DB 원문은 그대로
     # 두고 (LLM 이 무엇을 확신 못 했는지의 기록이다) 보이는 글만 줄인다.
     끝낸것 = store.review_done_map()
+    시작한사람 = recruit.started()
     for rec in store.list_all():
-        if not (rec.검토_사유 or "").strip():
-            continue
-        보일글 = review.display(rec.검토_사유, 끝낸것.get(rec.지원자_ID, set()))
-        합침.setdefault(rec.지원자_ID, {})["검토_사유"] = 보일글
+        cid = rec.지원자_ID
+        칸 = 합침.setdefault(cid, {})
+        # 표에 나오는 값은 전부 여기서 나와야 표 항목 탭에서 관리할 수 있다.
+        칸["지원자_ID"] = cid
+        칸[STARTED_COLUMN] = "채용 중" if cid in 시작한사람 else "인재 Pool"
+        if (rec.검토_사유 or "").strip():
+            칸["검토_사유"] = review.display(rec.검토_사유, 끝낸것.get(cid, set()))
     return 합침
 
 

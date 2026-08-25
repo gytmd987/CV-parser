@@ -58,6 +58,10 @@ COLUMNS: list[str] = [
     "특허_등록_수",
     "특허_출원_수",
     "연구분야_키워드",
+    # 1저자 해외 저널 중 **가장 높은** IF. 명칭 관리에서 IF 를 고치면 여기도
+    # 곧바로 따라온다 (저장된 값이 아니라 볼 때마다 사전에서 다시 읽는다).
+    "임팩트_팩터",
+    "구글_스칼라_링크",
     # G. 경력 (가장 최근 것 하나. 6개월 미만·인턴은 빼고 센다)
     "경력_요약",
     "경력_회사",
@@ -75,6 +79,8 @@ COLUMNS: list[str] = [
 DEFAULT_LABELS: dict[str, str] = {
     "경력_회사": "경력_회사(학교)",
     "박사_석박통합": "석박통합",
+    "임팩트_팩터": "IF(최고)",
+    "구글_스칼라_링크": "구글 스칼라",
 }
 
 #: 명칭 사전으로 대표명을 붙일 열 (열 이름 -> 사전 종류)
@@ -348,6 +354,9 @@ class CVRecord(BaseModel):
     경력_시작: str = ""
     경력_종료: str = ""
 
+    #: 구글 스칼라 검색 링크. 추출할 때 만들어 두고 **사람이 고칠 수 있다** —
+    #: 동명이인이 많은 이름은 검색어를 손봐야 쓸모가 있다.
+    구글_스칼라_링크: str = ""
     검토_필요: str = ""
     검토_사유: str = ""
 
@@ -381,7 +390,10 @@ class CVRecord(BaseModel):
                     종류 = found.유형
             out.append(
                 {"제목": p.제목, "표시명": 표시명, "연도": p.연도, "등급": 등급,
-                 "국내해외": 국내해외, "유형": 종류, "주저자": p.주저자}
+                 "국내해외": 국내해외, "유형": 종류, "주저자": p.주저자,
+                 # 사전을 다시 찾을 때 쓴다 (표시명이 아니라 CV 에 적힌 그대로여야
+                 # 사전이 찾는다)
+                 "원문": p.제출처}
             )
         return out
 
@@ -420,6 +432,34 @@ class CVRecord(BaseModel):
         ]
         return MULTI_SEP.join(items)
 
+    def 최고_임팩트팩터(self, registry=None) -> str:
+        """**1저자 해외 저널** 중 가장 높은 IF.
+
+        학회에는 IF 가 없고, 공저자 논문은 그 사람의 성과로 보기 어렵다.
+        IF 는 명칭 관리에서 사람이 넣는 값이라, 저장하지 않고 볼 때마다 다시
+        읽는다 — 사전에서 IF 를 고치면 지원자 표에도 곧바로 반영된다.
+        """
+        if registry is None:
+            return ""
+        높은것 = None
+        for v in self.papers_view(registry):
+            if not (v["국내해외"] == "해외" and v["주저자"]):
+                continue
+            if v.get("유형") != "저널":
+                continue
+            found = registry.lookup("저널", v.get("원문") or v["표시명"])
+            if found is None or not (found.IF or "").strip():
+                continue
+            try:
+                값 = float(found.IF.strip())
+            except ValueError:
+                continue            # 사람이 적은 값이라 숫자가 아닐 수 있다
+            if 높은것 is None or 값 > 높은것:
+                높은것 = 값
+        if 높은것 is None:
+            return ""
+        return str(int(높은것)) if 높은것 == int(높은것) else f"{높은것:g}"
+
     def 등급별_해외논문_수(self, registry=None) -> dict[str, int]:
         counts: dict[str, int] = {}
         for v in self.papers_view(registry):
@@ -435,6 +475,7 @@ class CVRecord(BaseModel):
         """
         data = self.model_dump()
         data["1저자_해외논문_제출처"] = self.해외논문_제출처(registry)
+        data["임팩트_팩터"] = self.최고_임팩트팩터(registry)
         # 세어 나오는 값. 0 은 빈칸으로 둔다 — 표가 0 으로 도배되면 안 읽힌다.
         for 열, 값 in {**self.논문_수(registry), **self.특허_수()}.items():
             data[열] = 값 or ""

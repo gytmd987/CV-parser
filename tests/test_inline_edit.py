@@ -1432,3 +1432,47 @@ def test_column_width_is_not_trapped_inside_a_fixed_table(web):
     # 지원자 표용 260px 상한이 메일 표까지 죄면 안 된다
     css = page.split("<style>", 1)[1].split("</style>", 1)[0]
     assert ".rt-body table td" in css and "max-width:none" in css
+
+
+# --- 표 항목은 DB 의 **모든** 열을 다룬다 --------------------------------------------
+def test_every_column_that_shows_up_can_be_managed(web):
+    """화면에 보이는데 표 항목에 없으면 이름을 바꾸거나 숨길 방법이 없다."""
+    관리 = {c for _구분, c, _추가 in web.module.열목록()}
+    assert not set(web.module.표열()) - 관리
+    assert not (set(web.module.지원자열()) | {"지원자_ID"}) - 관리
+    for 열 in ("채용", "지원자_ID", "메일_발송이력", "임팩트_팩터", "구글_스칼라_링크"):
+        assert 열 in 관리, 열
+
+
+def test_the_recruit_state_is_a_real_column_now(web, cid):
+    """맨 앞에 박아 둔 칸이 아니라 여느 열과 같다 — 이름도 바꾸고 숨길 수도 있다."""
+    page = web.get("/")
+    assert "인재 Pool</span>" in page
+    web.post("/candidates/start", id=cid)
+    assert "채용 중</span>" in web.get("/")
+    web.post("/fields/columns", col=["채용"], label_1="진행", order_1="")
+    assert "진행" in web.get("/")
+
+
+def test_the_impact_factor_follows_the_dictionary(web, cid):
+    """IF 는 명칭 관리에서 사람이 넣는 값이라, 고치면 표도 곧바로 따라와야 한다."""
+    from cvtool.schemas import Paper
+
+    rec = web.module.store.get(cid)
+    rec.논문 = [Paper(제목="a", 제출처="Nature", 유형="저널",
+                    저자구분="주저자", 국내해외="해외")]
+    web.module.store.save(rec)
+    n = web.module.registry.observe("저널", "Nature", 국내해외="해외", 유형="저널")
+    web.module.registry.classify(n.id, IF="64.8", 국내해외="해외", 유형="저널")
+    assert web.module.store.get(cid).to_row(web.module.registry)["임팩트_팩터"] == "64.8"
+    web.module.registry.classify(n.id, IF="10")
+    assert web.module.store.get(cid).to_row(web.module.registry)["임팩트_팩터"] == "10"
+
+
+def test_the_scholar_link_opens_instead_of_editing(web, cid):
+    rec = web.module.store.get(cid)
+    rec.구글_스칼라_링크 = "https://scholar.google.com/scholar?q=Gil+Dong+Hong+KAIST"
+    web.module.store.save(rec)
+    page = web.get("/")
+    assert "구글 스칼라 ↗" in page
+    assert "scholar.google.com/scholar?q=Gil+Dong+Hong+KAIST" in page
