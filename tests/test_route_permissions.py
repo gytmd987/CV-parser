@@ -50,6 +50,7 @@ GET_정책 = {
     "/dash": 거부,
     "/dash/view": 거부,
     "/dash/edit": 거부,
+    "/dash/preview": 거부,           # 수식 미리보기 — 남의 지원자 값이 나온다
     "/candidate": 자기것만,
     "/candidate/file": 자기것만,
     "/attachment": 자기것만,

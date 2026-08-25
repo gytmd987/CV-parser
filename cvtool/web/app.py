@@ -39,6 +39,7 @@ from ..dashboards import (
     render_profile,
     render_table,
 )
+from .. import expr
 from .. import formula as F
 from .. import profile_form as P
 from ..edit import (
@@ -457,6 +458,10 @@ th.filtered::after{content:' (추림)';font-size:10px;color:var(--accent)}
 #colmenu .cm-row.hide{display:none}
 #colmenu .cm-allrow{padding-left:8px}
 td.sel{background:#bfdbfe !important;outline:1px solid #2563eb;outline-offset:-1px}
+/* 수식 미리보기 — 친 대로 바로 아래에 결과가 뜬다 */
+.fxout{font-size:12px;margin-top:3px;min-height:16px;word-break:break-all}
+.fxout.fxok{color:#15803d}
+input.fx{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
 .rt{border:1px solid var(--line);border-radius:var(--r);overflow:hidden;background:#fff}
 .rt-bar{display:flex;flex-wrap:wrap;gap:2px;align-items:center;padding:6px;
  background:#f3f4f6;border-bottom:1px solid var(--line)}
@@ -4796,6 +4801,16 @@ def _블록설정(b, data: dict) -> tuple[dict, str]:
         틀들 = data.get("line") or []
         줄 = [[라벨.strip(), 틀.strip()]
              for 라벨, 틀 in zip(라벨들, 틀들) if 틀.strip()]
+        # 수식이 문법부터 틀렸으면 **저장을 막는다.** 조용히 넘어가면 나중에
+        # 화면에서 빈칸으로 나오는데, 값이 없는 건지 잘못 쓴 건지 알 수가 없다.
+        for 라벨, 틀 in 줄 + [["머리", 설정["머리"]]]:
+            if not expr.is_formula(틀):
+                continue
+            try:
+                expr.parse(틀)
+            except expr.ExprError as exc:
+                자리 = f"'{라벨}' 줄" if 라벨 else "문장"
+                return 설정, f"{자리}의 수식이 잘못됐습니다 — {exc}"
         모르는 = sorted({c for _l, 틀 in 줄 for c in P.columns(틀)
                        if c and c not in 아는열}
                       | {c for c in P.columns(설정["머리"]) if c and c not in 아는열})
@@ -5006,28 +5021,84 @@ def _수식도움() -> str:
     )
 
 
+#: 수식 도움말에 넣을 보기. (수식, 나오는 모양, 설명)
+_수식보기: list[tuple[str, str, str]] = [
+    ('=박사_학교 & " " & 박사_전공', "서울대학교 기계공학", "& 로 잇습니다"),
+    ('=TEXT(박사_졸업,"\'yy.m")', "'26.2", "m 은 한 자리 — <b>08 이 8 로</b>"),
+    ('=TEXT(박사_졸업,"\'yy.mm")', "'26.02", "mm 은 두 자리"),
+    ('=TEXT(박사_졸업,"yyyy.mm")', "2026.02", "연도를 네 자리로"),
+    ('=TEXT(박사_졸업,"yyyy년 m월")', "2026년 2월", "서식 밖의 글자는 그대로"),
+    ('=TEXT(박사_시작,"\'yy.m") & "~" & TEXT(박사_졸업,"\'yy.m")',
+     "'22.2~'26.2", "기간은 두 번 써서 잇습니다"),
+    ('=IF(석사_학교="","",석사_학교)', "(석사가 없으면 빈칸)", "IF 로 갈라 씁니다"),
+    ('=TEXTJOIN(" / ", TRUE, 박사_학교, 석사_학교, 학사_학교)',
+     "서울대학교 / 포항공대", "<b>TRUE 가 빈 값을 건너뜁니다</b>"),
+    ('=IF(박사_석박통합="석박통합","석/박)","박)")', "석/박)", "값에 따라 앞말을 바꿉니다"),
+    ('=YEAR(TODAY())-VALUE(LEFT(생년월일,4))', "27", "나이"),
+    ('=한글_이름 & "(" & 저널_주저자_수 & "편)"', "홍길동(4편)", "숫자도 그냥 이어집니다"),
+]
+
+
 def _틀도움() -> str:
+    """수식 쓰는 법. **엑셀 함수 이름 그대로**라 새로 외울 게 없다.
+
+    예전에는 `{열}` 자리표시자 틀뿐이었다. 배우기는 쉬웠지만 형식을 바꾸려면
+    그때마다 새 조각(`{날짜2:…}`)을 만들어 붙여야 해서, 쓰는 사람이 스스로
+    넓힐 수가 없었다. 옛 틀도 그대로 돌아가니 쓰던 건 안 고쳐도 된다.
+    """
+    보기 = "".join(
+        f"<tr><td><code>{html.escape(수식)}</code></td>"
+        f"<td>{html.escape(결과)}</td><td class='muted'>{설명}</td></tr>"
+        for 수식, 결과, 설명 in _수식보기
+    )
+    함수들 = [
+        ("글자", "TEXT TEXTJOIN CONCAT LEFT RIGHT MID LEN TRIM "
+                "SUBSTITUTE UPPER LOWER REPT"),
+        ("판단", "IF IFS AND OR NOT IFERROR ISBLANK"),
+        ("숫자", "VALUE ROUND INT ABS MIN MAX SUM"),
+        ("날짜", "TEXT YEAR MONTH DAY TODAY DATEDIF"),
+    ]
+    목록 = "".join(
+        f"<tr><td>{갈래}</td><td><code>{html.escape(이름들)}</code></td></tr>"
+        for 갈래, 이름들 in 함수들
+    )
+    서식 = "".join(
+        f"<tr><td><code>{코드}</code></td><td>{보임}</td></tr>"
+        for 코드, 보임 in [("yyyy", "2026"), ("yy", "26"), ("mm", "02"),
+                          ("m", "2"), ("dd", "03"), ("d", "3")]
+    )
     return (
-        "<details><summary class='muted'>문장 틀 쓰는 법</summary>"
-        "<div style='margin-top:8px'>"
-        "<p class='muted'>메일 자리표시자와 같습니다. 열 이름을 <code>{}</code> 로 감쌉니다.</p>"
-        "<table><tr><th>조각</th><th>나오는 모양</th></tr>"
-        "<tr><td><code>{박사_학교}</code></td><td>서울대학교</td></tr>"
-        "<tr><td><code>{기간:박사_시작~박사_졸업}</code></td><td>'22.2~'26.2</td></tr>"
-        "<tr><td><code>{날짜:박사_졸업}</code></td><td>'26.2</td></tr>"
-        "<tr><td><code>{수:저널_수}</code></td><td>3 (비면 0)</td></tr>"
-        "</table>"
-        "<p class='muted' style='margin-top:8px'><b>빈 값은 알아서 사라집니다.</b> "
-        "<code>{박사_학교} {박사_전공}({기간:박사_시작~박사_졸업})</code> 에서 기간이 비면 "
-        "괄호까지 같이 빠져 <code>서울대학교 기계공학</code> 만 남고, 그 줄 값이 "
-        "<b>전부</b> 비면 <b>줄 자체가</b> 빠집니다 — 석사를 안 한 사람 프로필에 "
-        "빈 석사 줄이 남지 않습니다.</p>"
+        "<details><summary class='muted'>수식 쓰는 법 — 엑셀과 같습니다</summary>"
+        "<div style='margin-top:10px'>"
+        "<p class='muted'><code>=</code> 로 시작하면 <b>엑셀 수식</b>입니다. "
+        "함수 이름도 규칙도 엑셀 그대로라 새로 외울 게 없습니다. "
+        "열 이름은 <b>표 항목</b> 탭에 있는 그 이름을 그대로 적습니다 "
+        "(띄어쓰기가 있으면 <code>[이름]</code> 처럼 대괄호로).</p>"
+        "<table><tr><th style='width:44%'>이렇게 쓰면</th><th>이렇게 나옵니다</th>"
+        f"<th></th></tr>{보기}</table>"
+        "<h3 style='font-size:13px;margin:14px 0 6px'>TEXT 서식 코드 "
+        "<span class='muted'>202602 기준</span></h3>"
+        f"<table><tr><th style='width:80px'>코드</th><th>나오는 모양</th></tr>{서식}</table>"
+        "<h3 style='font-size:13px;margin:14px 0 6px'>쓸 수 있는 함수</h3>"
+        f"<table><tr><th style='width:80px'>갈래</th><th>이름</th></tr>{목록}</table>"
+        "<p class='muted' style='margin-top:10px'><b>빈 줄은 사라집니다.</b> "
+        "한 줄이 통째로 빈 글자면 그 줄은 안 나옵니다 — 석사를 안 한 사람 "
+        "프로필에 빈 석사 줄이 남지 않습니다. 줄 안에서 일부만 비게 하려면 "
+        "<code>IF</code> 나 <code>TEXTJOIN(…, TRUE, …)</code> 을 쓰세요.</p>"
+        "<p class='muted'><b>예전 방식도 그대로 됩니다.</b> "
+        "<code>{박사_학교} {박사_전공}({기간:박사_시작~박사_졸업})</code> 처럼 "
+        "<code>=</code> 없이 <code>{}</code> 로 적으면 빈 값이 붙은 괄호까지 "
+        "알아서 빠집니다. 쓰던 양식은 안 고쳐도 됩니다.</p>"
         "</div></details>"
     )
 
 
-def _블록편집(b, 축값) -> str:
-    """블록 하나의 설정 폼."""
+def _블록편집(b, 축값, 미리볼사람: str = "") -> str:
+    """블록 하나의 설정 폼.
+
+    문장 칸에는 **실제 지원자 한 명의 값으로 미리보기**가 붙는다. 저장하고
+    대시보드로 가서 확인하는 왕복이 없으면 수식을 고칠 엄두가 안 난다.
+    """
     옵션 = lambda 값들, 지금: "".join(
         f"<option{' selected' if v == 지금 else ''}>{html.escape(v)}</option>"
         for v in 값들
@@ -5083,7 +5154,9 @@ def _블록편집(b, 축값) -> str:
             f"<tr><td><input type='text' name='label' value='{html.escape(라벨)}'"
             " style='width:90px'></td>"
             f"<td><input type='text' name='line' value='{html.escape(틀)}'"
-            " style='width:100%'></td></tr>"
+            " style='width:100%' class='fx' oninput='fxPreview(this)'"
+            f" data-cid='{html.escape(미리볼사람)}'>"
+            "<div class='fxout muted'></div></td></tr>"
             for 라벨, 틀 in (b.줄틀 + [("", "")])
         )
         가운데 = (
@@ -5092,7 +5165,10 @@ def _블록편집(b, 축값) -> str:
             " placeholder='=LIST(채용, 부서=\"차세대공정\")'></p>"
             "<p class='muted'>조건에 맞는 사람마다 아래 양식이 한 장씩 나옵니다.</p>"
             f"<p>머리 <input type='text' name='head' value='{html.escape(b.머리틀)}'"
-            " style='width:100%' placeholder='{한글_이름} ({현재_신분})'></p>"
+            " style='width:100%' class='fx' oninput='fxPreview(this)'"
+            f" data-cid='{html.escape(미리볼사람)}'"
+            " placeholder='{한글_이름} ({현재_신분})'>"
+            "<span class='fxout muted'></span></p>"
             "<div class='scroll'><table><tr><th style='width:90px'>라벨</th>"
             f"<th>문장 틀</th></tr>{줄}</table></div>"
             "<p class='muted'>빈 줄은 저장할 때 없어집니다. 맨 아래 빈 칸에 적으면 줄이 늘어납니다.</p>"
@@ -5132,6 +5208,23 @@ def _dash_edit_page(did: int, me: User, error: str = "", msg: str = "") -> bytes
     )
     알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
     오류 = f"<div class='warn'>{html.escape(error)}</div>" if error else ""
+
+    # 수식 미리보기에 쓸 사람. 실제 값이 보여야 형식을 고칠 수 있다.
+    사람들 = store.list_all()[:50]
+    미리볼사람 = 사람들[0].지원자_ID if 사람들 else ""
+    미리보기고르기 = (
+        "<p class='muted'>미리보기 기준 "
+        "<select id='fxwho' onchange='fxWhoChanged(this)'>"
+        + "".join(
+            f"<option value='{html.escape(r.지원자_ID)}'"
+            f"{' selected' if r.지원자_ID == 미리볼사람 else ''}>"
+            f"{html.escape(r.한글_이름 or r.영문_이름 or r.지원자_ID)}</option>"
+            for r in 사람들
+        )
+        + "</select> — 문장 칸 아래에 <b>이 사람의 값으로</b> 결과가 바로 뜹니다.</p>"
+        if 사람들 else
+        "<p class='muted'>지원자가 없어 미리보기를 보여줄 수 없습니다.</p>"
+    )
     return _page(
         f"{d.이름} 편집",
         알림 + 오류
@@ -5148,11 +5241,53 @@ def _dash_edit_page(did: int, me: User, error: str = "", msg: str = "") -> bytes
         "<form method='post' action='/dash/block/add' style='margin-top:10px'>"
         f"<input type='hidden' name='dash' value='{did}'>"
         f"<p>블록 추가: {종류단추}</p></form>"
-        + _수식도움() + _틀도움() + "</div>"
-        + ("".join(_블록편집(b, 축값) for b in 블록들)
-           or "<div class='card'><p class='muted'>블록이 없습니다. 위에서 추가하세요.</p></div>"),
+        + _수식도움() + _틀도움() + 미리보기고르기 + "</div>"
+        + ("".join(_블록편집(b, 축값, 미리볼사람) for b in 블록들)
+           or "<div class='card'><p class='muted'>블록이 없습니다. 위에서 추가하세요.</p></div>")
+        + _FX_JS,
         me=me,
     )
+
+
+#: 문장 칸 아래에 **실제 값으로** 결과를 바로 보여 준다.
+#:
+#: 저장하고 대시보드로 가서 확인하고 다시 돌아오는 왕복이 있으면, 수식 하나
+#: 고치는 데 세 화면이 든다. 그러면 아무도 안 고친다. 서버에 물어보는 이유는
+#: 하나다 — **화면과 대시보드가 같은 계산기를 써야** 미리보기를 믿을 수 있다.
+_FX_JS = """
+<script>
+var FXt = null;
+function fxWhoChanged(sel){
+  document.querySelectorAll('.fx').forEach(function(el){
+    el.dataset.cid = sel.value;
+    fxPreview(el);
+  });
+}
+function fxPreview(el){
+  clearTimeout(FXt);
+  FXt = setTimeout(function(){
+    var out = el.parentNode.querySelector('.fxout');
+    if(!out) return;
+    var 틀 = el.value.trim();
+    if(!틀){ out.textContent = ''; out.className = 'fxout muted'; return; }
+    var q = '/dash/preview?id=' + encodeURIComponent(el.dataset.cid || '')
+          + '&line=' + encodeURIComponent(틀);
+    fetch(q, {credentials: 'same-origin'})
+      .then(function(r){ return r.json(); })
+      .then(function(res){
+        if(res.error){ out.textContent = res.error; out.className = 'fxout flag'; }
+        else {
+          out.textContent = res.text || '(빈 줄 — 이 줄은 안 나옵니다)';
+          out.className = 'fxout ' + (res.text ? 'fxok' : 'muted');
+        }
+      })
+      .catch(function(){ /* 잠깐 끊긴 것뿐이다 */ });
+  }, 250);
+}
+document.addEventListener('DOMContentLoaded', function(){
+  document.querySelectorAll('.fx').forEach(fxPreview);
+});
+</script>"""
 
 
 # ---------------------------------------------------------------------------
@@ -5472,6 +5607,20 @@ class Handler(BaseHTTPRequestHandler):
                 msg=(params.get("msg") or [""])[0],
                 안본것만=bool((params.get("todo") or [""])[0]),
             ))
+        if path == "/dash/preview":
+            # 문장 칸 아래 미리보기. 대시보드와 **같은 계산기**를 써야 믿을 수 있다.
+            if not can(me, "대시보드_편집"):
+                return self._deny()
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            틀 = (params.get("line") or [""])[0]
+            cid = (params.get("id") or [""])[0]
+            if not cid or store.get(cid) is None:
+                return self._json({"text": "", "error": "미리볼 지원자가 없습니다"})
+            값들 = _프로필값(cid)
+            if expr.is_formula(틀):
+                글, 오류 = expr.render(틀, 값들)
+                return self._json({"text": 글, "error": 오류})
+            return self._json({"text": P.render_line(틀, 값들), "error": ""})
         if path == "/status/rows":
             # 현황 표 조각만. 페이지를 통째로 다시 그리면 고르던 파일이 풀린다.
             if not can(me, "지원자_등록"):

@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import re
 
+from . import expr
+
 #: `{열}` `{기간:시작~종료}` `{날짜:열}` `{수:열}`
 _SLOT_RE = re.compile(r"\{([^{}]+)\}")
 
@@ -104,6 +106,11 @@ def slots(틀: str) -> list[str]:
 
 def columns(틀: str) -> list[str]:
     """틀이 실제로 읽는 **열 이름**들 (검사용)."""
+    if expr.is_formula(틀):
+        try:
+            return expr.columns(틀)
+        except expr.ExprError:
+            return []                   # 못 읽는 수식은 저장할 때 걸린다
     이름: list[str] = []
     for 안 in slots(틀):
         if ":" in 안:
@@ -120,7 +127,19 @@ def columns(틀: str) -> list[str]:
 
 
 def render_line(틀: str, 값들: dict[str, str]) -> str:
-    """한 줄을 채운다. 자리표시자가 전부 비면 **빈 문자열**을 돌려준다."""
+    """한 줄을 채운다. 자리표시자가 전부 비면 **빈 문자열**을 돌려준다.
+
+    `=` 로 시작하면 **엑셀 수식**으로 본다 (`cvtool/expr.py`). 자리표시자 틀은
+    배우기 쉬운 대신 할 수 있는 일이 정해져 있어서, 형식을 바꾸려면 그때마다
+    새 조각을 만들어 붙여야 했다. 수식은 쓰는 사람이 스스로 넓힐 수 있다.
+
+    둘을 같이 두는 이유는 하나다 — **쓰던 틀이 그대로 돌아가야 한다.**
+    """
+    if expr.is_formula(틀):
+        글, 오류 = expr.render(틀, 값들)
+        # 수식이 틀렸으면 조용히 빈칸으로 두지 않는다. 빈 값인지 잘못 쓴 건지
+        # 구별할 방법이 없어진다.
+        return f"[수식 오류: {오류}]" if 오류 else 글
     쓴것 = slots(틀)
     if not 쓴것:
         return 틀.strip()
