@@ -1648,3 +1648,15 @@ def test_the_default_text_colour_is_not_saved(web):
              cfwhen='=한글_이름="홍"', cfwhere="줄 전체",
              cfbg="#dcfce7", cffg="#b91c1c", cffgmode="기본")
     assert web.module.boards.block(bid).조건서식[0]["글자"] == ""
+
+
+def test_every_block_kind_has_the_draft_form(web):
+    """목록에만 붙일 이유가 없었다 — 빈 화면은 어느 블록이든 부담스럽다."""
+    did = web.module.boards.add("초안전부", "admin")
+    for 종류 in web.module.BLOCK_KINDS:
+        web.module.boards.add_block(did, 종류, 제목=종류)
+    page = web.get(f"/dash/edit?id={did}")
+    assert page.count("action='/dash/block/draft'") == len(web.module.BLOCK_KINDS)
+    # 종류마다 다른 보기를 준다 — 빈 칸에 '무엇을 적으라는 거지' 가 없게
+    for 보기 in ("부서별로 단계마다", "최종 합격한 사람 수", "한 장씩"):
+        assert 보기 in page

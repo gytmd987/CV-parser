@@ -161,7 +161,7 @@ def test_the_draft_throws_away_columns_that_use_unknown_names():
 
     assert 설정["목록대상"] == "채용"
     assert 설정["목록정렬"] == "=저널_주저자_수" and 설정["목록내림차순"] is True
-    assert [머리 for 머리, _식 in 설정["목록열"]] == ["이름", "학력"]   # 출신은 버렸다
+    assert [c[0] for c in 설정["목록열"]] == ["이름", "학력"]   # 출신은 버렸다
     assert any("출신" in x and "출신학교" in x for x in 메모)
 
 

@@ -5419,6 +5419,21 @@ def _틀도움() -> str:
     )
 
 
+#: 블록 종류마다 다른 보기. 빈 칸에 "무엇을 적으라는 거지" 가 없어야 한다.
+_초안예시들 = {
+    "목록": "예) 채용 중인 사람, 이름과 학력과 주저자 논문 수. 논문 많은 순으로",
+    "축표": "예) 부서별로 단계마다 몇 명인지",
+    "숫자": "예) 최종 합격한 사람 수",
+    "프로필": "예) 공정 부서 지원자마다 학력·경력·논문 실적 한 장씩",
+    "표": "예) 첫 줄은 전체 인원, 둘째 줄은 합격 인원. 열은 부서별로",
+    "글": "예) 이 대시보드는 매주 월요일 채용 회의에 쓴다는 안내",
+}
+
+
+def _초안예시(종류: str) -> str:
+    return _초안예시들.get(종류, "예) 무엇을 만들지 적으세요")
+
+
 def _조건서식편집(b, 미리볼사람: str = "") -> str:
     """값에 따라 칠하기. **엑셀의 조건부 서식과 같은 감각**이다.
 
@@ -5525,7 +5540,22 @@ def _블록편집(b, 축값, 미리볼사람: str = "") -> str:
         f"<option{' selected' if v == 지금 else ''}>{html.escape(v)}</option>"
         for v in 값들
     )
-    앞머리 = ""          # 블록 폼 **밖**에 놓아야 하는 것 (폼 안에 폼을 못 넣는다)
+    # 빈 화면에서 시작하는 건 어느 블록이든 부담스럽다. 초안이 있으면 **고치는
+    # 일**이 되고, 고치는 건 훨씬 쉽다. 그래서 **모든 종류**에 붙인다.
+    #
+    # 이 폼은 블록 폼 **밖에** 둔다. 폼 안에 폼을 넣으면 브라우저가 안쪽을
+    # 버리면서 바깥 폼도 그 자리에서 끊겨, 아래 칸들이 통째로 안 넘어간다.
+    앞머리 = (
+        "<details class='draft'><summary>말로 적어서 초안 만들기</summary>"
+        "<form method='post' action='/dash/block/draft' style='margin-top:8px'>"
+        f"<input type='hidden' name='id' value='{b.id}'>"
+        "<p><input type='text' name='말' style='width:100%'"
+        f" placeholder='{html.escape(_초안예시(b.종류))}'></p>"
+        "<p><button type='submit'>초안 만들기</button> "
+        "<span class='muted'>지금 내용을 <b>덮어씁니다.</b> 만든 뒤 보고 고쳐서 "
+        "저장하세요 — 저장하기 전에는 아무것도 바뀌지 않습니다.</span></p>"
+        "</form></details>"
+    )
     머리 = (
         f"<form method='post' action='/dash/block/save' id='bf{b.id}'>"
         f"<input type='hidden' name='id' value='{b.id}'>"
@@ -5598,23 +5628,6 @@ def _블록편집(b, 축값, 미리볼사람: str = "") -> str:
             "<button type='button' class='danger ghost tiny' onclick='rowDrop(this)'"
             " title='이 열 빼기'>×</button></td></tr>"
             for 머리, 식, 폭 in (b.목록열 + [("", "", "")])
-        )
-        # 빈 화면에 =한글_이름 부터 쳐 넣는 건 문법이 쉬워도 부담스럽다.
-        # 초안이 있으면 **고치는 일**이 되고, 고치는 건 훨씬 쉽다.
-        #
-        # 이 폼은 블록 폼 **밖에** 둔다 (앞머리). 폼 안에 폼을 넣으면 브라우저가
-        # 안쪽을 버리면서 바깥 폼도 그 자리에서 끊겨, 아래 칸들이 통째로 안 넘어간다.
-        앞머리 = (
-            "<details class='draft'><summary>말로 적어서 초안 만들기</summary>"
-            "<form method='post' action='/dash/block/draft' style='margin-top:8px'>"
-            f"<input type='hidden' name='id' value='{b.id}'>"
-            "<p><input type='text' name='말' style='width:100%'"
-            " placeholder='예) 채용 중인 사람, 이름과 학력과 주저자 논문 수."
-            " 논문 많은 순으로'></p>"
-            "<p><button type='submit'>초안 만들기</button> "
-            "<span class='muted'>지금 열은 <b>덮어씁니다.</b> 만든 뒤 보고 고쳐서 "
-            "저장하세요 — 저장하기 전에는 아무것도 바뀌지 않습니다.</span></p>"
-            "</form></details>"
         )
         가운데 = (
             "<p class='bar'>누구를 "
@@ -6867,22 +6880,25 @@ class Handler(BaseHTTPRequestHandler):
                 return self._redirect(f"/dash/edit?id={did}")
 
             if path == "/dash/block/draft":
-                # 말 -> 열 정의 초안. **LLM 은 값을 만들지 않는다** — 정의만
+                # 말 -> 블록 정의 초안. **LLM 은 값을 만들지 않는다** — 정의만
                 # 내고, 표는 언제나 우리 계산기가 그린다.
                 bid = 정수("id")
                 b = boards.block(bid)
-                if b is None or b.종류 != "목록":
+                if b is None:
                     return self._redirect("/dash")
-                설정, 메모 = dash_draft.draft((data.get("말") or [""])[0],
-                                            대시보드_열())
+                말 = (data.get("말") or [""])[0]
+                설정, 메모 = dash_draft.draft(
+                    말, 대시보드_열(), 종류=b.종류,
+                    축목록=[a for a in AXIS_SOURCES if a != "직접 입력"],
+                )
                 뒤로 = f"/dash/edit?id={b.dashboard_id}"
-                if not 설정.get("목록열"):
+                if not 설정:
                     return self._redirect(
                         f"{뒤로}&err=" + urllib.parse.quote(" / ".join(메모)))
-                boards.save_block(bid, 제목=b.제목 or "목록",
-                                  설정={**b.설정, **설정})
+                제목 = 설정.pop("_제목", "") or b.제목 or b.종류
+                boards.save_block(bid, 제목=제목, 설정={**b.설정, **설정})
                 audit.record(me.아이디, "대시보드", str(b.dashboard_id),
-                             항목="목록 초안", 새값=(data.get("말") or [""])[0][:80])
+                             항목=f"{b.종류} 초안", 새값=말[:80])
                 return self._redirect(
                     f"{뒤로}&msg=" + urllib.parse.quote(" / ".join(메모)))
 
