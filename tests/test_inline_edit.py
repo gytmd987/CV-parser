@@ -1413,3 +1413,22 @@ def test_the_mail_editor_can_edit_a_table_after_inserting_it(web):
         assert 기능 in page, 기능
     assert "RT_GRID_R = 10" in page                  # 6×6 이 아니다
     assert "id='rt-mr'" in page                      # 더 크면 숫자로 직접
+
+
+def test_column_width_is_not_trapped_inside_a_fixed_table(web):
+    """표 폭이 고정이면 열 하나를 넓힐 때 옆 열이 줄어들 뿐이다.
+
+    엑셀과 같아야 한다 — **열을 넓히면 표가 따라 넓어진다.** 그래서 표 폭을
+    고를 수 있고(창에 맞춤 / 열 너비에 맞춤 / 내용에 맞춤 / 폭 고정),
+    열 너비는 % 뿐 아니라 px 로도 잡을 수 있다.
+    """
+    tid = web.module.mailing.add_template("열너비", "제목", "<p>본문</p>")
+    page = web.get(f"/mail/template?id={tid}")
+    assert "id='rt-tblw'" in page                    # 표 폭 고르기
+    assert "value='fit'" in page                     # 열 합계를 따르는 길
+    assert "id='rt-colu'" in page                    # px / % 단위
+    assert "function rtSumToTable" in page           # 표 폭 = 열 폭의 합
+    assert "function rtDragInit" in page             # 경계선 끌기
+    # 지원자 표용 260px 상한이 메일 표까지 죄면 안 된다
+    css = page.split("<style>", 1)[1].split("</style>", 1)[0]
+    assert ".rt-body table td" in css and "max-width:none" in css

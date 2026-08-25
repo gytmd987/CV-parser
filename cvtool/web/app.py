@@ -477,8 +477,16 @@ td.sel{background:#bfdbfe !important;outline:1px solid #2563eb;outline-offset:-1
 .rt-body{min-height:340px;max-height:60vh;overflow:auto;padding:16px 18px;
  font:12pt/1.7 "맑은 고딕",system-ui,sans-serif;outline:none}
 .rt-body:focus{box-shadow:inset 0 0 0 2px #bfdbfe}
+/* 메일 본문 표는 **지원자 표가 아니다.** 위쪽 th,td 규칙(260px 상한, 한 줄로
+   자르기)은 화면의 데이터 표를 위한 것이라, 그게 편집기까지 죄면 열 너비를
+   아무리 잡아도 260px 에서 멈춘다. 여기서는 푼다. */
+.rt-body table td,.rt-body table th,
+.mailbody table td,.mailbody table th{
+ max-width:none;min-width:0;white-space:normal;overflow:visible;text-overflow:clip}
 .rt-body table{width:auto}
 .rt-body img{max-width:100%}
+/* 열 경계에 마우스를 대면 끌 수 있다는 걸 알려 준다 */
+.rt-body table{cursor:auto}
 #rtdrop{position:absolute;z-index:120;background:#fff;border:1px solid var(--line);
  border-radius:var(--r);box-shadow:var(--sh-l);padding:5px;font-size:13px;
  max-height:340px;overflow:auto;min-width:120px}
@@ -1628,6 +1636,7 @@ function rtInit(){
     });
   });
 
+  rtDragInit();
   RT.editor.addEventListener('paste', rtPaste);
   RT.editor.addEventListener('input', function(){
     markDirty(document.getElementById('bodyfield'));
@@ -1842,7 +1851,7 @@ var RT_CELL = 'border:1px solid #999;padding:6px;vertical-align:top';
 function rtTable(행, 열){
   if(!행 || !열) return;
   var s = "<table class='rt-tbl' style='border-collapse:collapse;width:100%;"
-    + "font-size:11pt' cellpadding='0' cellspacing='0'>";
+    + "font-size:11pt' width='100%' cellpadding='0' cellspacing='0'>";
   for(var r = 0; r < 행; r++){
     s += '<tr>';
     for(var c = 0; c < 열; c++){ s += "<td style='" + RT_CELL + "'>&nbsp;</td>"; }
@@ -1919,17 +1928,150 @@ function rtColDel(){
   rtRows(t).forEach(function(tr){ if(tr.cells[i]) tr.deleteCell(i); });
   rtTouched();
 }
-function rtColWidth(값){
+/* 표 전체의 너비.
+   예전에는 만들 때 width:100% 를 박아 두고 그것뿐이었다. 그러면 열 너비를
+   아무리 고쳐도 **정해진 폭을 나눠 갖는 것**이라, 열 하나만 넓히는 게 아예
+   불가능했다 (옆 열이 그만큼 줄어든다). 표 폭 자체를 정할 수 있어야 한다. */
+function rtTableWidth(){
+  var t = rtTableAt(); if(!t) return;
+  var sel = document.getElementById('rt-tblw');
+  var px  = document.getElementById('rt-tblpx');
+  var 값 = sel ? sel.value : '100%';
+  if(px) px.style.display = (값 === 'px') ? '' : 'none';
+  if(값 === 'px'){
+    var n = parseInt(px && px.value, 10);
+    if(!(n > 0)) return;                       /* 아직 안 쳤다 */
+    t.style.width = n + 'px'; t.setAttribute('width', n);
+  } else if(값 === 'fit'){
+    /* 열마다 px 로 잡고 표는 그 합계를 따른다 — 열 너비 조절이 제대로 되는 길 */
+    rtSeedColPx(t);
+    rtSumToTable(t);
+  } else if(값 === 'auto'){
+    t.style.width = 'auto'; t.removeAttribute('width');
+    t.style.tableLayout = '';
+    rtRows(t).forEach(function(tr){
+      Array.prototype.forEach.call(tr.cells, function(c){
+        c.style.width = ''; c.removeAttribute('width');
+      });
+    });
+  } else {
+    t.style.width = '100%'; t.setAttribute('width', '100%');
+  }
+  rtTouched();
+}
+
+/* 열 너비. px 로도, % 로도 잡을 수 있다.
+   px 로 잡으려면 표가 '창에 맞춤' 이면 안 된다 — 그건 폭이 이미 정해진
+   것이라 px 가 의미를 잃는다. 그래서 px 를 쓰면 표를 '내용에 맞춤' 으로
+   옮겨 준다. 말없이 안 먹는 것보다 낫다. */
+function rtColWidth(){
   var td = rtCellAt(); if(!td) return;
+  var 칸 = document.getElementById('rt-colw');
+  var 단위 = document.getElementById('rt-colu');
+  var u = 단위 ? 단위.value : 'px';
+  rtSetColWidth(td, 칸 ? 칸.value : '', u);
+}
+
+/* 지금 그려진 폭을 그대로 px 로 못박는다.
+   폭이 안 정해진 표를 '열 너비에 맞춤' 으로 옮기면 표가 글자 길이만큼 쪼그라든다
+   (빈 표는 50px 쯤 된다). 보이던 모습 그대로에서 시작해야 놀라지 않는다. */
+function rtSeedColPx(t){
+  var 첫줄 = t.rows[0]; if(!첫줄) return;
+  var 폭 = Array.prototype.map.call(첫줄.cells, function(c){
+    return Math.round(c.getBoundingClientRect().width);
+  });
+  t.style.tableLayout = 'fixed';
+  rtRows(t).forEach(function(tr){
+    Array.prototype.forEach.call(tr.cells, function(c, i){
+      if(!폭[i]) return;
+      c.style.width = 폭[i] + 'px';
+      c.setAttribute('width', String(폭[i]));
+    });
+  });
+}
+
+/* 표 폭 = 열 폭의 합.
+   **엑셀과 같다 — 열을 넓히면 표가 따라 넓어진다.** 표 폭이 먼저 고정돼 있으면
+   열 하나를 넓힐 때 옆 열이 그만큼 줄어들 뿐이라, 열 너비 조절이 반쪽이 된다. */
+function rtSumToTable(t){
+  var 첫줄 = t.rows[0]; if(!첫줄) return;
+  var 합 = 0;
+  for(var i = 0; i < 첫줄.cells.length; i++){
+    var v = 첫줄.cells[i].style.width || '';
+    if(v.slice(-2) !== 'px') return;            /* px 아닌 열이 있으면 손대지 않는다 */
+    합 += parseFloat(v) || 0;
+  }
+  if(!(합 > 0)) return;
+  t.style.width = Math.round(합) + 'px';
+  t.setAttribute('width', String(Math.round(합)));
+  var sel = document.getElementById('rt-tblw');
+  if(sel) sel.value = 'fit';
+  var px = document.getElementById('rt-tblpx');
+  if(px) px.style.display = 'none';
+}
+
+function rtSetColWidth(td, 값, 단위){
   var i = rtColIndex(td), t = td.closest('table');
-  var w = parseInt(값, 10);
+  var w = parseFloat(값);
+  /* px 로 잡는다는 건 '이 열을 이만큼' 이라는 뜻이다. 표 폭이 먼저 정해져
+     있으면 그 말이 지켜지지 않으므로, 표를 열 합계에 맞추는 쪽으로 옮긴다. */
+  if(단위 === 'px' && w > 0){
+    var 첫 = t.rows[0] && t.rows[0].cells[0];
+    if(!첫 || (첫.style.width || '').slice(-2) !== 'px') rtSeedColPx(t);
+  }
+  /* 너비를 정한 표는 table-layout:fixed 여야 정한 대로 선다. 안 그러면
+     브라우저가 내용 길이를 보고 제멋대로 다시 나눈다. */
+  if(w > 0) t.style.tableLayout = 'fixed';
   rtRows(t).forEach(function(tr){
     var c = tr.cells[i]; if(!c) return;
     /* 메일 클라이언트(특히 Outlook)는 width 속성을 스타일보다 잘 따른다 */
-    if(w > 0 && w <= 100){ c.style.width = w + '%'; c.setAttribute('width', w + '%'); }
-    else { c.style.width = ''; c.removeAttribute('width'); }
+    if(w > 0){
+      c.style.width = w + 단위;
+      c.setAttribute('width', 단위 === 'px' ? String(Math.round(w)) : w + '%');
+    } else {
+      c.style.width = ''; c.removeAttribute('width');
+    }
   });
+  if(단위 === 'px' && w > 0) rtSumToTable(t);
   rtTouched();
+}
+
+/* 경계선을 끌어서 넓히기.
+   숫자를 치는 것보다 이게 먼저 손이 간다. 칸의 오른쪽 끝 4px 안에서 누르면
+   그 열의 너비를 끄는 대로 바꾼다. contenteditable 이 글자를 고르려 들기
+   때문에 mousedown 에서 기본 동작을 막아야 한다. */
+var RTDrag = null;
+function rtDragInit(){
+  if(!RT.editor) return;
+  RT.editor.addEventListener('mousemove', function(e){
+    if(RTDrag) return;
+    var td = e.target.closest && e.target.closest('td,th');
+    var 끝인가 = td && (td.getBoundingClientRect().right - e.clientX) <= 5;
+    RT.editor.style.cursor = 끝인가 ? 'col-resize' : '';
+  });
+  RT.editor.addEventListener('mousedown', function(e){
+    var td = e.target.closest && e.target.closest('td,th');
+    if(!td) return;
+    var r = td.getBoundingClientRect();
+    if(r.right - e.clientX > 5) return;
+    e.preventDefault();
+    RTDrag = {td: td, x: e.clientX, w: r.width};
+    RT.cell = td;
+  });
+  document.addEventListener('mousemove', function(e){
+    if(!RTDrag) return;
+    var 새폭 = Math.max(24, Math.round(RTDrag.w + (e.clientX - RTDrag.x)));
+    rtSetColWidth(RTDrag.td, 새폭, 'px');
+    var 칸 = document.getElementById('rt-colw');
+    var 단위 = document.getElementById('rt-colu');
+    if(칸) 칸.value = 새폭;
+    if(단위) 단위.value = 'px';
+  });
+  document.addEventListener('mouseup', function(){
+    if(!RTDrag) return;
+    RTDrag = null;
+    RT.editor.style.cursor = '';
+  });
 }
 function rtBorder(값){
   var t = rtTableAt(); if(!t) return;
@@ -1970,10 +2112,25 @@ function rtSyncTableBar(){
   bar.hidden = !td;
   if(!td) return;
   var t = td.closest('table');
-  var w = bar.querySelector('#rt-colw');
+  var w = bar.querySelector('#rt-colw'), u = bar.querySelector('#rt-colu');
   if(w && document.activeElement !== w){
-    var v = (td.style.width || td.getAttribute('width') || '').replace('%', '');
-    w.value = v || '';
+    var v = td.style.width || '';
+    if(v.slice(-1) === '%'){ w.value = parseFloat(v); if(u) u.value = '%'; }
+    else if(v.slice(-2) === 'px'){ w.value = parseFloat(v); if(u) u.value = 'px'; }
+    else w.value = '';
+  }
+  /* 표 너비 칸도 지금 표에 맞춰 둔다. 안 그러면 다른 표로 옮겨도 앞 표의
+     설정이 남아 있어서, 건드리는 순간 엉뚱한 값이 적용된다. */
+  var tw = bar.querySelector('#rt-tblw'), tp = bar.querySelector('#rt-tblpx');
+  if(tw && document.activeElement !== tw && document.activeElement !== tp){
+    var 폭 = t.style.width || '100%';
+    var 첫 = t.rows[0] && t.rows[0].cells[0];
+    var 열px = 첫 && (첫.style.width || '').slice(-2) === 'px';
+    if(폭 === '100%') tw.value = '100%';
+    else if(폭 === 'auto' || 폭 === '') tw.value = 'auto';
+    else if(열px) tw.value = 'fit';            /* 열 합계를 따르는 중 */
+    else { tw.value = 'px'; if(tp) tp.value = parseFloat(폭); }
+    if(tp) tp.style.display = (tw.value === 'px') ? '' : 'none';
   }
   var h = bar.querySelector('#rt-head');
   if(h) h.checked = !!(t.rows[0] && t.rows[0].cells[0]
@@ -3269,9 +3426,26 @@ def _mail_template_page(tid: int, me: User, error: str = "", msg: str = "") -> b
         "<button type='button' onclick='rtColDel()' class='sec' title='이 열 지우기'"
         ">열 −</button>"
         "<span class='rt-sep'></span>"
-        "<label class='rt-lbl' title='커서가 있는 열의 너비 (%). 비우면 자동'>너비"
-        "<input type='number' id='rt-colw' min='1' max='100' step='1'"
-        " style='width:56px' oninput='rtColWidth(this.value)'>%</label>"
+        # 표 자체의 너비. 이게 100% 로 박혀 있으면 열 너비를 아무리 고쳐도
+        # 정해진 폭을 나눠 갖는 것뿐이라, 열 하나만 넓히는 게 불가능했다.
+        "<label class='rt-lbl' title='표 전체의 너비'>표"
+        "<select id='rt-tblw' onchange='rtTableWidth()'>"
+        "<option value='100%'>창에 맞춤 (100%)</option>"
+        "<option value='fit'>열 너비에 맞춤</option>"
+        "<option value='auto'>내용에 맞춤</option>"
+        "<option value='px'>표 폭 고정 (px)</option>"
+        "</select>"
+        "<input type='number' id='rt-tblpx' min='80' max='2000' step='10'"
+        " style='width:70px;display:none' placeholder='px'"
+        " oninput='rtTableWidth()'></label>"
+        "<span class='rt-sep'></span>"
+        "<label class='rt-lbl' title='커서가 있는 열의 너비. 비우면 자동."
+        " 경계선을 끌어도 됩니다'>열"
+        "<input type='number' id='rt-colw' min='1' max='2000' step='1'"
+        " style='width:66px' oninput='rtColWidth()'>"
+        "<select id='rt-colu' onchange='rtColWidth()'>"
+        "<option value='px'>px</option><option value='%'>%</option>"
+        "</select></label>"
         "<span class='rt-sep'></span>"
         "<label class='rt-lbl' title='표 전체의 테두리'>테두리"
         "<select id='rt-border' onchange='rtBorder(this.value)'>"
