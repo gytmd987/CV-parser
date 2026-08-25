@@ -737,6 +737,17 @@ LLM 이 죽어 있어도 손으로 만드는 길은 그대로 열려 있습니�
 | `=IF(박사_석박통합="석박통합","석/박)","박)")` | `석/박)` | 값에 따라 앞말이 바뀝니다 |
 | `=YEAR(TODAY())-VALUE(LEFT(생년월일,4))` | `27` | 나이 |
 
+**줄바꿈은 `CHAR(10)`** 입니다. 수식 입력칸이 한 줄짜리라 엔터를 칠 수 없어서,
+엑셀과 같이 글자를 번호로 넣습니다.
+
+```excel
+=박사_학교 & CHAR(10) & 석사_학교
+=TEXTJOIN(CHAR(10), TRUE, 박사_학교, 석사_학교, 학사_학교)   ← 빈 건 건너뛰고 쌓기
+```
+
+줄바꿈을 넣은 칸만 표에서 줄이 바뀌고, 나머지 칸은 한 줄로 잘린 채 둡니다 —
+줄 높이가 들쭉날쭉해지면 표를 훑기 어렵습니다.
+
 **TEXT 서식 코드** (`202602` 기준): `yyyy`→2026 · `yy`→26 · `mm`→02 · `m`→2 ·
 `dd`→03 · `d`→3. `YYYY00` 은 "월을 모른다" 는 뜻이라 `0월` 로 쓰지 않습니다.
 
@@ -744,7 +755,7 @@ LLM 이 죽어 있어도 손으로 만드는 길은 그대로 열려 있습니�
 
 | 갈래 | 이름 |
 |---|---|
-| 글자 | `TEXT TEXTJOIN CONCAT LEFT RIGHT MID LEN TRIM SUBSTITUTE UPPER LOWER REPT` |
+| 글자 | `TEXT TEXTJOIN CONCAT LEFT RIGHT MID LEN TRIM SUBSTITUTE UPPER LOWER REPT CHAR CODE` |
 | 판단 | `IF IFS AND OR NOT IFERROR ISBLANK` |
 | 숫자 | `VALUE ROUND INT ABS MIN MAX SUM` |
 | 날짜 | `TEXT YEAR MONTH DAY TODAY DATEDIF` |

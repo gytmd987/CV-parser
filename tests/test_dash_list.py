@@ -199,3 +199,13 @@ def test_a_dead_llm_does_not_stop_you_from_building_by_hand():
     llm = LLMClient(client=httpx.Client(transport=httpx.MockTransport(handler)))
     설정, 메모 = dash_draft.draft("아무거나", {"한글_이름"}, llm=llm)
     assert 설정 == {} and 메모 and "초안" in 메모[0]
+
+
+def test_a_cell_with_a_line_break_is_marked_so_it_can_wrap():
+    """줄바꿈을 일부러 넣은 칸만 줄을 바꾼다 — 나머지는 한 줄로 잘린 채 둔다."""
+    b = 블록(목록대상="채용", 목록열=[
+        ["이름", "=한글_이름"],
+        ["학력", "=박사_학교 & CHAR(10) & 박사_전공"],
+    ])
+    r = render_list(b, ROWS)
+    assert r.행[0] == ["홍길동", "서울대학교\n기계공학"]

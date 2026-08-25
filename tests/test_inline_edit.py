@@ -1542,3 +1542,15 @@ def test_the_preview_box_is_a_span_so_it_survives_inside_a_paragraph(web):
     page = web.get(f"/dash/edit?id={did}")
     assert "<span class='fxout muted'></span>" in page
     assert "<div class='fxout muted'></div>" not in page
+
+
+def test_every_preview_box_fills_in_not_just_the_last_one(web, cid):
+    """타이머가 하나뿐이면 칸들이 서로를 취소해서 마지막 하나만 살아남는다."""
+    did = web.module.boards.add("여러칸", "admin")
+    web.module.boards.add_block(did, "목록", 제목="표", 설정={
+        "목록대상": "지원자",
+        "목록열": [["이름", "=한글_이름"], ["학교", "=박사_학교"]],
+    })
+    page = web.get(f"/dash/edit?id={did}")
+    assert "el.__fxt" in page          # 타이머는 칸마다 따로
+    assert "var FXt" not in page       # 하나로 쓰던 것은 없앴다

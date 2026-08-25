@@ -470,7 +470,9 @@ td.sel{background:#bfdbfe !important;outline:1px solid #2563eb;outline-offset:-1
 button.tiny{padding:1px 6px;font-size:12px;min-width:22px;line-height:1.3}
 #colform button.dirty{background:#b45309;border-color:#b45309}
 /* 수식 미리보기 — 친 대로 바로 아래에 결과가 뜬다 */
-.fxout{display:block;font-size:12px;margin-top:3px;min-height:16px;word-break:break-all}
+.fxout{display:block;font-size:12px;margin-top:3px;min-height:16px;word-break:break-all;white-space:pre-line}
+/* CHAR(10) 을 넣은 칸만 줄을 바꾼다. 나머지는 한 줄로 잘린 채 둔다 */
+.scroll table td.multi{white-space:normal;overflow:visible;text-overflow:clip;line-height:1.45}
 .fxout.fxok{color:#15803d}
 input.fx{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
 .rt{border:1px solid var(--line);border-radius:var(--r);overflow:hidden;background:#fff}
@@ -5103,12 +5105,20 @@ def _블록그리기(b, rows, 축값, 아는열) -> str:
         결과 = render_list(b, rows, 아는열)
         경고 = "".join(f"<p class='flag'>{html.escape(x)}</p>" for x in 결과.오류)
         머리 = "".join(f"<th class='{열폭(c)}'>{머리글(c)}</th>" for c in 결과.머리)
+
+        def 칸(i: int, v: str) -> str:
+            # 줄바꿈(CHAR(10))을 일부러 넣은 칸은 **줄을 바꿔서** 보여준다.
+            # 다른 칸은 그대로 한 줄로 잘린다 — 줄 높이가 들쭉날쭉해지면 표를
+            # 훑기 어려우니, 바꾸는 건 그러라고 적은 칸뿐이다.
+            폭 = 열폭(결과.머리[i] if i < len(결과.머리) else "")
+            if "\n" in v:
+                return (f"<td class='{폭} multi' title='{html.escape(v)}'>"
+                        + "<br>".join(html.escape(줄) for 줄 in v.split("\n"))
+                        + "</td>")
+            return f"<td class='{폭}' title='{html.escape(v)}'>{html.escape(v)}</td>"
+
         몸 = "".join(
-            "<tr>" + "".join(
-                f"<td class='{열폭(결과.머리[i] if i < len(결과.머리) else '')}'"
-                f" title='{html.escape(v)}'>{html.escape(v)}</td>"
-                for i, v in enumerate(칸들)
-            ) + "</tr>"
+            "<tr>" + "".join(칸(i, v) for i, v in enumerate(칸들)) + "</tr>"
             for 칸들 in 결과.행
         ) or (f"<tr><td colspan='{max(1, len(결과.머리))}' class='muted'>"
               "조건에 맞는 사람이 없습니다.</td></tr>")
@@ -5232,6 +5242,10 @@ _수식보기: list[tuple[str, str, str]] = [
     ('=IF(박사_석박통합="석박통합","석/박)","박)")', "석/박)", "값에 따라 앞말을 바꿉니다"),
     ('=YEAR(TODAY())-VALUE(LEFT(생년월일,4))', "27", "나이"),
     ('=한글_이름 & "(" & 저널_주저자_수 & "편)"', "홍길동(4편)", "숫자도 그냥 이어집니다"),
+    ('=박사_학교 & CHAR(10) & 석사_학교', "서울대학교↵포항공대",
+     "<b>줄바꿈은 CHAR(10)</b> — 입력칸이 한 줄이라 엔터는 안 됩니다"),
+    ('=TEXTJOIN(CHAR(10), TRUE, 박사_학교, 석사_학교, 학사_학교)',
+     "서울대학교↵포항공대", "여러 줄로 쌓되 빈 건 건너뜁니다"),
 ]
 
 
@@ -5249,7 +5263,7 @@ def _틀도움() -> str:
     )
     함수들 = [
         ("글자", "TEXT TEXTJOIN CONCAT LEFT RIGHT MID LEN TRIM "
-                "SUBSTITUTE UPPER LOWER REPT"),
+                "SUBSTITUTE UPPER LOWER REPT CHAR CODE"),
         ("판단", "IF IFS AND OR NOT IFERROR ISBLANK"),
         ("숫자", "VALUE ROUND INT ABS MIN MAX SUM"),
         ("날짜", "TEXT YEAR MONTH DAY TODAY DATEDIF"),
@@ -5277,7 +5291,12 @@ def _틀도움() -> str:
         f"<table><tr><th style='width:80px'>코드</th><th>나오는 모양</th></tr>{서식}</table>"
         "<h3 style='font-size:13px;margin:14px 0 6px'>쓸 수 있는 함수</h3>"
         f"<table><tr><th style='width:80px'>갈래</th><th>이름</th></tr>{목록}</table>"
-        "<p class='muted' style='margin-top:10px'><b>빈 줄은 사라집니다.</b> "
+        "<p class='muted' style='margin-top:10px'><b>줄바꿈은 "
+        "<code>CHAR(10)</code> 입니다.</b> 수식 입력칸이 한 줄짜리라 엔터를 칠 수 "
+        "없어서, 엑셀과 같이 글자를 번호로 넣습니다. 줄바꿈을 넣은 칸만 표에서 "
+        "줄이 바뀌고, 나머지 칸은 한 줄로 잘린 채 둡니다 — 줄 높이가 들쭉날쭉해지면 "
+        "표를 훑기 어렵습니다.</p>"
+        "<p class='muted'><b>빈 줄은 사라집니다.</b> "
         "한 줄이 통째로 빈 글자면 그 줄은 안 나옵니다 — 석사를 안 한 사람 "
         "프로필에 빈 석사 줄이 남지 않습니다. 줄 안에서 일부만 비게 하려면 "
         "<code>IF</code> 나 <code>TEXTJOIN(…, TRUE, …)</code> 을 쓰세요.</p>"
@@ -5522,7 +5541,6 @@ def _dash_edit_page(did: int, me: User, error: str = "", msg: str = "") -> bytes
 #: 하나다 — **화면과 대시보드가 같은 계산기를 써야** 미리보기를 믿을 수 있다.
 _FX_JS = """
 <script>
-var FXt = null;
 function fxWhoChanged(sel){
   document.querySelectorAll('.fx').forEach(function(el){
     el.dataset.cid = sel.value;
@@ -5530,8 +5548,11 @@ function fxWhoChanged(sel){
   });
 }
 function fxPreview(el){
-  clearTimeout(FXt);
-  FXt = setTimeout(function(){
+  /* 타이머를 **칸마다** 둔다. 하나로 두면 화면을 처음 그릴 때 칸들이 서로를
+     취소해서 마지막 하나만 살아남는다 (실제로 그랬다 — 미리보기가 통째로
+     비어 보였다). */
+  clearTimeout(el.__fxt);
+  el.__fxt = setTimeout(function(){
     var out = el.parentNode.querySelector('.fxout');
     if(!out) return;
     var 틀 = el.value.trim();

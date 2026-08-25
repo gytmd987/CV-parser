@@ -423,6 +423,10 @@ FUNCS: dict[str, tuple[int, Callable[[list], object]]] = {
     "LOWER": (1, lambda a: _글(a[0]).lower()),
     "SUBSTITUTE": (3, lambda a: _글(a[0]).replace(_글(a[1]), _글(a[2]))),
     "REPT": (2, lambda a: _글(a[0]) * int(_수(a[1], "REPT"))),
+    # 줄바꿈은 엑셀과 같이 CHAR(10) 이다. 입력칸이 한 줄짜리라 엔터를 칠 수
+    # 없으므로, 글자를 번호로 넣는 이 방법이 유일한 길이기도 하다.
+    "CHAR": (1, lambda a: chr(int(_수(a[0], "CHAR")))),
+    "CODE": (1, lambda a: float(ord(_글(a[0])[0])) if _글(a[0]) else ""),
     # -- 판단
     "IF": (2, _f_if),
     "IFS": (2, _f_ifs),

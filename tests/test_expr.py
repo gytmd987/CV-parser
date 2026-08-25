@@ -260,3 +260,19 @@ def test_an_empty_formula_line_disappears():
 
     줄틀 = [("박사", '=박사_학교'), ("석사", '=IF(석사_학교="","",석사_학교)')]
     assert P.render_rows(줄틀, 값들) == [("박사", "서울대학교")]
+
+
+# --- 줄바꿈 ---------------------------------------------------------------------
+def test_a_line_break_is_char_ten_like_excel():
+    """수식 입력칸이 한 줄짜리라 엔터를 칠 수 없다. 엑셀도 이 방법을 쓴다."""
+    assert 계산("=박사_학교 & CHAR(10) & 학사_학교") == "서울대학교\n포항공과대학교"
+
+
+def test_textjoin_stacks_lines_and_skips_the_blanks():
+    assert (계산("=TEXTJOIN(CHAR(10), TRUE, 박사_학교, 석사_학교, 학사_학교)")
+            == "서울대학교\n포항공과대학교")
+
+
+def test_char_and_code_are_a_pair():
+    assert expr.evaluate('=CODE("A")', {}) == "65"
+    assert expr.evaluate("=CHAR(65)", {}) == "A"
