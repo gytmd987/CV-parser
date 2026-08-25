@@ -129,6 +129,8 @@ _행수식 = """[행 문맥 수식 — 한 사람의 값. 엑셀과 같다]
 - 갈라 쓰기: `=IF(석사_학교="","",석사_학교)`
 - 빈 값 건너뛰고 잇기: `=TEXTJOIN(" / ", TRUE, 박사_학교, 석사_학교)`
 - 줄바꿈: `CHAR(10)`
+- 와일드카드: `*`(아무 글자 몇 개든) `?`(한 글자). `=부서="*"` 는 부서를
+  안 가리고 전부. 별표 그 글자는 `~*`
 - 쓸 수 있는 함수: TEXT TEXTJOIN CONCAT LEFT RIGHT MID LEN TRIM SUBSTITUTE
   UPPER LOWER REPT CHAR CODE IF IFS AND OR NOT IFERROR ISBLANK VALUE ROUND
   INT ABS MIN MAX SUM YEAR MONTH DAY TODAY DATEDIF"""
@@ -138,6 +140,8 @@ _집계수식 = """[집계 문맥 수식 — 여러 사람을 센다]
 - 함수: COUNT PCT AVG SUM MIN MAX LIST
 - 대상: `지원자`(인재 Pool 전체) 또는 `채용`(채용을 시작한 사람)
 - 조건: `열="값"` `열~"패턴*"` `열!~"패턴*"` `열>숫자` `열!="값"` — AND 로만 잇는다
+- 와일드카드: 값에 `*`(아무 글자 몇 개든) `?`(한 글자)를 쓸 수 있다.
+  `부서="*"` 는 부서를 안 가리고 전부
 - 예: `=COUNT(채용, 부서="공정", 서류검토="합격")`
       `=PCT(채용, 최종상태~"*합격", 최종상태!~"*불합격")`
       `=AVG(지원자, 저널_주저자_수)`

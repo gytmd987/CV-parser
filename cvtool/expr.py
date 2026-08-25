@@ -36,6 +36,8 @@ from dataclasses import dataclass
 from typing import Callable
 
 from .timeutil import now_kst
+from .wildcard import has as _와일드카드있나
+from .wildcard import like as _패턴맞나
 
 
 class ExprError(ValueError):
@@ -458,7 +460,21 @@ _LAZY = ("IFERROR",)
 # 계산
 # ---------------------------------------------------------------------------
 def _비교(op: str, 왼, 오) -> str:
-    """숫자끼리면 숫자로, 아니면 글자로 견준다 (엑셀도 그렇게 한다)."""
+    """숫자끼리면 숫자로, 아니면 글자로 견준다 (엑셀도 그렇게 한다).
+
+    한쪽에 `*` 나 `?` 가 있으면 **와일드카드로 견준다.** 엑셀의 COUNTIF 와
+    같은 규칙이다 — `=부서="*"` 는 부서를 안 가리고 전부, `="*합격"` 은
+    '합격' 으로 끝나는 것. 글자 그대로의 별표를 찾을 때는 `~*` 로 적는다.
+    """
+    if op in ("=", "<>"):
+        글왼, 글오 = _글(왼), _글(오)
+        맞나 = None
+        if _와일드카드있나(글오):            # 보통 오른쪽이 패턴이다
+            맞나 = _패턴맞나(글왼, 글오)
+        elif _와일드카드있나(글왼):
+            맞나 = _패턴맞나(글오, 글왼)
+        if 맞나 is not None:
+            return TRUE if (맞나 if op == "=" else not 맞나) else FALSE
     try:
         a, b = _수(왼), _수(오)
     except ExprError:

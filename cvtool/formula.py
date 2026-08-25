@@ -17,6 +17,8 @@
 - **함수**: COUNT PCT AVG SUM MIN MAX LIST
 - **대상**: 지원자(인재 Pool 전체) / 채용(채용 시작한 사람)
 - **조건**: `열="값"` `열~"패턴*"` `열!~"패턴*"` `열>숫자` `열!="값"` — AND 로만 잇는다
+- **와일드카드**: 값에 `*`(아무 글자 몇 개든) `?`(한 글자)를 쓸 수 있다.
+  `부서="*"` 는 부서를 안 가리고 전부. 별표 자체를 찾으려면 `~*`
 - **열 이름**: 표 항목 탭에 있는 그 이름 그대로. 새로 외울 게 없다.
 
 계산은 화면들이 이미 쓰는 행 목록을 그대로 받는다(`Rows`). 새 질의 계층을
@@ -27,6 +29,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+
+from . import wildcard
 
 #: 쓸 수 있는 함수. 여기 없는 이름은 저장 단계에서 막힌다.
 FUNCTIONS = ("COUNT", "PCT", "AVG", "SUM", "MIN", "MAX", "LIST")
@@ -55,6 +59,11 @@ class Condition:
     def matches(self, 행: dict) -> bool:
         실제 = str(행.get(self.열, "") or "")
         기준 = self.값
+        # `*` 나 `?` 가 있으면 엑셀 COUNTIF 처럼 와일드카드로 견준다.
+        # `부서="*"` = 부서를 안 가리고 전부.
+        if self.연산 in ("=", "!=") and wildcard.has(기준):
+            맞나 = wildcard.like(실제, 기준)
+            return 맞나 if self.연산 == "=" else not 맞나
         if self.연산 == "=":
             return 실제 == 기준
         if self.연산 == "!=":
@@ -86,9 +95,8 @@ class Formula:
 
 
 def _like(값: str, 패턴: str) -> bool:
-    """`*` 만 쓰는 아주 단순한 패턴. 정규식을 그대로 열어주지 않는다."""
-    조각 = [re.escape(p) for p in 패턴.split("*")]
-    return re.fullmatch(".*".join(조각), 값, re.DOTALL) is not None
+    """`*` `?` 를 쓰는 패턴. 정규식을 그대로 열어주지 않는다 (wildcard.py)."""
+    return wildcard.like(값, 패턴)
 
 
 def _number(값: str) -> float | None:

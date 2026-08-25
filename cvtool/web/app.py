@@ -5338,6 +5338,10 @@ def _수식도움() -> str:
         "쉼표로 이으면 전부 만족(AND).<br>"
         "<b>열 이름</b>은 <a href='/fields'>표 항목</a> 에 있는 그대로 씁니다. "
         "없는 이름을 쓰면 저장할 때 막습니다.</p>"
+        "<p class='muted'><b>와일드카드</b>는 <code>*</code>(아무 글자 몇 개든) 와 "
+        "<code>?</code>(한 글자) 입니다. <code>=COUNT(채용, 부서=\"*\")</code> 는 "
+        "부서를 안 가리고 전부 셉니다. 별표 그 글자를 찾을 때는 "
+        "<code>~*</code> 로 적습니다.</p>"
         "<p class='muted'><code>=</code> 로 시작하지 않으면 그냥 글자로 들어갑니다.</p>"
         "<div class='warn'><b>패턴 하나만 조심하세요.</b> "
         '<code>최종상태~"*합격"</code> 은 <b>불합격도 맞습니다</b> '
@@ -5363,6 +5367,9 @@ _수식보기: list[tuple[str, str, str]] = [
     ('=IF(박사_석박통합="석박통합","석/박)","박)")', "석/박)", "값에 따라 앞말을 바꿉니다"),
     ('=YEAR(TODAY())-VALUE(LEFT(생년월일,4))', "27", "나이"),
     ('=한글_이름 & "(" & 저널_주저자_수 & "편)"', "홍길동(4편)", "숫자도 그냥 이어집니다"),
+    ('=부서="*"', "TRUE", "<b>* 는 아무거나</b> — 부서를 안 가리고 전부"),
+    ('=최종상태="*합격"', "TRUE", "'합격' 으로 끝나는 것 (불합격도 맞습니다)"),
+    ('=한글_이름="김?"', "TRUE", "<b>? 는 딱 한 글자</b> — 김＊ 두 글자 이름"),
     ('=박사_학교 & CHAR(10) & 석사_학교', "서울대학교↵포항공대",
      "<b>줄바꿈은 CHAR(10)</b> — 입력칸이 한 줄이라 엔터는 안 됩니다"),
     ('=TEXTJOIN(CHAR(10), TRUE, 박사_학교, 석사_학교, 학사_학교)',
@@ -5421,6 +5428,13 @@ def _틀도움() -> str:
         "한 줄이 통째로 빈 글자면 그 줄은 안 나옵니다 — 석사를 안 한 사람 "
         "프로필에 빈 석사 줄이 남지 않습니다. 줄 안에서 일부만 비게 하려면 "
         "<code>IF</code> 나 <code>TEXTJOIN(…, TRUE, …)</code> 을 쓰세요.</p>"
+        "<p class='muted'><b>와일드카드는 <code>*</code> 와 <code>?</code> 입니다.</b> "
+        "엑셀과 같습니다 — <code>*</code> 는 아무 글자 몇 개든(0개도), "
+        "<code>?</code> 는 딱 한 글자. 행 고르기에 "
+        "<code>=부서=&quot;*&quot;</code> 라고 적으면 부서를 안 가리고 전부 "
+        "나옵니다(부서가 비어 있어도 나옵니다). 별표나 물음표 <b>그 글자</b>를 "
+        "찾을 때는 <code>~*</code> <code>~?</code> 로 적습니다. "
+        "대소문자는 가리지 않습니다.</p>"
         "<p class='muted'><b>예전 방식도 그대로 됩니다.</b> "
         "<code>{박사_학교} {박사_전공}({기간:박사_시작~박사_졸업})</code> 처럼 "
         "<code>=</code> 없이 <code>{}</code> 로 적으면 빈 값이 붙은 괄호까지 "
@@ -5648,7 +5662,7 @@ def _블록편집(b, 축값, 미리볼사람: str = "") -> str:
             "<input type='text' name='listwhere' class='fx' oninput='fxPreview(this)'"
             f" data-cid='{html.escape(미리볼사람)}'"
             f" value='{html.escape(b.목록조건)}' style='flex:1;min-width:280px'"
-            " placeholder=\'=최종상태=&quot;최종 합격&quot;  (비우면 전부)\'>"
+            " placeholder=\'=최종상태=&quot;최종 합격&quot;  (*로 아무거나, 비우면 전부)\'>"
             "<span class='fxout muted'></span></p>"
             "<p class='bar'>정렬 "
             "<input type='text' name='listsort' class='fx' oninput='fxPreview(this)'"
