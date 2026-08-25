@@ -33,6 +33,7 @@ from .. import review
 from ..dashboards import (
     AXIS_SOURCES,
     BLOCK_KINDS,
+    ROW_TARGET,
     WIDTHS,
     CELL_FORMATS,
     DashboardStore,
@@ -478,6 +479,11 @@ table.dtbl.b-grid th,table.dtbl.b-grid td{border:1px solid var(--line)}
 table.dtbl.b-none th,table.dtbl.b-none td{border:0}
 table.dtbl.b-none th{border-bottom:1px solid var(--line)}
 table.dtbl.zebra tr:nth-child(even) td{background:#fafbfc}
+/* 조건서식으로 칠한 칸은 얼룩말도 hover 도 덮지 않는다 — 일부러 칠한 것이다.
+   (인라인 스타일이라 이 규칙들보다 우선하지만, 명시해 두어야 나중에 규칙을
+    하나 더 얹어도 안 깨진다) */
+table.dtbl.zebra tr:nth-child(even) td.painted{background:none}
+.scroll table.dtbl tr:hover td.painted{background:none}
 table.dtbl.zebra tr:hover td{background:var(--accent-w)}
 table.dtbl.tight th,table.dtbl.tight td{padding:3px 6px;font-size:12px}
 /* CHAR(10) 을 넣은 칸만 줄을 바꾼다. 나머지는 한 줄로 잘린 채 둔다 */
@@ -4991,6 +4997,32 @@ def _블록설정(b, data: dict) -> tuple[dict, str]:
             except expr.ExprError as exc:
                 return 설정, f"'{자리}' 수식이 잘못됐습니다 — {exc}"
         설정["목록열"] = 열
+
+        # 값에 따라 칠하기. 조건도 수식이라 저장 전에 검사한다.
+        조건들 = data.get("cfwhen") or []
+        어디들 = (data.get("cfwhere") or []) + [ROW_TARGET] * len(조건들)
+        배경들 = (data.get("cfbg") or []) + [""] * len(조건들)
+        # 색 고르개는 항상 값을 보내므로, '기본' 체크는 그 자리의 색을 지우는 뜻이다.
+        # 체크박스는 켠 것만 오기 때문에 순서로 짝을 지을 수 없다 — 그래서 글자색은
+        # 켠 규칙 수만큼만 받고, 나머지는 기본색으로 둔다.
+        글자들 = (data.get("cffg") or []) + [""] * len(조건들)
+        글자쓰나 = (data.get("cffgmode") or []) + ["기본"] * len(조건들)
+        서식 = []
+        for i, 조건 in enumerate(조건들):
+            조건 = 조건.strip()
+            if not 조건:
+                continue
+            if not expr.is_formula(조건):
+                조건 = "=" + 조건
+            try:
+                expr.validate(조건, 아는열)
+            except expr.ExprError as exc:
+                return 설정, f"색칠 조건이 잘못됐습니다 — {exc}"
+            서식.append({
+                "조건": 조건, "대상": 어디들[i], "배경": 배경들[i],
+                "글자": 글자들[i] if 글자쓰나[i] == "직접" else "",
+            })
+        설정["조건서식"] = 서식
         return 설정, ""
 
     if b.종류 == "프로필":
@@ -5150,19 +5182,32 @@ def _블록그리기(b, rows, 축값, 아는열) -> str:
             for i, c in enumerate(결과.머리)
         )
 
-        def 칸(i: int, v: str) -> str:
+        def 칸(줄번호: int, i: int, v: str) -> str:
             # 줄바꿈(CHAR(10))을 일부러 넣은 칸은 **줄을 바꿔서** 보여준다.
             # 다른 칸은 그대로 한 줄로 잘린다 — 줄 높이가 들쭉날쭉해지면 표를
             # 훑기 어려우니, 바꾸는 건 그러라고 적은 칸뿐이다.
             cls = 폭클래스(i) + (" multi" if "\n" in v else "")
             속 = ("<br>".join(html.escape(줄) for 줄 in v.split("\n"))
                  if "\n" in v else html.escape(v))
-            return (f"<td class='{cls.strip()}'{폭스타일(i)}"
+            # 조건서식. 칸 규칙이 줄 규칙을 이긴다 — 더 좁게 가리킨 쪽이 이긴다.
+            #
+            # 줄 색도 **칸마다** 칠한다. <tr> 에 걸고 물려받게 하면 얼룩말 무늬나
+            # hover 가 덮어써서 어떤 줄은 칠해지고 어떤 줄은 안 칠해진다.
+            칸색 = ""
+            if 줄번호 < len(결과.칸색) and i < len(결과.칸색[줄번호]):
+                칸색 = 결과.칸색[줄번호][i]
+            줄색 = 결과.행색[줄번호] if 줄번호 < len(결과.행색) else ""
+            색 = 칸색 or 줄색
+            폭 = 폭스타일(i)
+            안쪽 = ";".join(x for x in (색, 폭[8:-1] if 폭 else "") if x)
+            스타일 = f" style='{안쪽}'" if 안쪽 else ""
+            칠함 = " painted" if 색 else ""
+            return (f"<td class='{(cls + 칠함).strip()}'{스타일}"
                     f" title='{html.escape(v)}'>{속}</td>")
 
         몸 = "".join(
-            "<tr>" + "".join(칸(i, v) for i, v in enumerate(칸들)) + "</tr>"
-            for 칸들 in 결과.행
+            "<tr>" + "".join(칸(n, i, v) for i, v in enumerate(칸들)) + "</tr>"
+            for n, 칸들 in enumerate(결과.행)
         ) or (f"<tr><td colspan='{max(1, len(결과.머리))}' class='muted'>"
               "조건에 맞는 사람이 없습니다.</td></tr>")
         센것 = (f"{len(결과.행)}줄"
@@ -5374,6 +5419,67 @@ def _틀도움() -> str:
     )
 
 
+def _조건서식편집(b, 미리볼사람: str = "") -> str:
+    """값에 따라 칠하기. **엑셀의 조건부 서식과 같은 감각**이다.
+
+    규칙을 여러 개 둘 수 있고 위에서부터 보다가 처음 맞는 것을 쓴다. 칸 규칙이
+    줄 규칙을 이긴다 — 더 좁게 가리킨 쪽이 이긴다.
+    """
+    열이름 = [머리 or 식 for 머리, 식, _폭 in b.목록열 if str(식).strip()]
+    고를것 = [ROW_TARGET] + 열이름
+
+    def 줄(r: dict) -> str:
+        대상 = r.get("대상") or ROW_TARGET
+        옵션 = "".join(
+            f"<option{' selected' if v == 대상 else ''}>{html.escape(v)}</option>"
+            for v in dict.fromkeys(고를것 + ([대상] if 대상 not in 고를것 else []))
+        )
+        return (
+            "<tr><td><input type='text' name='cfwhen'"
+            f" value='{html.escape(r.get('조건') or '')}' style='width:100%'"
+            " class='fx' oninput='fxPreview(this)'"
+            f" data-cid='{html.escape(미리볼사람)}'"
+            ' placeholder=\'=최종상태="불합격"\'>'
+            "<span class='fxout muted'></span></td>"
+            f"<td class='ctl'><select name='cfwhere'>{옵션}</select></td>"
+            "<td class='ctl'><input type='color' name='cfbg'"
+            f" value='{html.escape(r.get('배경') or '#fee2e2')}'></td>"
+            # 체크박스는 켠 것만 전송돼서 줄과 짝을 지을 수 없다. 고르개는
+            # 언제나 값을 보내므로 줄 차례가 그대로 유지된다.
+            "<td class='ctl'><select name='cffgmode'>"
+            + f"<option{'' if r.get('글자') else ' selected'}>기본</option>"
+            + f"<option{' selected' if r.get('글자') else ''}>직접</option>"
+            + "</select> <input type='color' name='cffg'"
+            f" value='{html.escape(r.get('글자') or '#16191d')}'></td>"
+            "<td class='ctl'><button type='button' class='sec tiny'"
+            " onclick='rowMove(this,-1)' title='위로'>↑</button> "
+            "<button type='button' class='sec tiny' onclick='rowMove(this,1)'"
+            " title='아래로'>↓</button> "
+            "<button type='button' class='danger ghost tiny'"
+            " onclick='rowDrop(this)' title='이 규칙 빼기'>×</button></td></tr>"
+        )
+
+    빈줄 = {"조건": "", "대상": ROW_TARGET, "배경": "#fee2e2", "글자": ""}
+    return (
+        "<details class='draft'><summary>값에 따라 칠하기</summary>"
+        "<div class='scroll' style='margin-top:8px'><table>"
+        "<tr><th>이 조건이 참이면</th><th class='ctl' style='width:150px'>어디를</th>"
+        "<th class='ctl' style='width:70px'>배경</th>"
+        "<th class='ctl' style='width:160px'>글자색</th>"
+        "<th class='ctl' style='width:120px'></th></tr>"
+        + "".join(줄(r) for r in (b.조건서식 + [빈줄]))
+        + "</table></div>"
+        "<p class='muted'>규칙은 <b>위에서부터</b> 보다가 처음 맞는 것을 씁니다. "
+        "칸 규칙이 줄 규칙을 이깁니다. 조건은 문장 수식과 같은 문법이고 "
+        "<b>참/거짓</b>을 냅니다 — "
+        "<code>=최종상태=&quot;불합격&quot;</code>, "
+        "<code>=저널_주저자_수&gt;=5</code>, "
+        "<code>=AND(검토_필요=&quot;Y&quot;, 부서=&quot;공정&quot;)</code>. "
+        "맨 아래 빈 줄에 적으면 규칙이 늘어납니다.</p>"
+        "</details>"
+    )
+
+
 def _표모양편집(b) -> str:
     """표 모양 고르개. 목록·축표·자유표가 함께 쓴다.
 
@@ -5539,7 +5645,7 @@ def _블록편집(b, 축값, 미리볼사람: str = "") -> str:
             "<p class='muted'>맨 아래 빈 줄에 적으면 열이 늘어납니다. "
             "머리글을 비우면 수식이 그대로 머리글이 됩니다. "
             "<b>수식 대신 그냥 글자</b>를 적으면 모든 줄에 그 글자가 들어갑니다.</p>"
-            + _표모양편집(b)
+            + _표모양편집(b) + _조건서식편집(b, 미리볼사람)
         )
     elif b.종류 == "프로필":
         줄 = "".join(

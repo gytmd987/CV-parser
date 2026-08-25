@@ -1586,3 +1586,65 @@ def test_other_pages_keep_the_normal_width(web, cid):
     """대시보드 폭 설정이 다른 화면까지 넓히면 안 된다."""
     본문시작 = web.get("/").split("<body", 1)[1][:40]
     assert "--mainw" not in 본문시작        # CSS 안의 기본값은 그대로 둔다
+
+
+def test_conditional_colours_reach_the_screen(web, cid):
+    """값에 따라 칠하기 — 줄 색도 <tr> 이 아니라 칸마다 칠해야 얼룩말에 안 덮인다."""
+    rec = web.module.store.get(cid)
+    rec.한글_이름 = "칠할사람"
+    web.module.store.save(rec)
+    did = web.module.boards.add("칠하기", "admin")
+    web.module.boards.add_block(did, "목록", 제목="표", 설정={
+        "목록대상": "지원자", "줄무늬": True,
+        "목록열": [["이름", "=한글_이름", ""]],
+        "조건서식": [{"조건": '=한글_이름="칠할사람"', "대상": "줄 전체",
+                   "배경": "#dcfce7", "글자": ""}],
+    })
+    보기 = web.get(f"/dash/view?id={did}")
+    assert "background:#dcfce7" in 보기
+    assert "class='w-md painted'" in 보기 or "painted" in 보기
+    # <tr> 에 걸지 않는다 (물려받게 하면 얼룩말·hover 가 덮는다)
+    assert "<tr style=" not in 보기
+
+
+def test_the_colour_rules_editor_is_there(web):
+    did = web.module.boards.add("규칙칸", "admin")
+    web.module.boards.add_block(did, "목록", 제목="표", 설정={
+        "목록대상": "지원자", "목록열": [["이름", "=한글_이름", ""]]})
+    편집 = web.get(f"/dash/edit?id={did}")
+    for 칸 in ("cfwhen", "cfwhere", "cfbg", "cffg", "cffgmode"):
+        assert f"name='{칸}'" in 편집, 칸
+    assert "값에 따라 칠하기" in 편집
+    assert ">줄 전체<" in 편집 and ">이름<" in 편집      # 대상 고르개에 열 이름
+
+
+def test_saving_a_colour_rule_checks_the_formula(web):
+    did = web.module.boards.add("규칙저장", "admin")
+    bid = web.module.boards.add_block(did, "목록", 제목="표", 설정={
+        "목록대상": "지원자", "목록열": [["이름", "=한글_이름", ""]]})
+    공통 = {"id": str(bid), "title": "표", "listtarget": "지원자",
+          "colhead": "이름", "colformula": "=한글_이름", "colwidth": ""}
+    _, body = web.post("/dash/block/save", **공통,
+                       cfwhen="=없는열", cfwhere="줄 전체",
+                       cfbg="#dcfce7", cffg="#000000", cffgmode="기본")
+    assert "색칠 조건이 잘못됐습니다" in body
+    assert not web.module.boards.block(bid).조건서식
+
+    web.post("/dash/block/save", **공통,
+             cfwhen='=한글_이름="홍"', cfwhere="줄 전체",
+             cfbg="#dcfce7", cffg="#b91c1c", cffgmode="직접")
+    규칙 = web.module.boards.block(bid).조건서식
+    assert 규칙 == [{"조건": '=한글_이름="홍"', "대상": "줄 전체",
+                  "배경": "#dcfce7", "글자": "#b91c1c"}]
+
+
+def test_the_default_text_colour_is_not_saved(web):
+    """'기본' 으로 두면 색을 저장하지 않는다 — 화면 테마를 따라가게."""
+    did = web.module.boards.add("기본글자", "admin")
+    bid = web.module.boards.add_block(did, "목록", 제목="표", 설정={
+        "목록대상": "지원자", "목록열": [["이름", "=한글_이름", ""]]})
+    web.post("/dash/block/save", id=str(bid), title="표", listtarget="지원자",
+             colhead="이름", colformula="=한글_이름", colwidth="",
+             cfwhen='=한글_이름="홍"', cfwhere="줄 전체",
+             cfbg="#dcfce7", cffg="#b91c1c", cffgmode="기본")
+    assert web.module.boards.block(bid).조건서식[0]["글자"] == ""

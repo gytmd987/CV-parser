@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -142,6 +143,30 @@ class Block:
         return self.설정.get("머리배경") or ""
 
     @property
+    def 조건서식(self) -> list[dict]:
+        """값에 따라 칠하기. [{조건, 대상, 배경, 글자}]
+
+        - **조건** 은 행 문맥 수식이다 (`=최종상태="불합격"`). 참이면 칠한다.
+        - **대상** 이 `줄 전체` 면 그 줄을, 열 머리글이면 그 칸만 칠한다.
+        - 여러 규칙을 둘 수 있고 **위에서부터 보다가 처음 맞는 것**을 쓴다.
+          칸 규칙이 줄 규칙을 이긴다 (더 좁게 가리킨 쪽이 이긴다).
+        """
+        나온것 = []
+        for r in (self.설정.get("조건서식") or []):
+            if not isinstance(r, dict):
+                continue
+            조건 = str(r.get("조건") or "").strip()
+            if not 조건:
+                continue
+            나온것.append({
+                "조건": 조건,
+                "대상": str(r.get("대상") or ROW_TARGET),
+                "배경": str(r.get("배경") or ""),
+                "글자": str(r.get("글자") or ""),
+            })
+        return 나온것
+
+    @property
     def 목록정렬(self) -> str:
         return self.설정.get("목록정렬") or ""
 
@@ -174,6 +199,9 @@ class Block:
 
 #: 대시보드 폭. 표가 넓으면 화면을 다 쓰고 싶고, 글이 많으면 좁은 게 읽기 좋다.
 WIDTHS = ("보통", "넓게", "좁게")
+
+#: 조건서식의 '대상' 이 이것이면 줄 전체를 칠한다 (아니면 그 이름의 열만).
+ROW_TARGET = "줄 전체"
 _WIDTH_PX = {"보통": "1600px", "넓게": "100%", "좁게": "1100px"}
 
 
@@ -426,6 +454,9 @@ class RenderedList:
     행: list[list[str]] = field(default_factory=list)
     오류: list[str] = field(default_factory=list)
     전체: int = 0                      # 조건에 맞는 사람 수 (줄여 보여줄 때)
+    #: 조건서식 결과. 줄마다 하나, 칸마다 하나. 빈 문자열이면 안 칠한다.
+    행색: list[str] = field(default_factory=list)
+    칸색: list[list[str]] = field(default_factory=list)
 
 
 def render_list(b: Block, rows, 아는열: set[str] | None = None) -> RenderedList:
@@ -480,9 +511,38 @@ def render_list(b: Block, rows, 아는열: set[str] | None = None) -> RenderedLi
     if b.목록최대:
         골라낸 = 골라낸[:b.목록최대]
 
-    표행 = []
+    # 조건서식 — 값에 따라 칠하기. 규칙을 미리 뜯어 두고 줄마다 견줘 본다.
+    규칙 = []
+    for r in b.조건서식:
+        스타일 = _색스타일(r.get("배경"), r.get("글자"))
+        if not 스타일:
+            continue                    # 색을 안 고른 규칙은 아무 일도 안 한다
+        규칙.append((r["조건"], r.get("대상") or ROW_TARGET, 스타일))
+    머리이름 = [머리 or 식 for 머리, 식, _폭 in 열들]
+
+    표행, 행색, 칸색 = [], [], []
     본오류 = set()
     for _cid, 값들 in 골라낸:
+        # 위에서부터 보다가 처음 맞는 것을 쓴다 (엑셀도 규칙에 순서가 있다).
+        줄스타일 = ""
+        칸스타일 = [""] * len(열들)
+        for 조건, 대상, 스타일 in 규칙:
+            보임, 잘못 = expr.render(조건, 값들)
+            if 잘못:
+                본오류.add(f"색칠 조건 '{조건}' → {잘못}")
+                continue
+            if str(보임).strip().upper() in ("", "FALSE", "0"):
+                continue
+            if 대상 == ROW_TARGET:
+                if not 줄스타일:
+                    줄스타일 = 스타일
+            elif 대상 in 머리이름:
+                i = 머리이름.index(대상)
+                if not 칸스타일[i]:
+                    칸스타일[i] = 스타일
+        행색.append(줄스타일)
+        칸색.append(칸스타일)
+
         칸들 = []
         for 머리, 식, _폭 in 열들:
             if not expr.is_formula(식):
@@ -510,9 +570,28 @@ def render_list(b: Block, rows, 아는열: set[str] | None = None) -> RenderedLi
         if 모르는:
             오류.append("표에 없는 열입니다: " + ", ".join(모르는))
 
-    머리 = [머리 or 식 for 머리, 식, _폭 in 열들]
     폭들 = [폭 for _머리, _식, 폭 in 열들]
-    return RenderedList(제목=b.제목, 머리=머리, 폭=폭들, 행=표행, 오류=오류, 전체=전체)
+    # 없는 열을 가리키는 규칙은 조용히 아무 일도 안 하므로 알려 준다.
+    for r in b.조건서식:
+        대상 = r.get("대상") or ROW_TARGET
+        if 대상 != ROW_TARGET and 대상 not in 머리이름:
+            오류.append(f"색칠 규칙이 가리키는 열이 없습니다: {대상}")
+    return RenderedList(제목=b.제목, 머리=머리이름, 폭=폭들, 행=표행,
+                        오류=오류, 전체=전체, 행색=행색, 칸색=칸색)
+
+
+def _색스타일(배경: str, 글자: str) -> str:
+    """고른 색을 인라인 스타일로. 색처럼 안 생긴 값은 버린다.
+
+    사용자가 고른 값이 그대로 style 속성에 들어가므로, **모양을 확인한 것만**
+    내보낸다 (`#rrggbb` 만). 안 그러면 스타일 속성을 통해 아무거나 넣을 수 있다.
+    """
+    좋은것 = []
+    for 이름, 값 in (("background", 배경), ("color", 글자)):
+        값 = str(값 or "").strip()
+        if re.fullmatch(r"#[0-9a-fA-F]{6}", 값):
+            좋은것.append(f"{이름}:{값}")
+    return ";".join(좋은것)
 
 
 def render_table(b: Block, rows, 축값: dict[str, list[str]],

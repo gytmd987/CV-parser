@@ -242,3 +242,72 @@ def test_the_table_shape_is_remembered():
             표너비="내용에 맞춤", 머리배경="#eef2f7")
     assert (b.테두리, b.표너비) == ("격자", "내용에 맞춤")
     assert b.줄무늬 and b.촘촘히 and b.머리배경 == "#eef2f7"
+
+
+# --- 값에 따라 칠하기 -------------------------------------------------------------
+def 색칠(*규칙, **나머지):
+    return 블록(목록대상="지원자",
+              목록열=[["이름", "=한글_이름", ""], ["주저자", "=저널_주저자_수", ""]],
+              조건서식=list(규칙), **나머지)
+
+
+def test_a_rule_paints_the_whole_row():
+    r = render_list(색칠({"조건": "=저널_주저자_수>=5", "대상": "줄 전체",
+                        "배경": "#dcfce7", "글자": ""}), ROWS)
+    assert r.행색 == ["", "background:#dcfce7", ""]      # 김철수(7)만
+    assert r.칸색 == [["", ""], ["", ""], ["", ""]]
+
+
+def test_a_rule_can_paint_just_one_cell():
+    r = render_list(색칠({"조건": "=저널_주저자_수<=2", "대상": "주저자",
+                        "배경": "#fee2e2", "글자": "#b91c1c"}), ROWS)
+    assert r.행색 == ["", "", ""]
+    assert r.칸색[2] == ["", "background:#fee2e2;color:#b91c1c"]   # 이영희(2)
+    assert r.칸색[0] == ["", ""]
+
+
+def test_many_rules_and_the_first_match_wins():
+    """엑셀도 규칙에 순서가 있다. 위에서부터 보다가 처음 맞는 것."""
+    r = render_list(색칠(
+        {"조건": "=저널_주저자_수>=4", "대상": "줄 전체", "배경": "#dcfce7"},
+        {"조건": "=저널_주저자_수>=1", "대상": "줄 전체", "배경": "#fef3c7"},
+    ), ROWS)
+    # 홍길동 4, 김철수 7 → 첫 규칙 / 이영희 2 → 둘째 규칙
+    assert r.행색 == ["background:#dcfce7", "background:#dcfce7",
+                    "background:#fef3c7"]
+
+
+def test_a_cell_rule_beats_a_row_rule():
+    """더 좁게 가리킨 쪽이 이긴다."""
+    r = render_list(색칠(
+        {"조건": "=저널_주저자_수>=1", "대상": "줄 전체", "배경": "#dcfce7"},
+        {"조건": "=저널_주저자_수<=2", "대상": "주저자", "배경": "#fee2e2"},
+    ), ROWS)
+    assert r.행색[2] == "background:#dcfce7"
+    assert r.칸색[2][1] == "background:#fee2e2"
+
+
+def test_only_real_colours_get_through():
+    """고른 값이 그대로 style 에 들어간다. 모양을 확인한 것만 내보낸다."""
+    r = render_list(색칠({"조건": "=저널_주저자_수>=1", "대상": "줄 전체",
+                        "배경": "red; background:url(x)"}), ROWS)
+    assert r.행색 == ["", "", ""]                       # 색이 아니면 안 칠한다
+
+
+def test_a_rule_with_no_colour_does_nothing():
+    r = render_list(색칠({"조건": "=저널_주저자_수>=1", "대상": "줄 전체"}), ROWS)
+    assert r.행색 == ["", "", ""]
+
+
+def test_a_broken_rule_says_so_and_paints_nothing():
+    r = render_list(색칠({"조건": "=없는열", "대상": "줄 전체",
+                        "배경": "#dcfce7"}), ROWS)
+    assert r.행색 == ["", "", ""]
+    assert any("색칠 조건" in x for x in r.오류)
+
+
+def test_a_rule_pointing_at_a_missing_column_is_reported():
+    """조용히 아무 일도 안 하면 왜 안 칠해지는지 알 수가 없다."""
+    r = render_list(색칠({"조건": "=저널_주저자_수>=1", "대상": "없는칸",
+                        "배경": "#dcfce7"}), ROWS)
+    assert any("색칠 규칙이 가리키는 열이 없습니다" in x for x in r.오류)
