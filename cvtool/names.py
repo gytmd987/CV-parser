@@ -33,6 +33,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from .dbconn import Db, atomic
 from .fsutil import secure_dir, secure_file
 from .timeutil import now_kst
 
@@ -167,11 +168,7 @@ class NameRegistry:
     def __init__(self, db_path: str | Path) -> None:
         self.path = Path(db_path)
         secure_dir(self.path.parent)
-        self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        # 여러 사람이 동시에 써도 읽기가 막히지 않게 한다
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA busy_timeout=5000")
+        self._conn = Db(self.path)
         self._migrate()
         self._conn.executescript(_SCHEMA)
         self._add_missing_columns()
@@ -195,6 +192,7 @@ class NameRegistry:
             if 열 not in 있는열:
                 self._conn.execute(f"ALTER TABLE names ADD COLUMN {열} TEXT DEFAULT ''")
 
+    @atomic
     def _migrate(self) -> None:
         """예전 구조(한 줄 = 대표명 하나 + 별칭표)를 표기별 한 줄로 옮긴다."""
         있는표 = {
@@ -390,6 +388,7 @@ class NameRegistry:
         return 총
 
     # -- 등록 ---------------------------------------------------------------
+    @atomic
     def observe(self, 종류: str, 표시명: str, *, 국내해외: str = "불명",
                 유형: str = "") -> Name:
         """CV 에서 표기를 발견했을 때.
@@ -442,6 +441,7 @@ class NameRegistry:
         assert found is not None
         return found
 
+    @atomic
     def classify(
         self,
         name_id: int,

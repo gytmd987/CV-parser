@@ -14,10 +14,10 @@ CV 에서 발견된 제출처를 정규화해 등록한다. 관리 목록에 없
 from __future__ import annotations
 
 import re
-import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from .dbconn import Db, atomic
 from .fsutil import secure_dir, secure_file
 from .timeutil import now_kst
 
@@ -79,8 +79,7 @@ class VenueRegistry:
     def __init__(self, db_path: str | Path) -> None:
         self.path = Path(db_path)
         secure_dir(self.path.parent)
-        self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
+        self._conn = Db(self.path)
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
         for suffix in ("", "-wal", "-shm"):
@@ -116,6 +115,7 @@ class VenueRegistry:
         return row["c"]
 
     # -- 등록 -------------------------------------------------------------
+    @atomic
     def observe(self, 표시명: str, *, 유형: str = "", 국내해외: str = "불명") -> Venue:
         """CV 에서 제출처를 발견했을 때 호출.
 
@@ -169,6 +169,7 @@ class VenueRegistry:
         self._conn.execute(f"UPDATE venues SET {','.join(sets)} WHERE id=?", args)
         self._conn.commit()
 
+    @atomic
     def merge(self, alias_venue_id: int, into_venue_id: int) -> None:
         """표기가 다른 같은 학회를 하나로 합친다 (별칭 등록)."""
         if alias_venue_id == into_venue_id:

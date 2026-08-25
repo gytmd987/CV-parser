@@ -16,6 +16,7 @@ import sqlite3
 from pathlib import Path
 
 from .config import settings
+from .dbconn import Db, atomic
 from .fsutil import secure_dir, secure_file
 from .retention import expiry_date
 from .schemas import CVRecord
@@ -120,10 +121,7 @@ class CandidateStore:
         self.files_dir = secure_dir(
             Path(files_dir) if files_dir else self.path.parent / "files"
         )
-        self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA busy_timeout=5000")
+        self._conn = Db(self.path)
         self._conn.executescript(_SCHEMA)
         self._migrate()
         self._custom_field_columns()
@@ -167,6 +165,7 @@ class CandidateStore:
         path = self.files_dir / row["저장_파일명"]
         return path if path.is_file() else None
 
+    @atomic
     def _unlink_files(self, ids: list[str]) -> None:
         """DB 행을 지우기 전에 그 지원자의 파일을 **전부** 지운다.
 
@@ -198,6 +197,7 @@ class CandidateStore:
         )
 
     # -- 쓰기 -------------------------------------------------------------
+    @atomic
     def save(
         self,
         rec: CVRecord,
@@ -319,6 +319,7 @@ class CandidateStore:
         ).fetchone()
         return (row["중복_메모"] or "") if row else ""
 
+    @atomic
     def delete(self, 지원자_ID: str) -> bool:
         self._unlink_files([지원자_ID])
         cur = self._conn.execute(
@@ -342,6 +343,7 @@ class CandidateStore:
         self._conn.commit()
         return cur.rowcount
 
+    @atomic
     def delete_all(self) -> int:
         rows = self._conn.execute("SELECT 지원자_ID FROM candidates").fetchall()
         self._unlink_files([r["지원자_ID"] for r in rows])
@@ -351,6 +353,7 @@ class CandidateStore:
         return cur.rowcount
 
     # -- 첨부파일 (지원자별 여러 개) ---------------------------------------
+    @atomic
     def add_attachment(
         self, 지원자_ID: str, 파일명: str, content: bytes, 올린이: str = ""
     ) -> int:
@@ -400,6 +403,7 @@ class CandidateStore:
         return att["파일명"]
 
     # -- 사용자 정의 열 -----------------------------------------------------
+    @atomic
     def add_field(
         self, 이름: str, 유형: str = "텍스트", 선택지: str = "", 만든이: str = "",
         구분: str = "지원자 정보",
@@ -435,6 +439,7 @@ class CandidateStore:
         self._conn.commit()
 
     # -- 과제 매칭 ----------------------------------------------------------
+    @atomic
     def _custom_field_columns(self) -> None:
         """예전 DB 의 custom_fields 에 없던 열을 붙인다."""
         있는열 = {r["name"] for r in self._conn.execute("PRAGMA table_info(custom_fields)")}
@@ -453,6 +458,7 @@ class CandidateStore:
                 self._conn.execute(f"ALTER TABLE matches ADD COLUMN {열} {정의}")
         self._conn.commit()
 
+    @atomic
     def save_matches(self, 지원자_ID: str, matches) -> None:
         """이 지원자의 과제 매칭 결과를 통째로 갈아 끼운다.
 
@@ -585,6 +591,7 @@ class CandidateStore:
         return [f["이름"] for f in self.fields()
                 if 구분 is None or (f.get("구분") or "지원자 정보") == 구분]
 
+    @atomic
     def update_field(self, 이름: str, *, 새이름: str | None = None,
                      유형: str | None = None, 선택지: str | None = None,
                      구분: str | None = None) -> dict:
@@ -662,6 +669,7 @@ class CandidateStore:
         custom_field_spec(새것)
         return 옛
 
+    @atomic
     def delete_field(self, 이름: str) -> None:
         """열과 그 열에 들어 있던 값을 전부 지운다."""
         self._conn.execute("DELETE FROM custom_fields WHERE 이름=?", (이름,))

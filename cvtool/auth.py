@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 
+from .dbconn import Db, atomic
 from .fsutil import secure_dir, secure_file
 from .timeutil import now_kst
 
@@ -142,10 +143,7 @@ class AuthStore:
     def __init__(self, db_path: str | Path) -> None:
         self.path = Path(db_path)
         secure_dir(self.path.parent)
-        self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA busy_timeout=5000")
+        self._conn = Db(self.path)
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
@@ -252,6 +250,7 @@ class AuthStore:
         self._conn.commit()
 
     # -- 부서 / 과제 -------------------------------------------------------
+    @atomic
     def add_department(self, 이름: str) -> int:
         이름 = (이름 or "").strip()
         if not 이름:
@@ -264,6 +263,7 @@ class AuthStore:
     def departments(self) -> list[sqlite3.Row]:
         return list(self._conn.execute("SELECT * FROM departments ORDER BY 이름"))
 
+    @atomic
     def rename_department(self, dept_id: int, 새이름: str) -> str:
         """부서 이름을 바꾼다. 이전 이름을 돌려준다(이력용)."""
         새이름 = (새이름 or "").strip()
@@ -289,6 +289,7 @@ class AuthStore:
         self._conn.execute("DELETE FROM departments WHERE id=?", (dept_id,))
         self._conn.commit()
 
+    @atomic
     def add_project(self, 부서_id: int, 이름: str, 초대암호: str = "") -> int:
         이름 = (이름 or "").strip()
         if not 이름:
@@ -315,6 +316,7 @@ class AuthStore:
         sql += " ORDER BY d.이름, p.이름"
         return list(self._conn.execute(sql, args))
 
+    @atomic
     def rename_project(self, project_id: int, 새이름: str) -> str:
         """과제 이름을 바꾼다. 같은 부서 안에서 이름이 겹치면 거부한다."""
         새이름 = (새이름 or "").strip()

@@ -20,6 +20,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .dbconn import Db, atomic
 from .fsutil import secure_dir, secure_file
 from .timeutil import now_kst
 
@@ -235,10 +236,7 @@ class DashboardStore:
     def __init__(self, db_path: str | Path) -> None:
         self.path = Path(db_path)
         secure_dir(self.path.parent)
-        self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA busy_timeout=5000")
+        self._conn = Db(self.path)
         self._conn.executescript(_SCHEMA)
         # 쓰던 DB 에 나중에 생긴 열을 붙인다. 표를 다시 만들면 만들어 둔
         # 대시보드가 날아간다.
@@ -305,6 +303,7 @@ class DashboardStore:
         )
         self._conn.commit()
 
+    @atomic
     def delete(self, did: int) -> str:
         d = self.get(did)
         if d is None:
@@ -328,6 +327,7 @@ class DashboardStore:
             (now_kst().strftime("%Y-%m-%d %H:%M:%S"), did),
         )
 
+    @atomic
     def add_block(self, dashboard_id: int, 종류: str, *, 제목: str = "",
                   설정: dict | None = None) -> int:
         if 종류 not in BLOCK_KINDS:

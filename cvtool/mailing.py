@@ -17,6 +17,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from .dbconn import Db, atomic
 from .fsutil import safe_filename, secure_dir, secure_file
 from .timeutil import now_kst
 
@@ -228,10 +229,7 @@ class MailStore:
         self.files_dir = Path(files_dir) if files_dir else self.path.parent / "mail_files"
         secure_dir(self.path.parent)
         secure_dir(self.files_dir)
-        self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA busy_timeout=5000")
+        self._conn = Db(self.path)
         self._conn.executescript(_SCHEMA)
         self._add_missing_columns()
         self._conn.commit()
@@ -254,6 +252,7 @@ class MailStore:
                     )
         self._upgrade_bodies_to_html()
 
+    @atomic
     def _upgrade_bodies_to_html(self) -> None:
         """본문을 전부 HTML 로 맞춘다.
 
@@ -330,6 +329,7 @@ class MailStore:
         self._conn.commit()
         return self.template(tid)
 
+    @atomic
     def delete_template(self, tid: int) -> str:
         """템플릿만 지운다. **발송 기록은 남긴다** — 누구에게 뭘 보냈는지는 기록이다."""
         t = self.template(tid)
@@ -423,6 +423,7 @@ class MailStore:
         return cur.lastrowid
 
     # -- 첨부파일 (템플릿별) -------------------------------------------------
+    @atomic
     def add_attachment(self, template_id: int, 파일명: str, content: bytes,
                        올린이: str = "") -> int:
         안전 = safe_filename(파일명)
@@ -455,6 +456,7 @@ class MailStore:
         return att_id
 
     # -- 본문 그림 -----------------------------------------------------------
+    @atomic
     def add_body_image(self, template_id: int, 파일명: str, content: bytes,
                        올린이: str = "") -> int:
         """본문에 넣을 그림을 **파일로** 보관하고 id 를 돌려준다.
@@ -525,6 +527,7 @@ class MailStore:
                 out.append(img)
         return out
 
+    @atomic
     def import_inline_images(self) -> int:
         """본문에 박혀 있던 base64 그림을 파일로 옮긴다 (한 번만).
 

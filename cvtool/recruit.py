@@ -13,10 +13,10 @@
 
 from __future__ import annotations
 
-import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .dbconn import Db, atomic
 from .fsutil import secure_dir, secure_file
 from .timeutil import now_kst
 
@@ -119,16 +119,14 @@ class RecruitStore:
     def __init__(self, db_path: str | Path) -> None:
         self.path = Path(db_path)
         secure_dir(self.path.parent)
-        self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA busy_timeout=5000")
+        self._conn = Db(self.path)
         self._conn.executescript(_SCHEMA)
         self._migrate()
         self._conn.commit()
         for suffix in ("", "-wal", "-shm"):
             secure_file(Path(str(self.path) + suffix))
 
+    @atomic
     def _migrate(self) -> None:
         """예전 DB 에 없던 열을 붙인다.
 
@@ -281,6 +279,7 @@ class RecruitStore:
         self._conn.commit()
         return before
 
+    @atomic
     def delete(self, 지원자_ID: str) -> None:
         self._conn.execute("DELETE FROM recruit WHERE 지원자_ID=?", (지원자_ID,))
         self._conn.execute("DELETE FROM stages WHERE 지원자_ID=?", (지원자_ID,))
@@ -294,6 +293,7 @@ class RecruitStore:
         ).fetchall()
         return [r["상태"] for r in rows] if rows else list(STATUSES)
 
+    @atomic
     def set_statuses(self, 목록: list[str]) -> list[str]:
         """상태 목록을 바꾸고 이전 목록을 돌려준다.
 
@@ -334,6 +334,7 @@ class RecruitStore:
         return 이전
 
     # -- 표시 열 구성 (관리자) ---------------------------------------------
+    @atomic
     def set_columns(self, 열목록: list[str]) -> None:
         """채용 현황 표에 보일 열과 순서를 정한다."""
         self._conn.execute("DELETE FROM view_columns")
