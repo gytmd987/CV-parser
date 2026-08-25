@@ -592,19 +592,25 @@ def _status_table() -> str:
             f"<td>{s['시각']}</td>"
             f"<td class='ctl'>{할일}</td></tr>"
         )
-    처리중 = any(s["state"] == "처리중" for _, s in items)
-    refresh = "<meta http-equiv='refresh' content='5'>" if 처리중 else ""
+    처리중 = any(s["state"] in ("대기중", "처리중") for _, s in items)
     안내 = (
         f"<p class='warn'>검토가 필요한 CV 가 <b>{검토수}건</b> 있습니다. "
         "오른쪽 <b>검토 N건 →</b> 을 누르면 그 지원자의 검토 항목으로 바로 "
         "갑니다.</p>" if 검토수 else ""
     )
+    # **페이지를 통째로 새로고침하지 않는다.** 예전에는 <meta refresh> 로 5초마다
+    # 다시 그렸는데, 그러면 분석이 도는 동안 파일을 고르는 순간 새로고침이
+    # 끼어들어 <input type=file> 선택이 날아갔다 ("첨부가 안 된다"). 지금은
+    # 이 표 안쪽만 갈아 끼우므로 고르던 파일도, 스크롤도 그대로 있다.
+    상태 = ("<span class='live'>● 처리 중</span> "
+          "<span class='muted'>표만 3초마다 갱신됩니다. 파일을 고르는 중이어도 "
+          "선택이 풀리지 않습니다.</span>" if 처리중 else "")
     return (
-        f"{refresh}<div class='card'><h2>업로드 처리 현황</h2>{안내}"
-        "<div class='scroll'><table data-name='처리 현황'>"
+        f"<div class='card'><h2>업로드 처리 현황</h2>{안내}"
+        f"<p id='상태알림' data-busy='{'1' if 처리중 else ''}'>{상태}</p>"
+        "<div class='scroll'><table data-name='처리 현황' id='현황표'>"
         "<tr><th>파일</th><th>상태</th><th>메모</th><th>시각</th><th>할 일</th></tr>"
         + "".join(rows) + "</table></div>"
-        + ("<p class='muted'>처리 중입니다. 5초마다 자동 새로고침됩니다.</p>" if 처리중 else "")
         + "<p><form method='post' action='/status/clear' style='display:inline'>"
         "<button type='submit' class='sec'>현황 지우기</button></form>"
         "<span class='muted'> 이 목록만 비웁니다. 지원자는 지워지지 않습니다.</span></p>"
@@ -772,26 +778,14 @@ def 대시보드_축() -> dict[str, list[str]]:
 
 
 def _채용칸(cid: str, 시작함: bool, 고칠수있나: bool) -> str:
-    """인재 Pool 표의 '채용' 칸 — 지금 뽑고 있는 사람인지, 그리고 그 전환 단추.
+    """인재 Pool 표의 '채용' 칸 — 지금 뽑고 있는 사람인가.
 
-    단추는 표를 감싼 폼이 아니라 **표 밖의 폼**으로 보낸다(form 속성).
-    폼 안에 폼을 넣으면 브라우저가 안쪽을 통째로 버린다.
+    **줄마다 있던 단추는 없앴다.** 같은 일을 표 위 묶음 단추가 이미 하고, 줄마다
+    두면 화면이 단추로 뒤덮이는 데다 한 명씩만 처리하게 된다. 여기는 상태만
+    보여준다 (체크해서 위에서 한 번에 처리하는 게 원래 쓰던 길이다).
     """
-    if 시작함:
-        배지 = "<span class='pill p-처리중'>채용 중</span>"
-        단추 = (
-            f"<button form='stopform' name='id' value='{html.escape(cid)}'"
-            " class='sec' style='padding:2px 8px;font-size:11.5px;margin-left:4px'"
-            ">내리기</button>" if 고칠수있나 else ""
-        )
-    else:
-        배지 = "<span class='pill p-대기중'>인재 Pool</span>"
-        단추 = (
-            f"<button form='startform' name='id' value='{html.escape(cid)}'"
-            " style='padding:2px 8px;font-size:11.5px;margin-left:4px'"
-            ">채용 시작</button>" if 고칠수있나 else ""
-        )
-    return 배지 + 단추
+    return ("<span class='pill p-처리중'>채용 중</span>" if 시작함
+            else "<span class='pill p-대기중'>인재 Pool</span>")
 
 
 def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "",
@@ -900,8 +894,6 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
         # 줄마다 있는 단추는 이 표 **밖의** 폼으로 보낸다. 폼 안에 폼을 넣으면
         # 브라우저가 안쪽을 버려서 엉뚱한 동작이 실행된다 (전에 그랬다).
         table = f"""
-        <form method='post' action='/candidates/start' id='startform'></form>
-        <form method='post' action='/candidates/stop' id='stopform'></form>
         <form method='post' action='/candidates/delete'>
           <input type='hidden' name='back' value='{html.escape("/" + 조건쿼리)}'>
           <p>{묶음단추}<button type='submit' class='danger'
@@ -1452,7 +1444,7 @@ _중간열 = {
     "현재_지도교수", "등록일시", "보관_만료일",
 }
 _짧은열 = {
-    "이름_추정여부", "검토_필요", "박사_석박통합", "등록년도", "현재_신분",
+    "검토_필요", "박사_석박통합", "등록년도", "현재_신분",
     "박사_학위상태", "생년월일",
 }
 
@@ -2143,7 +2135,42 @@ def _upload_page(me: User) -> bytes:
           보관 기간 {settings.retention_months}개월
           (0 = 무제한) · 설정은 <code>.env</code> 에서 바꿉니다.</p>
         </div>"""
-    return _page("지원자 추가", 본문 + _status_table(), me=me)
+    return _page("지원자 추가", 본문 + _status_table() + _STATUS_POLL_JS, me=me)
+
+
+#: 현황 표만 갈아 끼우는 폴링.
+#:
+#: <meta refresh> 로 페이지를 통째로 다시 그리면 분석이 도는 동안 파일을 고를 수
+#: 없다 — 고르는 순간 새로고침이 끼어들어 선택이 풀린다. 그래서 표 안쪽만 바꾼다.
+#: 처리 중일 때만 돌고, 다 끝나면 스스로 멈춘다 (빈 서버를 계속 두드리지 않는다).
+_STATUS_POLL_JS = """
+<script>
+(function(){
+  var 표 = document.getElementById('현황표');
+  var 알림 = document.getElementById('상태알림');
+  if(!표 || !알림 || !알림.dataset.busy) return;
+  var 타이머 = setInterval(function(){
+    fetch('/status/rows', {credentials: 'same-origin'})
+      .then(function(r){ return r.ok ? r.text() : null; })
+      .then(function(html){
+        if(html === null) return;
+        var 담을것 = document.createElement('div');
+        담을것.innerHTML = html;
+        var 새표 = 담을것.querySelector('#현황표');
+        var 새알림 = 담을것.querySelector('#상태알림');
+        if(새표) 표.innerHTML = 새표.innerHTML;
+        if(새알림){
+          알림.innerHTML = 새알림.innerHTML;
+          if(!새알림.dataset.busy){        /* 다 끝났다 — 그만 두드린다 */
+            알림.dataset.busy = '';
+            clearInterval(타이머);
+          }
+        }
+      })
+      .catch(function(){ /* 잠깐 끊긴 것뿐이다. 다음 차례에 다시 해본다 */ });
+  }, 3000);
+})();
+</script>"""
 
 
 def _candidate_page(지원자_ID: str, me: User, error: str = "",
@@ -2507,15 +2534,43 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
         f"{html.escape(m['오류'] or '')}</td></tr>"
         for m in 메일기록
     )
+    # 이 한 사람에게 바로 보내기. 예전에는 여기서 **이력만** 볼 수 있어서,
+    # 상세를 보다가 메일을 보내려면 인재 Pool 로 돌아가 그 사람을 다시 찾아
+    # 체크해야 했다. 보내기 화면은 여러 명을 받게 돼 있으니 한 명만 실어 보낸다.
+    보내기단추 = ""
+    if can(me, "메일_발송"):
+        막힘 = mailing.rejected(지원자_ID)
+        받는주소 = (row.get("이메일") or "").split(MULTI_SEP)[0].strip()
+        if 막힘:
+            보내기단추 = ("<p class='muted'>탈락 메일을 보낸 지원자라 "
+                      "더는 보낼 수 없습니다.</p>")
+        elif not 받는주소:
+            보내기단추 = ("<p class='muted'>이메일 주소가 없어 보낼 수 없습니다. "
+                      "아래 표에서 <b>이메일</b> 을 채우세요.</p>")
+        else:
+            뒤로 = f"/candidate?id={urllib.parse.quote(지원자_ID)}"
+            보내기단추 = (
+                f"<form method='post' action='/mail/compose'>"
+                f"<input type='hidden' name='ids' value='{html.escape(지원자_ID)}'>"
+                f"<input type='hidden' name='back' value='{html.escape(뒤로)}'>"
+                f"<button type='submit'>이 지원자에게 메일 보내기</button> "
+                f"<span class='muted'>{html.escape(받는주소)} 로 나갑니다. "
+                f"다음 화면에서 템플릿을 고르고 내용을 확인합니다.</span></form>"
+            )
+
     메일카드 = (
-        "<div class='card'><h2>보낸 메일</h2>"
+        "<div class='card'><h2>메일</h2>"
         + ("<div class='warn'>탈락 메일을 보낸 지원자입니다. "
            "이후 어떤 메일도 보낼 수 없습니다.</div>"
            if mailing.rejected(지원자_ID) else "")
-        + "<div class='scroll'><table data-name='보낸 메일'>"
-        "<tr><th>보낸 일시</th><th>템플릿</th><th>받는 주소</th><th>상태</th><th>메모</th></tr>"
-        + 메일행 + "</table></div></div>"
-    ) if 메일기록 else ""
+        + 보내기단추
+        + ("<div class='scroll'><table data-name='보낸 메일'>"
+           "<tr><th>보낸 일시</th><th>템플릿</th><th>받는 주소</th>"
+           "<th>상태</th><th>메모</th></tr>"
+           + 메일행 + "</table></div>"
+           if 메일기록 else "<p class='muted'>아직 보낸 메일이 없습니다.</p>")
+        + "</div>"
+    ) if (메일기록 or 보내기단추) else ""
 
     이력 = audit.for_target("지원자", 지원자_ID)
     이력행 = "".join(
@@ -3168,10 +3223,12 @@ def _mail_targets(ids: list[str], tpl, me: User):
         막힘 = mailing.blocked_reason(cid, tpl)
         if not 막힘 and not 받는사람:
             막힘 = "이메일 주소가 없습니다"
-        if not 막힘 and 빈칸:
-            막힘 = f"값이 빈 자리표시자: {', '.join(빈칸)}"
+        # 빈 자리표시자는 **막지 않는다.** 예전에는 하나라도 비면 못 보냈는데,
+        # 그러면 "빈칸을 채워서 보내 주세요" 라는 메일을 정작 빈칸이 있는
+        # 사람에게 못 보낸다. 그게 이 기능이 제일 필요한 자리다.
+        # 대신 눈에 띄게 알리고, 보내기 전 인원수 확인은 그대로 거친다.
         한줄 = {"cid": cid, "이름": 이름, "받는사람": 받는사람,
-              "제목": 제목, "본문": 본문, "막힘": 막힘}
+              "제목": 제목, "본문": 본문, "막힘": 막힘, "빈칸": 빈칸}
         (막힌사람 if 막힘 else 갈사람).append(한줄)
     return 갈사람, 막힌사람
 
@@ -3226,14 +3283,23 @@ def _mail_compose_page(ids: list[str], tid: int, me: User, 뒤로: str = "/",
 
     갈사람, 막힌사람 = _mail_targets(ids, tpl, me)
     미리 = lambda b: (html_to_text(b) if tpl.html else b)
+    def 빈칸칸(x: dict) -> str:
+        빈 = x.get("빈칸") or []
+        if not 빈:
+            return "<td class='muted'>-</td>"
+        글 = ", ".join(빈)
+        return (f"<td class='flag' title='{html.escape(글)}'>"
+                f"{len(빈)}개 <span class='muted'>{html.escape(글)}</span></td>")
+
     갈줄 = "".join(
         f"<tr><td>{html.escape(x['이름'])}</td><td>{html.escape(x['받는사람'])}</td>"
         f"<td title='{html.escape(x['제목'])}'>{html.escape(x['제목'])}</td>"
         f"<td class='muted' title='{html.escape(미리(x['본문'])[:400])}'>"
         f"{html.escape(미리(x['본문'])[:120])}"
-        f"{'…' if len(미리(x['본문'])) > 120 else ''}</td></tr>"
+        f"{'…' if len(미리(x['본문'])) > 120 else ''}</td>"
+        + 빈칸칸(x) + "</tr>"
         for x in 갈사람
-    ) or "<tr><td colspan='4' class='muted'>보낼 수 있는 사람이 없습니다.</td></tr>"
+    ) or "<tr><td colspan='5' class='muted'>보낼 수 있는 사람이 없습니다.</td></tr>"
     막힌줄 = "".join(
         f"<tr class='dup'><td>{html.escape(x['이름'])}</td>"
         f"<td class='flag' title='{html.escape(x['막힘'])}'>"
@@ -3275,10 +3341,25 @@ def _mail_compose_page(ids: list[str], tid: int, me: User, 뒤로: str = "/",
         if 빠진것 and not settings.mail_dry_run else ""
     )
 
+    # 빈 자리표시자는 막지 않는다 — 오히려 그런 사람에게 보내려고 쓰는 기능이다.
+    # 다만 실수로 흘려보내면 안 되니 보내기 칸 바로 위에서 크게 알린다.
+    빈사람 = [x for x in 갈사람 if x.get("빈칸")]
+    빈경고 = ""
+    if 빈사람:
+        모인빈칸 = dict.fromkeys(k for x in 빈사람 for k in x["빈칸"])
+        빈경고 = (
+            f"<div class='warn'><b>{len(빈사람)}명</b>은 값이 없는 자리표시자가 "
+            f"있어 그 자리가 <b>빈 채로</b> 나갑니다 "
+            f"({html.escape(', '.join(모인빈칸))}). "
+            "빈칸을 채워 달라고 요청하는 메일이면 이대로 보내면 되고, "
+            "그게 아니면 위 표의 <b>빈 항목</b> 칸을 확인하세요.</div>"
+        )
+
     보내기 = ""
     if can(me, "메일_발송") and 갈사람:
         보내기 = (
-            "<div class='card' style='border-color:#fca5a5'>"
+            빈경고
+            + "<div class='card' style='border-color:#fca5a5'>"
             "<h2>보내기 전 마지막 확인</h2>"
             "<p><b>이 작업은 되돌릴 수 없습니다.</b> 아래 표에 있는 "
             f"<b>{len(갈사람)}명</b>에게 지금 메일이 나갑니다.</p>"
@@ -3314,7 +3395,9 @@ def _mail_compose_page(ids: list[str], tid: int, me: User, 뒤로: str = "/",
         "</div>"
         + f"<div class='card'><h2>나갈 사람 {len(갈사람)}명</h2><div class='scroll'>"
         "<table data-name='나갈 사람'><tr><th>지원자</th><th>받는 주소</th>"
-        "<th>제목</th><th>본문 미리보기</th></tr>" + 갈줄 + "</table></div></div>"
+        "<th>제목</th><th>본문 미리보기</th>"
+        "<th title='값이 없어 빈 채로 나가는 자리표시자'>빈 항목</th></tr>"
+        + 갈줄 + "</table></div></div>"
         + (f"<div class='card'><h2>못 나가는 사람 {len(막힌사람)}명</h2>"
            "<div class='scroll'><table data-name='못 나가는 사람'>"
            "<tr><th>지원자</th><th>이유</th></tr>" + 막힌줄 + "</table></div></div>"
@@ -4933,6 +5016,11 @@ class Handler(BaseHTTPRequestHandler):
                 msg=(params.get("msg") or [""])[0],
                 안본것만=bool((params.get("todo") or [""])[0]),
             ))
+        if path == "/status/rows":
+            # 현황 표 조각만. 페이지를 통째로 다시 그리면 고르던 파일이 풀린다.
+            if not can(me, "지원자_등록"):
+                return self._deny()
+            return self._send(_status_table().encode("utf-8"))
         if path == "/favicon.ico":
             return self._send(b"", "image/x-icon", code=204)
         if path == "/export.xlsx":
@@ -5498,9 +5586,10 @@ class Handler(BaseHTTPRequestHandler):
                 받는사람 = (값.get("이메일") or "").split(MULTI_SEP)[0].strip()
                 제목, 빈1 = render(tpl.제목, 값)
                 본문, 빈2 = render(tpl.본문, 값)
-                if not 받는사람 or 빈1 or 빈2:
+                if not 받는사람:
                     건너뜀 += 1
                     continue
+                # 빈 자리표시자는 빈 채로 나간다 (화면에서 이미 알렸다).
                 # 본문 그림을 실제로 실을 모양으로 바꾼다. 이력에는 **참조가 든
                 # 본문**을 남긴다 — 나중에 다시 열어도 우리 DB 로 그림이 보인다.
                 보낼본문, 그림첨부 = mailing.prepare_body(본문, tpl.그림보내기)

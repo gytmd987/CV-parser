@@ -67,6 +67,7 @@ GET_정책 = {
     "/names": 거부,
     "/org": 거부,
     "/org/edit": 거부,
+    "/status/rows": 거부,            # 업로드 현황 조각 (지원자 추가 권한과 같다)
     "/upload": 거부,
     "/users": 거부,
 }

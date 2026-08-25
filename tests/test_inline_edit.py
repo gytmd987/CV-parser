@@ -594,12 +594,11 @@ def test_management_column_can_be_shown_in_the_candidate_table(web, cid):
 
 
 def test_builtin_column_can_be_renamed_and_hidden(web, cid):
-    web.post("/fields/columns", col=["영문_이름", "이름_추정여부"],
+    web.post("/fields/columns", col=["영문_이름", "생년월일"],
              label_1="English Name", order_1="", label_2="", order_2="", hide_2="on")
     page = web.get("/")
-    heads = page.split("<tr>")[1] if "<tr>" in page else page
     assert "English Name" in page
-    assert ">이름_추정여부<" not in page
+    assert ">생년월일<" not in page
 
 
 def test_builtin_column_order_changes_the_table(web, cid):
@@ -865,18 +864,22 @@ def test_bulk_start_from_the_pool(web):
 
 def test_pool_table_shows_the_recruit_state(web, cid):
     page = web.get("/")
-    assert "채용 시작" in page and "인재 Pool" in page
+    assert "인재 Pool" in page
     web.post("/candidates/start", id=cid)
     assert "채용 중" in web.get("/")
 
 
-def test_start_buttons_are_not_nested_forms(web, cid):
-    """폼 안에 폼을 넣으면 브라우저가 안쪽을 버려 엉뚱한 동작이 실행된다."""
+def test_the_recruit_column_has_no_per_row_buttons(web, cid):
+    """줄마다 단추를 두면 화면이 단추로 뒤덮이고 한 명씩만 처리하게 된다.
+
+    같은 일을 표 위 묶음 단추가 이미 한다 — 체크하고 한 번에.
+    """
     page = web.get("/")
     본문 = page.split("<main>", 1)[1]
-    시작폼 = 본문.index("id='startform'")
-    삭제폼 = 본문.index("action='/candidates/delete'")
-    assert 시작폼 < 삭제폼            # 줄 단추용 폼이 표 폼 **밖에** 먼저 온다
+    표 = 본문.split("<table", 1)[1].split("</table>", 1)[0]
+    assert "startform" not in 표 and "stopform" not in 표
+    assert "<button" not in 표          # 표 안에는 단추가 없다
+    assert "선택한 사람 채용 시작" in 본문   # 묶음 단추는 표 위에 그대로 있다
 
 
 def test_field_worker_cannot_start_someone_elses_candidate(web, 현업, cid):
@@ -1328,3 +1331,73 @@ def test_the_tab_badge_counts_unseen_names(web):
     for 남은 in reg.list_all():
         reg.confirm(남은.id, "admin")
     assert 딱지 not in web.get("/")
+
+
+# --- 업로드 · 메일 · 열 정리 ---------------------------------------------------
+def test_the_upload_page_never_reloads_itself(web):
+    """<meta refresh> 로 다시 그리면 고르던 파일이 풀린다.
+
+    분석이 도는 동안 CV 를 하나 더 올리려고 파일을 고르면, 5초마다 오는
+    새로고침이 <input type=file> 선택을 지워 버렸다. 표 안쪽만 갈아 끼운다.
+    """
+    web.module._set_status("도는중.pdf", "처리중")
+    page = web.get("/upload")
+    assert "http-equiv='refresh'" not in page
+    assert "http-equiv=\"refresh\"" not in page
+    assert "id='현황표'" in page and "/status/rows" in page
+    assert "type='file'" in page              # 올리는 칸은 그대로 있다
+
+
+def test_the_status_fragment_is_just_the_table(web):
+    web.module._set_status("조각.pdf", "처리중")
+    조각 = web.get("/status/rows")
+    assert "id='현황표'" in 조각 and "조각.pdf" in 조각
+    assert "<html" not in 조각                 # 페이지 전체가 아니다
+
+
+def test_uploading_is_not_blocked_while_something_is_being_analyzed(web):
+    """분석은 뒤에서 큐로 돈다. 올리는 길은 잠기지 않는다."""
+    web.module._set_status("먼저.pdf", "처리중")
+    before = web.module._jobs.qsize()
+    코드, _ = web.post_raw("/upload")          # 파일 없이 보내도 막히지 않는다
+    assert 코드 in (200, 303)
+    assert web.module._jobs.qsize() == before
+
+
+def test_empty_placeholders_no_longer_block_sending(web, cid):
+    """'빈칸을 채워 보내 주세요' 메일은 빈칸이 있는 사람에게 보내야 한다."""
+    rec = web.module.store.get(cid)
+    rec.이메일 = "a@b.com"
+    rec.한글_이름 = "홍길동"
+    web.module.store.save(rec)
+    tid = web.module.mailing.add_template(
+        "빈칸요청", "{{한글_이름}}님 정보 요청",
+        "박사 학교: {{박사_학교}}<br>전화: {{전화번호}}")
+
+    _, body = web.post("/mail/compose", ids=cid, template=str(tid))
+    assert "못 나가는 사람" not in body or "값이 빈 자리표시자" not in body
+    assert "빈 채로" in body                    # 경고는 뜬다
+    assert "메일 보내기" in body                 # 그래도 보낼 수 있다
+
+
+def test_the_pool_table_has_no_name_guess_column(web, cid):
+    """검토 사유에 같은 말이 이미 있다. 열까지 두면 자리만 차지한다."""
+    assert "이름_추정여부" not in web.module.표열()
+    assert "이름_추정여부" not in web.get("/")
+
+
+def test_detail_page_can_send_mail(web, cid):
+    """예전에는 여기서 이력만 볼 수 있어 인재 Pool 로 돌아가야 했다."""
+    rec = web.module.store.get(cid)
+    rec.이메일 = "a@b.com"
+    web.module.store.save(rec)
+    page = web.get(f"/candidate?id={urllib.parse.quote(cid)}")
+    assert "이 지원자에게 메일 보내기" in page
+    assert "action='/mail/compose'" in page
+    assert "a@b.com" in page
+
+
+def test_detail_page_says_why_it_cannot_send(web, cid):
+    """단추만 없어지면 왜 없는지 알 수가 없다."""
+    page = web.get(f"/candidate?id={urllib.parse.quote(cid)}")
+    assert "이메일 주소가 없어 보낼 수 없습니다" in page

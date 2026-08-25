@@ -192,11 +192,16 @@ def test_overseas_papers_only_in_column():
 
 
 def test_guessed_name_is_flagged():
-    """추정한 이름은 반드시 표시돼야 한다 (원문과 구분)."""
+    """추정한 이름은 반드시 표시돼야 한다 (원문과 구분).
+
+    표시하는 곳은 **검토 사유 하나뿐**이다. 예전에는 `이름_추정여부` 열도 따로
+    뒀는데, 같은 말을 두 군데서 하니 '한글추정' 을 확인함 처리해도 열은 그대로
+    남아 표에서 자리만 차지했다.
+    """
     rec = extract_cv_from_text("이력서", client=_sectioned_client())
-    assert rec.이름_추정여부 == "영문추정"
     assert rec.검토_필요 == "Y"
-    assert "추정" in rec.검토_사유
+    assert "영문추정" in rec.검토_사유
+    assert not hasattr(rec, "이름_추정여부")
 
 
 def test_one_section_failure_keeps_the_rest():

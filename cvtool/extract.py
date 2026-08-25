@@ -420,6 +420,9 @@ def _assemble(
     research = data.get("research", {})
     career = data.get("career", {})
 
+    # 추정한 이름은 **검토 사유로만** 남긴다. 예전에는 `이름_추정여부` 열도
+    # 따로 뒀는데, 검토 항목에 같은 말이 이미 있어서 표에서 자리만 차지했다.
+    # ('한글추정' 을 확인함 처리하면 사유는 사라지는데 열은 남아 있었다.)
     추정: list[str] = []
     if basic.get("한글_이름_출처") == "추정":
         추정.append("한글추정")
@@ -528,7 +531,6 @@ def _assemble(
         지원자_ID=지원자_ID,
         한글_이름=N.text(basic.get("한글_이름", "")),
         영문_이름=N.text(basic.get("영문_이름", "")),
-        이름_추정여부="/".join(추정),
         생년월일=생년월일,
         전화번호=N.phones(basic.get("전화번호", "")),
         이메일=N.emails(basic.get("이메일", "")),
