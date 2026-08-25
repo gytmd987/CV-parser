@@ -475,9 +475,17 @@ button.tiny{padding:1px 6px;font-size:12px;min-width:22px;line-height:1.3}
 .fxout{display:block;font-size:12px;margin-top:3px;min-height:16px;word-break:break-all;white-space:pre-line}
 /* 대시보드 표 모양 — 만드는 사람이 고른다 */
 table.dtbl th{background:var(--headbg,var(--bg))}
-table.dtbl.b-grid th,table.dtbl.b-grid td{border:1px solid var(--line)}
+/* 격자는 **진한 검정 실선**이다. 연한 선은 칸을 갈라 주지 못한다 —
+   격자를 켜는 이유가 칸 구분이니, 흐리면 켜는 의미가 없다. */
+table.dtbl.b-grid th,table.dtbl.b-grid td{border:1px solid #222}
 table.dtbl.b-none th,table.dtbl.b-none td{border:0}
 table.dtbl.b-none th{border-bottom:1px solid var(--line)}
+/* 내용에 맞춤 — 칸을 억지로 줄이지 않는다. 넘치면 **가로로 스크롤**한다.
+   (칸이 적으면 허전하지 않게 최소한 화면 폭은 채운다) */
+table.dtbl.fit{width:auto;min-width:100%}
+/* 한 칸이 통째로 화면을 잡아먹지 않게 상한만 둔다 (직접 정한 너비가 이긴다).
+   상한이 있어도 열이 많으면 합이 화면을 넘어 가로 스크롤이 걸린다. */
+table.dtbl.fit th,table.dtbl.fit td{max-width:420px}
 table.dtbl.zebra tr:nth-child(even) td{background:#fafbfc}
 /* 조건서식으로 칠한 칸은 얼룩말도 hover 도 덮지 않는다 — 일부러 칠한 것이다.
    (인라인 스타일이라 이 규칙들보다 우선하지만, 명시해 두어야 나중에 규칙을
@@ -5235,7 +5243,7 @@ def _블록그리기(b, rows, 축값, 아는열) -> str:
                 "<div style='border:1px solid var(--line);border-radius:8px;"
                 "padding:12px 14px;margin-bottom:10px'>"
                 f"<div style='font-weight:800;margin-bottom:6px'>{html.escape(머리)}</div>"
-                f"<table>{줄}</table></div>"
+                f"<table {_표모양(b)}>{줄}</table></div>"
             )
         몸 = "".join(카드) or "<p class='muted'>조건에 맞는 사람이 없습니다.</p>"
         return (f"<div class='card'><h2>{html.escape(b.제목)} "
@@ -5268,7 +5276,9 @@ def _표모양(b) -> str:
         cls.append("zebra")
     if b.촘촘히:
         cls.append("tight")
-    style = "" if b.표너비 == "창에 맞춤" else "width:auto"
+    if b.표너비 != "창에 맞춤":
+        cls.append("fit")
+    style = ""
     if b.머리배경:
         # 머리글 배경은 CSS 변수로 넘긴다 (인라인 스타일은 th 에 못 닿는다)
         style += f";--headbg:{b.머리배경}"
@@ -5523,9 +5533,12 @@ def _표모양편집(b) -> str:
         "<label class='rt-lbl'><input type='checkbox' name='headbgoff'"
         + ("" if b.머리배경 else " checked") + "> 기본색</label>"
         "</p>"
-        "<p class='muted'>칸 구분이 안 되면 <b>격자</b>를 켜세요. 줄이 많으면 "
-        "<b>줄무늬</b>가, 한 화면에 더 담고 싶으면 <b>촘촘히</b>가 도움이 됩니다. "
-        "열 너비를 하나라도 정했으면 <b>내용에 맞춤</b>이 그 폭을 그대로 지킵니다.</p>"
+        "<p class='muted'>칸 구분이 안 되면 <b>격자</b>를 켜세요 (진한 검정 실선). "
+        "줄이 많으면 <b>줄무늬</b>가, 한 화면에 더 담고 싶으면 <b>촘촘히</b>가 "
+        "도움이 됩니다.</p>"
+        "<p class='muted'><b>내용에 맞춤</b>은 칸을 억지로 줄이지 않고, 넘치면 "
+        "<b>가로로 스크롤</b>합니다 — 열이 많을 때 이쪽이 읽힙니다 (목록은 기본). "
+        "<b>창에 맞춤</b>은 화면 폭을 나눠 갖느라 글자가 잘립니다.</p>"
         "</details>"
     )
 
@@ -5685,6 +5698,7 @@ def _블록편집(b, 축값, 미리볼사람: str = "") -> str:
             "<div class='scroll'><table><tr><th style='width:90px'>라벨</th>"
             f"<th>문장 틀</th></tr>{줄}</table></div>"
             "<p class='muted'>빈 줄은 저장할 때 없어집니다. 맨 아래 빈 칸에 적으면 줄이 늘어납니다.</p>"
+            + _표모양편집(b)
         )
     else:  # 자유 표
         칸입력 = []
@@ -5706,6 +5720,7 @@ def _블록편집(b, 축값, 미리볼사람: str = "") -> str:
             "</select> <span class='muted'>행·열을 먼저 저장하면 아래 칸이 생깁니다.</span></p>"
             + (f"<div class='scroll'><table><tr>{머리칸}</tr>"
                + "".join(칸입력) + "</table></div>" if b.행이름 and b.열이름 else "")
+            + _표모양편집(b)
         )
     return f"<div class='card'>{앞머리}{머리}{가운데}{꼬리}</div>"
 

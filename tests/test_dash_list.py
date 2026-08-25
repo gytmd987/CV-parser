@@ -232,8 +232,20 @@ def test_old_two_column_rows_still_load():
 
 def test_the_table_shape_has_sensible_defaults():
     b = 블록(목록대상="채용", 목록열=[["이름", "=한글_이름"]])
-    assert b.테두리 == "가로줄" and b.표너비 == "창에 맞춤"
+    assert b.테두리 == "가로줄"
     assert not b.줄무늬 and not b.촘촘히 and not b.머리배경
+
+
+def test_a_list_defaults_to_its_natural_width_so_it_can_scroll():
+    """열을 만드는 사람이 정하니 열두 개도 된다. 화면 폭을 나눠 가지면 전부 잘린다."""
+    목록 = 블록(목록대상="채용", 목록열=[["이름", "=한글_이름"]])
+    assert 목록.표너비 == "내용에 맞춤"
+    목록.설정["표너비"] = "창에 맞춤"          # 고르면 그게 이긴다
+    assert 목록.표너비 == "창에 맞춤"
+
+    from cvtool.dashboards import Block
+    축표 = Block(id=1, dashboard_id=1, 순서=0, 종류="축표", 제목="x", 설정={})
+    assert 축표.표너비 == "창에 맞춤"          # 열이 몇 개 안 된다
 
 
 def test_the_table_shape_is_remembered():

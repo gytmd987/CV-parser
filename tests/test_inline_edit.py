@@ -1564,8 +1564,10 @@ def test_the_dashboard_table_can_be_styled(web, cid):
         "테두리": "격자", "줄무늬": True, "촘촘히": True,
     })
     보기 = web.get(f"/dash/view?id={did}")
-    assert "class='dtbl b-grid zebra tight'" in 보기
+    # 목록은 '내용에 맞춤' 이 기본이라 fit 이 함께 붙는다 (넘치면 가로 스크롤)
+    assert "class='dtbl b-grid zebra tight fit'" in 보기
     assert "style='width:90px'" in 보기
+    assert "table.dtbl.b-grid th,table.dtbl.b-grid td{border:1px solid #222}" in 보기
 
     편집 = web.get(f"/dash/edit?id={did}")
     assert "name='border'" in 편집 and "name='colwidth'" in 편집
@@ -1660,3 +1662,27 @@ def test_every_block_kind_has_the_draft_form(web):
     # 종류마다 다른 보기를 준다 — 빈 칸에 '무엇을 적으라는 거지' 가 없게
     for 보기 in ("부서별로 단계마다", "최종 합격한 사람 수", "한 장씩"):
         assert 보기 in page
+
+
+def test_a_wide_list_scrolls_sideways_instead_of_cutting(web, cid):
+    """열이 많으면 화면 폭을 나눠 갖느라 전부 잘렸다. 가로로 넘기게 둔다."""
+    did = web.module.boards.add("넓은표", "admin")
+    web.module.boards.add_block(did, "목록", 제목="표", 설정={
+        "목록대상": "지원자",
+        "목록열": [[f"열{i}", "=한글_이름", ""] for i in range(12)],
+    })
+    보기 = web.get(f"/dash/view?id={did}")
+    assert "fit'" in 보기.split("<table ", 1)[1][:80]
+    css = 보기.split("<style>", 1)[1].split("</style>", 1)[0]
+    assert "table.dtbl.fit{width:auto;min-width:100%}" in css
+    assert ".scroll{overflow:auto" in css            # 담는 칸이 스크롤한다
+
+
+def test_the_shape_editor_is_on_every_table_block(web):
+    """리스트에만 붙일 이유가 없었다."""
+    did = web.module.boards.add("모양전부", "admin")
+    for 종류 in ("목록", "축표", "표", "프로필"):
+        web.module.boards.add_block(did, 종류, 제목=종류)
+    page = web.get(f"/dash/edit?id={did}")
+    assert page.count("name='border'") == 4
+    assert page.count("name='tablewidth'") == 4
