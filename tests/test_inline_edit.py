@@ -879,7 +879,7 @@ def test_the_recruit_column_has_no_per_row_buttons(web, cid):
     표 = 본문.split("<table", 1)[1].split("</table>", 1)[0]
     assert "startform" not in 표 and "stopform" not in 표
     assert "<button" not in 표          # 표 안에는 단추가 없다
-    assert "선택한 사람 채용 시작" in 본문   # 묶음 단추는 표 위에 그대로 있다
+    assert "formaction='/candidates/start'" in 본문   # 묶음 단추는 표 위에 그대로 있다
 
 
 def test_field_worker_cannot_start_someone_elses_candidate(web, 현업, cid):

@@ -288,35 +288,81 @@ threading.Thread(target=_worker, daemon=True).start()
 # HTML
 # ---------------------------------------------------------------------------
 _CSS = """
-:root{--bg:#f6f7f9;--card:#fff;--line:#dfe3e8;--txt:#1b1f24;--muted:#666;--accent:#2563eb}
+/* 색·간격·모서리를 토큰으로 모은다. 예전에는 값이 파일 곳곳에 흩어져 있어서
+   한 군데만 고치면 나머지가 어긋났다. */
+:root{
+ --bg:#f7f8fa;--card:#fff;--line:#e6e8ec;--line2:#f0f1f4;
+ --txt:#16191d;--txt2:#42474e;--muted:#6b7280;
+ --accent:#2f6fed;--accent-w:#eaf1fe;--accent-d:#1d4fc4;
+ --r:10px;--r-s:7px;
+ --sh:0 1px 2px rgba(16,24,40,.04),0 1px 3px rgba(16,24,40,.06);
+ --sh-l:0 4px 6px -2px rgba(16,24,40,.04),0 12px 16px -4px rgba(16,24,40,.08);
+}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.55 "맑은 고딕",system-ui,sans-serif}
-header{background:#1b1f24;color:#fff;padding:12px 20px;display:flex;gap:18px;align-items:center}
-header a{color:#cbd5e1;text-decoration:none;font-weight:600}
-header .brand{color:#fff;font-weight:700;margin-right:6px;padding-right:14px;border-right:1px solid #3a4149}
-header a:hover{color:#fff}
-/* 지금 보고 있는 탭. 어두운 머리줄에 밝은 칸이라 한눈에 구분된다.
-   색만으로 알려주지 않고 배경·글자색·굵기가 함께 바뀐다. */
-header a.on{color:#1b1f24;background:#fff;border-radius:6px 6px 0 0;
- padding:8px 12px;margin:-8px -2px -12px;font-weight:800;
- box-shadow:inset 0 3px 0 var(--accent)}
-header a.on .pill{outline:1px solid #fecaca}
+/* 맑은 고딕은 화면에서 낡아 보인다. 요즘 OS 에 깔린 글꼴을 먼저 쓰고,
+   없으면 순서대로 내려간다 (폐쇄망이라 웹폰트는 못 받는다). */
+body{margin:0;background:var(--bg);color:var(--txt);
+ font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI",
+ Roboto,"Pretendard","Apple SD Gothic Neo","Noto Sans KR","맑은 고딕",sans-serif;
+ -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+header{background:var(--card);color:var(--txt);padding:0 20px;display:flex;gap:2px;
+ align-items:stretch;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:50}
+header a{color:var(--muted);text-decoration:none;font-weight:550;font-size:13.5px;
+ display:flex;align-items:center;padding:13px 12px;border-bottom:2px solid transparent;
+ white-space:nowrap}
+header .brand{color:var(--txt);font-weight:750;font-size:15px;letter-spacing:-.01em;
+ margin-right:10px;padding-right:16px;border-right:1px solid var(--line);
+ border-bottom:0;align-self:center;padding-top:0;padding-bottom:0}
+header a:hover{color:var(--txt)}
+/* 지금 보고 있는 탭. 색만으로 알려주지 않고 굵기와 아래 밑줄이 함께 바뀐다. */
+header a.on{color:var(--accent);font-weight:700;border-bottom-color:var(--accent)}
 header .sp{flex:1}
-main{padding:20px;max-width:1600px;margin:0 auto}
-.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:18px;margin-bottom:18px}
-h2{margin:0 0 12px;font-size:16px}
-button,.btn{background:var(--accent);color:#fff;border:0;border-radius:6px;padding:8px 14px;
- font-size:14px;cursor:pointer;text-decoration:none;display:inline-block}
-button:hover,.btn:hover{opacity:.9}
-.btn.sec{background:#4b5563}
-button.danger,.btn.danger{background:#b91c1c}
+/* 오른쪽 끝의 '누구로 들어와 있나'. 두 글자가 아래위로 어긋나 보이지 않게
+   같은 줄에 세우고, 역할은 작은 딱지로 붙인다. */
+header .who{display:flex;align-items:center;gap:6px;color:var(--muted);
+ font-size:12.5px;padding:0 4px}
+header .who b{font-weight:650;font-size:11px;color:var(--txt2);background:var(--bg);
+ border:1px solid var(--line);border-radius:99px;padding:1px 8px}
+header a[href='/logout']{font-weight:500}
+/* 링크. 브라우저 기본 파랑 밑줄은 화면을 낡아 보이게 한다. */
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+.card h2 a{color:inherit}
+main{padding:22px 20px 40px;max-width:1600px;margin:0 auto}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);
+ padding:18px 20px;margin-bottom:16px;box-shadow:var(--sh)}
+h2{margin:0 0 12px;font-size:15px;font-weight:700;letter-spacing:-.01em}
+button,.btn{background:var(--accent);color:#fff;border:1px solid var(--accent);
+ border-radius:var(--r-s);padding:7px 13px;font:inherit;font-size:13.5px;font-weight:550;
+ cursor:pointer;text-decoration:none;display:inline-block;line-height:1.4;
+ transition:background .12s,border-color .12s,box-shadow .12s}
+button:hover,.btn:hover{background:var(--accent-d);border-color:var(--accent-d)}
+button:active,.btn:active{transform:translateY(.5px)}
+/* 키보드로 옮겨 다닐 때 지금 어디인지 보여야 한다 (마우스 클릭에는 안 뜬다) */
+button:focus-visible,.btn:focus-visible,input:focus-visible,select:focus-visible,
+textarea:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+button:disabled{opacity:.5;cursor:not-allowed}
+.btn.sec,button.sec{background:var(--card);color:var(--txt2);border-color:var(--line)}
+.btn.sec:hover,button.sec:hover{background:var(--bg);border-color:#d0d4da;color:var(--txt)}
+button.danger,.btn.danger{background:#dc2626;border-color:#dc2626}
+button.danger:hover,.btn.danger:hover{background:#b91c1c;border-color:#b91c1c}
+/* 지우기처럼 **되돌릴 수 없는** 일은 눈에 띄되 손이 먼저 가면 안 된다.
+   평소엔 조용히 있다가 손이 닿으면 빨갛게 찬다. */
+button.ghost,.btn.ghost{background:var(--card);color:#c02626;border-color:#f3c9c9}
+button.ghost:hover,.btn.ghost:hover{background:#dc2626;color:#fff;border-color:#dc2626}
+/* 단추가 여럿 늘어서는 줄 */
+.bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 14px}
+.bar .muted{margin-left:2px}
 table{border-collapse:collapse;width:100%;font-size:12.5px}
-th,td{border:1px solid var(--line);padding:5px 7px;text-align:left;white-space:nowrap;
- max-width:260px;overflow:hidden;text-overflow:ellipsis}
+/* 칸마다 테두리를 두르면 격자무늬가 글자보다 눈에 띈다. 가로줄만 남긴다. */
+th,td{border:0;border-bottom:1px solid var(--line2);padding:7px 9px;text-align:left;
+ white-space:nowrap;max-width:260px;overflow:hidden;text-overflow:ellipsis}
+tbody tr:last-child td,table tr:last-child td{border-bottom:0}
 /* 머리글은 줄바꿈을 허용한다. 안 그러면 '저널_주저자_수' 같은 긴 이름 하나가
    값은 한 글자뿐인 열을 통째로 넓혀 버린다. keep-all 은 한국어 낱말을 안 쪼갠다. */
-th{background:#eef2f7;position:sticky;top:0;white-space:normal;word-break:keep-all;
- line-height:1.25;vertical-align:bottom;font-size:12px;padding:4px 6px}
+th{background:var(--bg);position:sticky;top:0;white-space:normal;word-break:keep-all;
+ line-height:1.3;vertical-align:bottom;font-size:11.5px;font-weight:650;color:var(--txt2);
+ padding:8px 9px;border-bottom:1px solid var(--line);z-index:1}
 /* 열 성격에 맞춘 너비. 다 같게 하면 어떤 건 남고 어떤 건 모자란다. */
 .w-xs{max-width:76px;min-width:52px}
 .w-sm{max-width:96px;min-width:64px}
@@ -329,16 +375,29 @@ th{background:#eef2f7;position:sticky;top:0;white-space:normal;word-break:keep-a
    보이는 것뿐이고, 복사·엑셀·검색은 원래 글을 쓴다. */
 .scroll table td{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .scroll table td.ctl{overflow:visible}
-tr:nth-child(even) td{background:#fafbfc}
-.scroll{overflow:auto;max-height:70vh;border:1px solid var(--line);border-radius:6px}
-.flag{color:#b91c1c;font-weight:700}
+/* 얼룩말 무늬 대신 **지금 보고 있는 줄**만 밝힌다. 눈이 가로로 따라가기 쉽고
+   화면도 조용해진다. (자를 대고 읽던 걸 마우스가 대신한다) */
+.scroll table tr:hover td{background:var(--accent-w)}
+.scroll{overflow:auto;max-height:70vh;border:1px solid var(--line);border-radius:var(--r-s);
+ background:var(--card)}
+.flag{color:#c02626;font-weight:650}
 .ok{color:#15803d}
 .muted{color:var(--muted);font-size:12.5px}
-.warn{background:#fef3c7;border:1px solid #fcd34d;padding:10px 14px;border-radius:6px;margin-bottom:14px}
-input[type=password],input[type=text],select{padding:7px 9px;border:1px solid var(--line);
- border-radius:6px;font-size:14px}
-.login{max-width:340px;margin:14vh auto}
-.pill{padding:2px 8px;border-radius:99px;font-size:11.5px;font-weight:700}
+.warn{background:#fffaeb;border:1px solid #fde68a;border-left:3px solid #f59e0b;
+ padding:11px 14px;border-radius:var(--r-s);margin-bottom:14px;color:#7c4a03}
+.done{background:#f0fdf4;border:1px solid #bbf7d0;border-left:3px solid #22c55e;
+ padding:11px 14px;border-radius:var(--r-s);margin-bottom:14px;color:#14532d}
+input[type=password],input[type=text],input[type=number],input[type=email],
+input[type=search],select,textarea{padding:7px 10px;border:1px solid var(--line);
+ border-radius:var(--r-s);font:inherit;font-size:13.5px;background:var(--card);
+ color:var(--txt);transition:border-color .12s,box-shadow .12s}
+input[type=text]:focus,input[type=password]:focus,input[type=number]:focus,
+select:focus,textarea:focus{border-color:var(--accent);
+ box-shadow:0 0 0 3px var(--accent-w);outline:none}
+input::placeholder{color:#aeb4bd}
+.login{max-width:360px;margin:14vh auto}
+.pill{padding:2px 9px;border-radius:99px;font-size:11px;font-weight:650;
+ display:inline-block;line-height:1.7}
 .p-미분류{background:#fee2e2;color:#b91c1c}
 .p-처리중{background:#dbeafe;color:#1d4ed8}
 .p-완료{background:#dcfce7;color:#15803d}
@@ -364,7 +423,7 @@ td.ctl,th.ctl{white-space:normal;max-width:none;overflow:visible}
 td.ctl select{max-width:180px}
 td.ctl input[type=text]{max-width:220px}
 .mergebar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#eff6ff;
- border:1px solid #bfdbfe;border-radius:6px;padding:10px 12px;margin:0 0 12px}
+ border:1px solid #bfdbfe;border-radius:var(--r-s);padding:10px 12px;margin:0 0 12px}
 .mergebar select{min-width:280px;max-width:100%}
 .mergebar b{color:#1d4ed8}
 tr.hide{display:none}
@@ -378,27 +437,27 @@ th[data-dir=desc]::after{content:' ↓';font-size:11px;color:var(--accent)}
 th.filtered{background:#dbeafe}
 th.filtered::after{content:' (추림)';font-size:10px;color:var(--accent)}
 #colmenu{position:absolute;z-index:100;background:#fff;border:1px solid var(--line);
- border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.14);padding:6px;min-width:230px;
+ border-radius:var(--r);box-shadow:var(--sh-l);padding:6px;min-width:230px;
  max-width:320px;font-size:13px}
 #colmenu .cm-head{font-weight:700;padding:4px 8px;color:var(--muted);
  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #colmenu button{display:block;width:100%;text-align:left;background:none;color:var(--txt);
- padding:6px 8px;border-radius:6px;font-size:13px}
+ padding:6px 8px;border-radius:var(--r-s);font-size:13px}
 #colmenu button:hover{background:#eff6ff}
 #colmenu .cm-btns{display:flex;gap:6px;padding:4px 0}
 #colmenu .cm-btns button{background:var(--accent);color:#fff;text-align:center}
-#colmenu .cm-btns button.sec{background:#4b5563}
+#colmenu .cm-btns button.sec{background:var(--txt2)}
 #colmenu .cm-sep{border-top:1px solid var(--line);margin:5px 0}
 #colmenu .cm-title{font-weight:700;padding:2px 8px}
 #colmenu .cm-q{width:100%;margin:4px 0;padding:5px 7px;font-size:13px}
-#colmenu .cm-list{max-height:200px;overflow:auto;border:1px solid var(--line);border-radius:6px}
+#colmenu .cm-list{max-height:200px;overflow:auto;border:1px solid var(--line);border-radius:var(--r-s)}
 #colmenu .cm-row{display:block;padding:3px 8px;cursor:pointer;white-space:nowrap;
  overflow:hidden;text-overflow:ellipsis}
 #colmenu .cm-row:hover{background:#eff6ff}
 #colmenu .cm-row.hide{display:none}
 #colmenu .cm-allrow{padding-left:8px}
 td.sel{background:#bfdbfe !important;outline:1px solid #2563eb;outline-offset:-1px}
-.rt{border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#fff}
+.rt{border:1px solid var(--line);border-radius:var(--r);overflow:hidden;background:#fff}
 .rt-bar{display:flex;flex-wrap:wrap;gap:2px;align-items:center;padding:6px;
  background:#f3f4f6;border-bottom:1px solid var(--line)}
 .rt-bar button{background:#fff;color:var(--txt);border:1px solid var(--line);
@@ -421,7 +480,7 @@ td.sel{background:#bfdbfe !important;outline:1px solid #2563eb;outline-offset:-1
 .rt-body table{width:auto}
 .rt-body img{max-width:100%}
 #rtdrop{position:absolute;z-index:120;background:#fff;border:1px solid var(--line);
- border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.16);padding:5px;font-size:13px;
+ border-radius:var(--r);box-shadow:var(--sh-l);padding:5px;font-size:13px;
  max-height:340px;overflow:auto;min-width:120px}
 #rtdrop > button{display:block;width:100%;text-align:left;background:none;border:0;
  color:var(--txt);padding:5px 9px;border-radius:5px;font-size:13px;cursor:pointer}
@@ -457,19 +516,17 @@ td.sel{background:#bfdbfe !important;outline:1px solid #2563eb;outline-offset:-1
  border-top:1px solid var(--line);margin-top:4px}
 #rtdrop .vm-group:first-child{border-top:0;margin-top:0}
 #rtdrop .vm-item{display:block;width:100%;text-align:left;background:none;
- color:var(--txt);padding:5px 8px;border-radius:6px;font-size:13px}
+ color:var(--txt);padding:5px 8px;border-radius:var(--r-s);font-size:13px}
 #rtdrop .vm-item:hover{background:#eff6ff}
 #rtdrop .hide{display:none}
-.mailbody{border:1px solid var(--line);border-radius:8px;padding:14px 16px;
+.mailbody{border:1px solid var(--line);border-radius:var(--r);padding:14px 16px;
  background:#fff;max-height:420px;overflow:auto;font:12pt/1.7 "맑은 고딕",sans-serif}
 .mailbody img{max-width:100%}
-pre.rubric{background:#f6f7f9;border:1px solid var(--line);border-radius:6px;padding:10px 12px;font-size:12px;white-space:pre-wrap;margin:8px 0 0;color:var(--muted)}
-#toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#1b1f24;
- color:#fff;padding:10px 16px;border-radius:8px;opacity:0;pointer-events:none;
- transition:opacity .15s;z-index:99}
-#toast.show{opacity:.95}
-.done{background:#dcfce7;border:1px solid #86efac;color:#14532d;padding:10px 14px;
- border-radius:6px;margin-bottom:14px}
+pre.rubric{background:var(--bg);border:1px solid var(--line);border-radius:var(--r-s);padding:10px 12px;font-size:12px;white-space:pre-wrap;margin:8px 0 0;color:var(--muted)}
+#toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#16191d;
+ color:#fff;padding:11px 18px;border-radius:var(--r);opacity:0;pointer-events:none;
+ transition:opacity .15s,transform .15s;z-index:99;box-shadow:var(--sh-l);font-size:13.5px}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(-2px)}
 """
 
 
@@ -532,7 +589,8 @@ def _page(title: str, body: str, nav: bool = True, me: User | None = None) -> by
         for 라벨, 주소, _소속 in _탭들(me, badge)
     ]
     누구 = (
-        f"<span class='muted' style='color:#94a3b8'>{html.escape(me.이름)} ({me.역할})</span> "
+        f"<span class='who'>{html.escape(me.이름)}"
+        f"<b>{html.escape(me.역할)}</b></span>"
         if me else ""
     )
     header = (
@@ -898,8 +956,10 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
         "<button formaction='/mail/compose'>선택한 사람에게 메일</button> "
         if can(me, "메일_발송") else ""
     )
+    # 파란 단추는 **한 줄에 하나**만 둔다. 셋이 나란히 파랗게 있으면 무엇이
+    # 주된 일인지 알 수 없고, 화면이 시끄럽다.
     묶음단추 = 메일단추 + (
-        "<button formaction='/candidates/start'>선택한 사람 채용 시작</button> "
+        "<button formaction='/candidates/start' class='sec'>채용 시작</button> "
         "<button formaction='/candidates/stop' class='sec'>채용 현황에서 내리기</button> "
         if 채용가능 else ""
     )
@@ -909,10 +969,10 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
         table = f"""
         <form method='post' action='/candidates/delete'>
           <input type='hidden' name='back' value='{html.escape("/" + 조건쿼리)}'>
-          <p>{묶음단추}<button type='submit' class='danger'
-               onclick="return confirm('선택한 지원자를 삭제합니다. 되돌릴 수 없습니다.')"
+          <p class='bar'>{묶음단추}<button type='submit' class='danger ghost'
+               onclick="return window.confirm('선택한 지원자를 삭제합니다. 되돌릴 수 없습니다.')"
                >선택 삭제</button>
-             <span class='muted'>체크한 사람에게 적용합니다. </span></p>
+             <span class='muted'>체크한 사람에게 적용합니다.</span></p>
           <div class='scroll'><table data-name='인재 Pool'
                 data-export='/export.xlsx{조건쿼리}'>
             <tr><th><input type='checkbox' onclick="selectVisible(this)"
@@ -2774,7 +2834,7 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
         "<form method='post' action='/candidate/delete' style='display:inline'"
         " onsubmit=\"return confirm('이 지원자를 삭제합니다. 되돌릴 수 없습니다.')\">"
         f"<input type='hidden' name='id' value='{html.escape(지원자_ID)}'>"
-        "<button type='submit' class='danger'>삭제</button></form> "
+        "<button type='submit' class='danger ghost'>지원자 삭제</button></form>"
         if can(me, "지원자_삭제") else ""
     )
     오류 = f"<div class='warn'>{html.escape(error)}</div>" if error else ""
@@ -2787,7 +2847,7 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
             " onsubmit=\"return confirm('첨부파일을 삭제합니다.')\">"
             f"<input type='hidden' name='id' value='{a['id']}'>"
             f"<input type='hidden' name='cid' value='{html.escape(지원자_ID)}'>"
-            "<button class='danger'>삭제</button></form>"
+            "<button class='danger ghost'>삭제</button></form>"
             if 수정가능 else ""
         )
         + "</li>"
@@ -2814,7 +2874,8 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
         <div class='card'>
           <h2>{html.escape(rec.한글_이름 or '(이름 미상)')}
               <span class='muted'>{html.escape(rec.지원자_ID)}</span></h2>
-          <p>{원본버튼}{재분석}{삭제}<a class='btn sec' href='/'>목록으로</a></p>
+          <p class='bar'><a class='btn sec' href='/'>← 목록으로</a>
+             {원본버튼}{재분석}<span style='flex:1'></span>{삭제}</p>
           {'<p class=muted>수정 권한이 없어 읽기 전용입니다.</p>' if not 수정가능 else ''}
         </div>
         {검토카드}
