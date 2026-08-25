@@ -431,11 +431,24 @@ td.sel{background:#bfdbfe !important;outline:1px solid #2563eb;outline-offset:-1
  border-radius:4px;padding:0;cursor:pointer}
 #rtdrop .rt-pick{display:flex;align-items:center;gap:6px;padding:6px 6px 2px;
  color:var(--muted);border-top:1px solid var(--line);margin-top:4px;cursor:pointer}
-#rtdrop .rt-grid{display:grid;grid-template-columns:repeat(6,18px);gap:3px;padding:5px}
-#rtdrop .rt-grid i{width:18px;height:16px;border:1px solid var(--line);border-radius:2px;
+#rtdrop .rt-grid{display:grid;grid-template-columns:repeat(10,14px);gap:3px;padding:5px}
+#rtdrop .rt-grid i{width:14px;height:13px;border:1px solid var(--line);border-radius:2px;
  background:#fff;cursor:pointer}
 #rtdrop .rt-grid i.on{background:#bfdbfe;border-color:var(--accent)}
 #rtdrop .rt-gridlabel{text-align:center;color:var(--muted);padding:2px 0 4px}
+#rtdrop .rt-gridmore{border-top:1px solid var(--line);padding:6px;color:var(--muted);
+ display:flex;align-items:center;gap:4px;white-space:nowrap}
+#rtdrop .rt-gridmore input{padding:3px 4px;font-size:12px}
+#rtdrop .rt-gridmore button{width:auto;display:inline-block;background:var(--accent);
+ color:#fff;border:0;border-radius:5px;padding:4px 9px;cursor:pointer}
+/* 표 도구 — 커서가 표 안에 있을 때만 뜬다 */
+.rt-tablebar{background:#eff6ff;border-bottom:1px solid #bfdbfe}
+.rt-tablebar[hidden]{display:none}
+.rt-bar .rt-lbl{display:inline-flex;align-items:center;gap:4px;font-size:12.5px;
+ color:var(--muted);padding:0 2px}
+.rt-bar .rt-lbl input[type=number],.rt-bar .rt-lbl select{padding:3px 5px;font-size:12.5px}
+/* 편집기 안에서만 보이는 표 눈금. 메일에는 안 나간다 (인라인 스타일이 아니다) */
+.rt-body table td:empty::after{content:'\00a0'}
 #rtdrop.varmenu{width:280px}
 #rtdrop .vm-head{padding:4px 8px;color:var(--muted)}
 #rtdrop .vm-q{width:100%;margin:4px 0;padding:6px 8px;font-size:13px}
@@ -1525,7 +1538,7 @@ def _표값맵() -> dict[str, dict[str, str]]:
 #:      -> 7 로 표시해 두고 곧바로 <span style="font-size:12pt"> 로 바꿔치기한다.
 #:      메일 클라이언트는 <style> 을 지우므로 **인라인 스타일**이 가장 안전하다.
 _MAIL_JS = r"""
-var RT = {editor: null, subject: null, last: null, range: null};
+var RT = {editor: null, subject: null, last: null, range: null, cell: null};
 
 function rtInit(){
   RT.editor = document.getElementById('rtbody');
@@ -1535,17 +1548,24 @@ function rtInit(){
   try { document.execCommand('styleWithCSS', false, true); } catch(e) {}
 
   ['keyup','mouseup','input'].forEach(function(ev){
-    RT.editor.addEventListener(ev, function(){ RT.last = RT.editor; rtSave(); });
+    RT.editor.addEventListener(ev, function(){
+      RT.last = RT.editor; rtSave(); rtSyncTableBar();
+    });
   });
   document.addEventListener('selectionchange', function(){
-    if(document.activeElement === RT.editor) rtSave();
+    if(document.activeElement !== RT.editor) return;
+    rtSave(); rtSyncTableBar();
   });
   if(RT.subject) RT.subject.addEventListener('focus', function(){ RT.last = RT.subject; });
 
   // 도구를 눌러도 커서를 잃지 않게 한다 (이게 편집이 들쭉날쭉하던 원인)
-  document.querySelector('.rt-bar').addEventListener('mousedown', function(e){
-    if(e.target.closest('input[type=color], input[type=file]')) return;
-    e.preventDefault();
+  // 표 도구도 같다 — 커서가 표 안에 있어야 어느 칸에 적용할지 알 수 있다.
+  document.querySelectorAll('.rt-bar').forEach(function(bar){
+    bar.addEventListener('mousedown', function(e){
+      if(e.target.closest('input[type=color], input[type=file],'
+                          + ' input[type=number], select')) return;
+      e.preventDefault();
+    });
   });
 
   RT.editor.addEventListener('paste', rtPaste);
@@ -1670,6 +1690,10 @@ function rtDrop(btn, html, onPick){
   });
   return m;
 }
+function closeRtDrop(){
+  var m = document.getElementById('rtdrop');
+  if(m) m.remove();
+}
 document.addEventListener('click', function(e){
   var m = document.getElementById('rtdrop');
   if(m && !m.contains(e.target) && !(e.target.closest && e.target.closest('.rt-drop')))
@@ -1708,14 +1732,23 @@ function rtColorMenu(btn, cmd){
     + "<input type='color' onchange=\"rtCmd('" + cmd + "', this.value)\"></label>";
   rtDrop(btn, html, function(v){ rtCmd(cmd, v); });
 }
+/* 격자에서 고르는 크기. 예전에는 6×6 이 끝이라 그보다 큰 표를 아예 못 만들었다.
+   격자를 넓히고, 그보다 더 크면 숫자로 직접 치게 한다. */
+var RT_GRID_R = 10, RT_GRID_C = 10;
+
 function rtTableMenu(btn){
-  var html = "<div class='rt-grid'>";
-  for(var r = 1; r <= 6; r++){
-    for(var c = 1; c <= 6; c++){
+  var html = "<div class='rt-grid' style='grid-template-columns:repeat("
+    + RT_GRID_C + ",14px)'>";
+  for(var r = 1; r <= RT_GRID_R; r++){
+    for(var c = 1; c <= RT_GRID_C; c++){
       html += "<i data-v='" + r + "x" + c + "' data-r='" + r + "' data-c='" + c + "'></i>";
     }
   }
-  html += "</div><div class='rt-gridlabel'>표 크기를 고르세요</div>";
+  html += "</div><div class='rt-gridlabel'>표 크기를 고르세요</div>"
+    + "<div class='rt-gridmore'>더 크게: "
+    + "<input type='number' id='rt-mr' min='1' max='60' value='3' style='width:46px'>행 × "
+    + "<input type='number' id='rt-mc' min='1' max='30' value='3' style='width:46px'>열 "
+    + "<button type='button' id='rt-mgo'>넣기</button></div>";
   var m = rtDrop(btn, html, function(v){
     var 조각 = v.split('x');
     rtTable(parseInt(조각[0], 10), parseInt(조각[1], 10));
@@ -1731,19 +1764,166 @@ function rtTableMenu(btn){
       cell.classList.toggle('on', +cell.dataset.r <= R && +cell.dataset.c <= C);
     });
   });
+  /* 숫자 칸은 격자와 달리 클릭이 메뉴를 닫으면 안 된다 */
+  m.addEventListener('mousedown', function(e){
+    if(e.target.closest('.rt-gridmore')) e.stopPropagation();
+  });
+  m.querySelector('#rt-mgo').addEventListener('click', function(){
+    var R = parseInt(m.querySelector('#rt-mr').value, 10);
+    var C = parseInt(m.querySelector('#rt-mc').value, 10);
+    if(R > 0 && C > 0) rtTable(R, C);
+    closeRtDrop();
+  });
 }
+
+/* 메일에서 표가 깨지는 걸 막으려면 인라인 스타일이어야 한다 (<style> 은 지워진다). */
+var RT_CELL = 'border:1px solid #999;padding:6px;vertical-align:top';
+
 function rtTable(행, 열){
   if(!행 || !열) return;
-  var s = "<table style='border-collapse:collapse;width:100%;font-size:11pt'>";
+  var s = "<table class='rt-tbl' style='border-collapse:collapse;width:100%;"
+    + "font-size:11pt' cellpadding='0' cellspacing='0'>";
   for(var r = 0; r < 행; r++){
     s += '<tr>';
-    for(var c = 0; c < 열; c++){
-      s += "<td style='border:1px solid #999;padding:6px'>&nbsp;</td>";
-    }
+    for(var c = 0; c < 열; c++){ s += "<td style='" + RT_CELL + "'>&nbsp;</td>"; }
     s += '</tr>';
   }
   s += '</table><p><br></p>';
   rtInsert(s);
+}
+
+/* ---- 넣은 뒤에 고치기 -------------------------------------------------------
+   예전에는 표를 넣고 나면 손댈 방법이 없어서, 열 하나를 더 넣으려고 표를 지우고
+   처음부터 다시 만들어야 했다. 커서가 든 표를 찾아서 그 자리에서 고친다. */
+/* 커서가 지금 든 칸. 없으면 null. */
+function rtCellNow(){
+  var sel = window.getSelection();
+  if(!sel || !sel.rangeCount || !RT.editor) return null;
+  var n = sel.getRangeAt(0).startContainer;
+  if(n.nodeType !== 1) n = n.parentNode;
+  var td = n && n.closest ? n.closest('td,th') : null;
+  return (td && RT.editor.contains(td)) ? td : null;
+}
+/* 도구가 손댈 칸.
+   너비 칸이나 테두리 목록을 **누르는 순간 편집기 커서를 잃는다** (포커스가
+   그 칸으로 옮겨간다). 그래서 마지막으로 커서가 있던 칸을 기억해 두고 쓴다.
+   기억한 칸이 지워졌으면(행·열 삭제) 버린다. */
+function rtCellAt(){
+  var 지금 = rtCellNow();
+  if(지금){ RT.cell = 지금; return 지금; }
+  var 기억 = RT.cell;
+  if(기억 && RT.editor && RT.editor.contains(기억)) return 기억;
+  RT.cell = null;
+  return null;
+}
+function rtTableAt(){
+  var td = rtCellAt();
+  return td ? td.closest('table') : null;
+}
+function rtColIndex(td){
+  return Array.prototype.indexOf.call(td.parentNode.children, td);
+}
+function rtRows(t){ return Array.prototype.slice.call(t.rows); }
+
+function rtRow(어디){                      /* -1 위, +1 아래 */
+  var td = rtCellAt(); if(!td) return;
+  var tr = td.parentNode, 새 = tr.cloneNode(true);
+  Array.prototype.forEach.call(새.cells, function(c){ c.innerHTML = '&nbsp;'; });
+  tr.parentNode.insertBefore(새, 어디 < 0 ? tr : tr.nextSibling);
+  rtTouched();
+}
+function rtRowDel(){
+  var td = rtCellAt(); if(!td) return;
+  var t = td.closest('table');
+  if(t.rows.length <= 1){ rtTableDel(); return; }   /* 마지막 줄이면 표째 */
+  td.parentNode.parentNode.removeChild(td.parentNode);
+  rtTouched();
+}
+function rtCol(어디){                      /* -1 왼쪽, +1 오른쪽 */
+  var td = rtCellAt(); if(!td) return;
+  var i = rtColIndex(td), t = td.closest('table');
+  rtRows(t).forEach(function(tr){
+    var 기준 = tr.cells[i];
+    var 새 = document.createElement(기준 && 기준.tagName === 'TH' ? 'th' : 'td');
+    새.setAttribute('style', 기준 ? 기준.getAttribute('style') || RT_CELL : RT_CELL);
+    새.innerHTML = '&nbsp;';
+    if(어디 < 0) tr.insertBefore(새, 기준 || null);
+    else tr.insertBefore(새, 기준 ? 기준.nextSibling : null);
+  });
+  rtTouched();
+}
+function rtColDel(){
+  var td = rtCellAt(); if(!td) return;
+  var i = rtColIndex(td), t = td.closest('table');
+  if(t.rows[0] && t.rows[0].cells.length <= 1){ rtTableDel(); return; }
+  rtRows(t).forEach(function(tr){ if(tr.cells[i]) tr.deleteCell(i); });
+  rtTouched();
+}
+function rtColWidth(값){
+  var td = rtCellAt(); if(!td) return;
+  var i = rtColIndex(td), t = td.closest('table');
+  var w = parseInt(값, 10);
+  rtRows(t).forEach(function(tr){
+    var c = tr.cells[i]; if(!c) return;
+    /* 메일 클라이언트(특히 Outlook)는 width 속성을 스타일보다 잘 따른다 */
+    if(w > 0 && w <= 100){ c.style.width = w + '%'; c.setAttribute('width', w + '%'); }
+    else { c.style.width = ''; c.removeAttribute('width'); }
+  });
+  rtTouched();
+}
+function rtBorder(값){
+  var t = rtTableAt(); if(!t) return;
+  t.querySelectorAll('td,th').forEach(function(c){
+    c.style.border = (값 === 'none') ? 'none' : 값;
+  });
+  rtTouched();
+}
+function rtHeadRow(켬){
+  var t = rtTableAt(); if(!t || !t.rows.length) return;
+  Array.prototype.forEach.call(t.rows[0].cells, function(c){
+    c.style.fontWeight = 켬 ? 'bold' : '';
+    c.style.background = 켬 ? '#eef2f7' : '';
+  });
+  rtTouched();
+}
+function rtTableDel(){
+  var t = rtTableAt(); if(!t) return;
+  if(!window.confirm('이 표를 통째로 지웁니다.')) return;
+  t.parentNode.removeChild(t);
+  rtTouched();
+}
+function rtTouched(){
+  if(RT.editor) RT.editor.dispatchEvent(new Event('input', {bubbles: true}));
+  rtSyncTableBar();
+}
+/* 커서가 표 안에 있을 때만 표 도구를 보여 준다. 늘 떠 있으면 자리만 차지하고,
+   무엇에 적용되는지도 알 수 없다. */
+function rtSyncTableBar(){
+  var bar = document.getElementById('rttablebar');
+  if(!bar) return;
+  /* 편집기 안에 커서가 있을 때만 기억을 갱신한다. 도구 칸에 포커스가 가 있는
+     동안에는 기억한 칸을 그대로 두어야 표 도구가 사라지지 않는다. */
+  var 안에있나 = document.activeElement === RT.editor;
+  var td = 안에있나 ? rtCellNow() : null;
+  if(안에있나) RT.cell = td;
+  if(!td) td = (RT.cell && RT.editor.contains(RT.cell)) ? RT.cell : null;
+  bar.hidden = !td;
+  if(!td) return;
+  var t = td.closest('table');
+  var w = bar.querySelector('#rt-colw');
+  if(w && document.activeElement !== w){
+    var v = (td.style.width || td.getAttribute('width') || '').replace('%', '');
+    w.value = v || '';
+  }
+  var h = bar.querySelector('#rt-head');
+  if(h) h.checked = !!(t.rows[0] && t.rows[0].cells[0]
+                       && t.rows[0].cells[0].style.fontWeight === 'bold');
+  var b = bar.querySelector('#rt-border');
+  if(b){
+    var 현재 = td.style.border || '1px solid #999';
+    var 있나 = Array.prototype.some.call(b.options, function(o){ return o.value === 현재; });
+    if(있나) b.value = 현재;
+  }
 }
 function rtLink(){
   var url = prompt('링크 주소를 넣으세요', 'https://');
@@ -3007,6 +3187,46 @@ def _mail_template_page(tid: int, me: User, error: str = "", msg: str = "") -> b
                 f" title='{도움말}' onclick='{함수}(this)'{스타일}>"
                 f"<span>{라벨}</span><i>▾</i></button>")
 
+    # 표 편집 도구 — 커서가 표 안에 있을 때만 뜬다.
+    #
+    # 예전에는 표를 **넣기만** 하고 그 뒤로는 손댈 수가 없었다. 6×6 보다 크게
+    # 만들 수도, 열 너비를 잡을 수도, 테두리를 바꿀 수도 없어서 결국 표를 지우고
+    # 다시 넣는 수밖에 없었다.
+    _표도구 = (
+        "<span class='rt-lbl'>표</span>"
+        "<button type='button' onclick='rtRow(-1)' title='커서가 있는 줄 위에 넣기'"
+        ">행 ↑</button>"
+        "<button type='button' onclick='rtRow(1)' title='커서가 있는 줄 아래에 넣기'"
+        ">행 ↓</button>"
+        "<button type='button' onclick='rtRowDel()' class='sec' title='이 줄 지우기'"
+        ">행 −</button>"
+        "<span class='rt-sep'></span>"
+        "<button type='button' onclick='rtCol(-1)' title='커서가 있는 칸 왼쪽에 넣기'"
+        ">열 ←</button>"
+        "<button type='button' onclick='rtCol(1)' title='커서가 있는 칸 오른쪽에 넣기'"
+        ">열 →</button>"
+        "<button type='button' onclick='rtColDel()' class='sec' title='이 열 지우기'"
+        ">열 −</button>"
+        "<span class='rt-sep'></span>"
+        "<label class='rt-lbl' title='커서가 있는 열의 너비 (%). 비우면 자동'>너비"
+        "<input type='number' id='rt-colw' min='1' max='100' step='1'"
+        " style='width:56px' oninput='rtColWidth(this.value)'>%</label>"
+        "<span class='rt-sep'></span>"
+        "<label class='rt-lbl' title='표 전체의 테두리'>테두리"
+        "<select id='rt-border' onchange='rtBorder(this.value)'>"
+        "<option value='1px solid #999'>실선 (얇게)</option>"
+        "<option value='2px solid #333'>실선 (굵게)</option>"
+        "<option value='1px solid #d1d5db'>연한 회색</option>"
+        "<option value='none'>없음</option>"
+        "</select></label>"
+        "<label class='rt-lbl' title='첫 줄을 머리글처럼 (굵게 + 회색 배경)'>"
+        "<input type='checkbox' id='rt-head' onchange='rtHeadRow(this.checked)'>"
+        "머리글 줄</label>"
+        "<span style='flex:1'></span>"
+        "<button type='button' onclick='rtTableDel()' class='danger'"
+        " title='표를 통째로 지웁니다'>표 지우기</button>"
+    )
+
     도구 = (
         드롭("rt-font-btn", "맑은 고딕", "rtFontMenu", "글꼴", "104px")
         + 드롭("rt-size-btn", "12pt", "rtSizeMenu", "글씨 크기", "62px")
@@ -3080,6 +3300,7 @@ def _mail_template_page(tid: int, me: User, error: str = "", msg: str = "") -> b
         f" data-orig='{html.escape(tpl.제목)}' oninput='markDirty(this)'></label></p>"
         "<p>본문</p>"
         f"<div class='rt'><div class='rt-bar'>{도구}</div>"
+        f"<div class='rt-bar rt-tablebar' id='rttablebar' hidden>{_표도구}</div>"
         f"<div class='rt-body' id='rtbody' contenteditable='true'>{tpl.본문}</div></div>"
         f"<input type='hidden' name='body' id='bodyfield' data-orig=''>"
         + "<p class='muted'>자리표시자는 대부분 <b>표의 열 이름</b> 그대로입니다"

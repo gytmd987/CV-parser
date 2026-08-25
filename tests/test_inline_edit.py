@@ -1401,3 +1401,15 @@ def test_detail_page_says_why_it_cannot_send(web, cid):
     """단추만 없어지면 왜 없는지 알 수가 없다."""
     page = web.get(f"/candidate?id={urllib.parse.quote(cid)}")
     assert "이메일 주소가 없어 보낼 수 없습니다" in page
+
+
+def test_the_mail_editor_can_edit_a_table_after_inserting_it(web):
+    """표를 넣기만 하고 손댈 수 없으면, 열 하나 더 넣으려고 처음부터 다시 만들어야 한다."""
+    tid = web.module.mailing.add_template("표편집", "제목", "<p>본문</p>")
+    page = web.get(f"/mail/template?id={tid}")
+    assert "id='rttablebar'" in page                 # 표 도구 자리가 있고
+    for 기능 in ("rtRow(", "rtCol(", "rtColWidth(", "rtBorder(",
+                "rtHeadRow(", "rtTableDel("):
+        assert 기능 in page, 기능
+    assert "RT_GRID_R = 10" in page                  # 6×6 이 아니다
+    assert "id='rt-mr'" in page                      # 더 크면 숫자로 직접
