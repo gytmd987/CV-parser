@@ -461,8 +461,16 @@ th.filtered::after{content:' (추림)';font-size:10px;color:var(--accent)}
 #colmenu .cm-row.hide{display:none}
 #colmenu .cm-allrow{padding-left:8px}
 td.sel{background:#bfdbfe !important;outline:1px solid #2563eb;outline-offset:-1px}
+/* 열 순서 끌기 */
+#colorder tr[data-col]{cursor:default}
+#colorder td.grip{white-space:nowrap;cursor:grab;user-select:none}
+#colorder td.grip .griph{color:#b6bcc5;font-size:15px;letter-spacing:-2px}
+#colorder tr.dragging{opacity:.45}
+#colorder tr.dropmark td{box-shadow:inset 0 2px 0 var(--accent)}
+button.tiny{padding:1px 6px;font-size:12px;min-width:22px;line-height:1.3}
+#colform button.dirty{background:#b45309;border-color:#b45309}
 /* 수식 미리보기 — 친 대로 바로 아래에 결과가 뜬다 */
-.fxout{font-size:12px;margin-top:3px;min-height:16px;word-break:break-all}
+.fxout{display:block;font-size:12px;margin-top:3px;min-height:16px;word-break:break-all}
 .fxout.fxok{color:#15803d}
 input.fx{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px}
 .rt{border:1px solid var(--line);border-radius:var(--r);overflow:hidden;background:#fff}
@@ -4579,6 +4587,81 @@ def _선택지편집(col: str, 지금: list[str], action: str, 고정: tuple[str
     )
 
 
+#: 열 순서를 **끌어서** 정한다.
+#:
+#: 예전에는 칸에 숫자를 쳐서 자리를 매겼다. 열이 쉰 개가 넘으면 사람이 할 일이
+#: 아니다 — 하나를 앞으로 보내려고 나머지 번호를 전부 다시 세야 했다.
+#: 이제 순서는 **줄의 위치**가 정하고, 숨은 칸이 그 위치를 그대로 받아 적는다.
+_COLORDER_JS = """
+<script>
+(function(){
+  var 표 = document.getElementById('colorder');
+  if(!표) return;
+  var 끄는줄 = null;
+
+  function 번호다시(){
+    /* 화면에 보이는 차례가 곧 순서다. 사람이 세지 않는다. */
+    var n = 0;
+    표.querySelectorAll('tr[data-col]').forEach(function(tr){
+      var f = tr.querySelector('.ordfield');
+      if(f){ f.value = String(++n); }
+    });
+    var 저장 = document.querySelector('#colform button[type=submit]');
+    if(저장) 저장.classList.add('dirty');
+  }
+
+  window.colMove = function(btn, 어디){
+    var tr = btn.closest('tr');
+    var 형제 = 어디 < 0 ? tr.previousElementSibling : tr.nextElementSibling;
+    /* '숨긴 열' 머리줄은 건너뛴다 — 그 위/아래로 넘어가면 숨김도 같이 바뀐다 */
+    while(형제 && !형제.dataset.col){
+      형제 = 어디 < 0 ? 형제.previousElementSibling : 형제.nextElementSibling;
+    }
+    if(!형제) return;
+    if(어디 < 0) tr.parentNode.insertBefore(tr, 형제);
+    else tr.parentNode.insertBefore(형제, tr);
+    번호다시();
+    tr.scrollIntoView({block: 'nearest'});
+  };
+
+  표.addEventListener('dragstart', function(e){
+    var tr = e.target.closest('tr[data-col]');
+    if(!tr) return;
+    끄는줄 = tr;
+    tr.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    /* 파이어폭스는 데이터를 넣어야 끌기가 시작된다 */
+    try { e.dataTransfer.setData('text/plain', tr.dataset.col); } catch(_){}
+  });
+  표.addEventListener('dragend', function(){
+    if(끄는줄) 끄는줄.classList.remove('dragging');
+    끄는줄 = null;
+    표.querySelectorAll('.dropmark').forEach(function(x){
+      x.classList.remove('dropmark');
+    });
+  });
+  표.addEventListener('dragover', function(e){
+    if(!끄는줄) return;
+    e.preventDefault();
+    var tr = e.target.closest && e.target.closest('tr[data-col]');
+    if(!tr || tr === 끄는줄) return;
+    표.querySelectorAll('.dropmark').forEach(function(x){
+      x.classList.remove('dropmark');
+    });
+    tr.classList.add('dropmark');
+    var r = tr.getBoundingClientRect();
+    var 위쪽 = (e.clientY - r.top) < r.height / 2;
+    tr.parentNode.insertBefore(끄는줄, 위쪽 ? tr : tr.nextSibling);
+  });
+  표.addEventListener('drop', function(e){
+    if(!끄는줄) return;
+    e.preventDefault();
+    번호다시();
+  });
+})();
+</script>"""
+
+
 def _fields_page(me: User, error: str = "", msg: str = "") -> bytes:
     """표에 나갈 열을 관리한다 — **이 시스템이 아는 모든 열을 한 자리에서.**
 
@@ -4637,15 +4720,24 @@ def _fields_page(me: User, error: str = "", msg: str = "") -> bytes:
     for 구분, _c, _a in 전체:
         묶음수[구분] = 묶음수.get(구분, 0) + 1
 
+    # **지금 표에 나오는 순서 그대로** 늘어놓는다.
+    #
+    # 예전에는 지원자 정보 / 관리 정보 / 채용 현황으로 묶어서 보여줬다. 그러면
+    # 화면에서 실제로 몇 번째에 있는 열인지 알 수가 없고, 순서를 바꾸려면 머릿속
+    # 으로 세 묶음을 합쳐 봐야 했다. 보이는 대로 늘어놓으면 그럴 일이 없다.
+    구분맵 = {col: (구분, 추가) for 구분, col, 추가 in 전체}
+    보이는순서 = [c for c in 표열() if c in 구분맵]
+    숨은것 = [c for _g, c, _a in 전체 if c not in set(보이는순서)]
+    차례 = [(구분맵[c][0], c, 구분맵[c][1]) for c in 보이는순서 + 숨은것]
+
     rows = []
-    직전구분 = ""
-    for i, (구분, col, 추가열) in enumerate(전체, start=1):
-        if 구분 != 직전구분:
-            직전구분 = 구분
+    첫숨김 = len(보이는순서)
+    for i, (구분, col, 추가열) in enumerate(차례, start=1):
+        if i == 첫숨김 + 1:
             rows.append(
-                f"<tr class='grouphead'><td colspan='7'><b>{html.escape(구분)}</b> "
-                f"<span class='muted'>{묶음수[구분]}개 — "
-                f"{html.escape(COLUMN_GROUP_NOTE[구분])}</span></td></tr>"
+                "<tr class='grouphead'><td colspan='7'><b>숨긴 열</b> "
+                f"<span class='muted'>{len(숨은것)}개 — 표에 안 나옵니다. "
+                "숨김을 풀면 여기 순서대로 뒤에 붙습니다.</span></td></tr>"
             )
         c = cfg.get(col, {})
         숨김중 = c.get("숨김") or 기본숨김(col, cfg)
@@ -4668,20 +4760,27 @@ def _fields_page(me: User, error: str = "", msg: str = "") -> bytes:
             if 추가열 else f"{html.escape(col)}{꼬리}"
         )
         rows.append(
-            f"<tr>"
+            f"<tr draggable='true' data-col='{html.escape(col)}'>"
+            # 끌어서 옮기는 손잡이 + 한 칸씩 옮기는 단추. 숫자를 쳐서 자리를
+            # 매기는 건 열이 쉰 개가 넘으면 사람이 할 일이 아니다.
+            "<td class='ctl grip' title='끌어서 옮기세요'>"
+            "<span class='griph'>⠿</span> "
+            "<button type='button' class='sec tiny' onclick='colMove(this,-1)'"
+            " title='위로'>↑</button>"
+            "<button type='button' class='sec tiny' onclick='colMove(this,1)'"
+            " title='아래로'>↓</button></td>"
             f"<td>{이름칸}</td>"
             f"<td><span class='pill {'p-완료' if 추가열 else 'p-대기중'}'>"
             f"{'추가한 열' if 추가열 else html.escape(구분)}</span></td>"
             f"<td style='white-space:normal'>{설명(구분, col, 추가열)}</td>"
-            f"<td class='ctl'><input type='hidden' form='colform' name='col'"
+            f"<td class='ctl'><input type='hidden' form='colform' name='col_{i}'"
             f" value='{html.escape(col)}'>"
             f"<input type='text' form='colform' name='label_{i}'"
             f" value='{html.escape(c.get('표시이름') or '')}'"
             f" placeholder='{html.escape(col)}' style='width:150px'"
             f" data-orig='{html.escape(c.get('표시이름') or '')}' oninput='markDirty(this)'></td>"
-            f"<td class='ctl'><input type='number' form='colform' name='order_{i}'"
-            f" value='{c.get('순서') or ''}' placeholder='-' style='width:70px' min='0'"
-            f" data-orig='{c.get('순서') or ''}' oninput='markDirty(this)'></td>"
+            f"<input type='hidden' form='colform' name='order_{i}' value='{i}'"
+            " class='ordfield'>"
             f"<td><label><input type='checkbox' form='colform' name='hide_{i}'"
             f"{' checked' if 숨김중 else ''} onchange='markDirty(this)'"
             f" data-orig=''> 숨김</label></td>"
@@ -4717,12 +4816,15 @@ def _fields_page(me: User, error: str = "", msg: str = "") -> bytes:
         f"<span class='muted'>{html.escape(묶음요약)}</span></h2>"
         "<form method='post' action='/fields/columns' id='colform' class='mergebar'>"
         "<button type='submit'>고친 내용 저장</button>"
-        "<span class='muted'>보이는 이름·순서·숨김을 고치고 <b>한 번만</b> 누르세요. "
-        "순서는 작은 번호가 앞이고, 비우면 원래 자리입니다.</span></form>"
-        "<div class='scroll'><table data-name='표 항목'>"
-        "<tr><th>열 이름</th><th>구분</th><th>입력 형식</th><th class='ctl'>표에 보일 이름</th>"
-        "<th class='ctl'>순서</th><th>숨김</th><th></th></tr>"
+        "<span class='muted'><b>표에 나오는 순서 그대로</b> 늘어놨습니다. "
+        "줄을 <b>끌어서</b> 옮기거나 <b>↑ ↓</b> 를 누르고, 이름·숨김을 고친 뒤 "
+        "<b>한 번만</b> 누르세요.</span></form>"
+        "<div class='scroll'><table data-name='표 항목' id='colorder'>"
+        "<tr><th class='ctl' style='width:86px'>순서</th>"
+        "<th>열 이름</th><th>구분</th><th>입력 형식</th>"
+        "<th class='ctl'>표에 보일 이름</th><th>숨김</th><th></th></tr>"
         + "".join(rows) + "</table></div>"
+        + _COLORDER_JS +
         "<p class='muted'>여기서 정한 이름·순서·숨김은 <b>화면과 엑셀에 함께</b> 적용됩니다. "
         "고칠 수 있는 것과 없는 것의 경계는 하나입니다 — <b>형식 검사와 추출 스키마</b>. "
         "단계 상태 목록과 추가한 열의 선택지·유형·이름은 고칠 수 있고, 지원자 정보 열의 "
@@ -5223,7 +5325,9 @@ def _블록편집(b, 축값, 미리볼사람: str = "") -> str:
     elif b.종류 == "숫자":
         가운데 = (
             f"<p><input type='text' name='formula' value='{html.escape(b.수식)}'"
-            " style='width:100%' placeholder='=COUNT(채용)'></p>"
+            " style='width:100%' class='fx' data-kind='agg'"
+            " oninput='fxPreview(this)' placeholder='=COUNT(채용)'>"
+            "<span class='fxout muted'></span></p>"
             f"<p>형식 <select name='format'>{옵션(CELL_FORMATS, b.설정.get('형식') or '그대로')}"
             "</select></p>"
         )
@@ -5240,7 +5344,10 @@ def _블록편집(b, 축값, 미리볼사람: str = "") -> str:
             " placeholder='열 (직접 입력일 때만)' style='width:48%'></p>"
             f"<p>칸 수식<br><input type='text' name='cellformula'"
             f" value='{html.escape(b.칸수식)}' style='width:100%'"
-            " placeholder='=COUNT(채용, 부서=\"{행}\", 최종상태~\"{열}*\")'></p>"
+            f" class='fx' data-kind='agg' data-bid='{b.id}'"
+            " oninput='fxPreview(this)'"
+            " placeholder='=COUNT(채용, 부서=\"{행}\", 최종상태~\"{열}*\")'>"
+            "<span class='fxout muted'></span></p>"
             "<p class='muted'><code>{행}</code> <code>{열}</code> 이 축 값으로 바뀝니다. "
             "칸을 하나하나 안 적어도 되고, 부서가 늘면 표가 알아서 늘어납니다.</p>"
         )
@@ -5253,7 +5360,7 @@ def _블록편집(b, 축값, 미리볼사람: str = "") -> str:
             f"<td><input type='text' name='colformula' value='{html.escape(식)}'"
             " style='width:100%' class='fx' oninput='fxPreview(this)'"
             f" data-cid='{html.escape(미리볼사람)}' placeholder='=한글_이름'>"
-            "<div class='fxout muted'></div></td>"
+            "<span class='fxout muted'></span></td>"
             "<td class='ctl'><button type='button' class='sec'"
             " onclick='rowMove(this,-1)' title='위로'>↑</button> "
             "<button type='button' class='sec' onclick='rowMove(this,1)'"
@@ -5313,13 +5420,15 @@ def _블록편집(b, 축값, 미리볼사람: str = "") -> str:
             f"<td><input type='text' name='line' value='{html.escape(틀)}'"
             " style='width:100%' class='fx' oninput='fxPreview(this)'"
             f" data-cid='{html.escape(미리볼사람)}'>"
-            "<div class='fxout muted'></div></td></tr>"
+            "<span class='fxout muted'></span></td></tr>"
             for 라벨, 틀 in (b.줄틀 + [("", "")])
         )
         가운데 = (
             f"<p>누구를 <input type='text' name='target'"
             f" value='{html.escape(b.대상조건)}' style='width:100%'"
-            " placeholder='=LIST(채용, 부서=\"차세대공정\")'></p>"
+            " class='fx' data-kind='agg' oninput='fxPreview(this)'"
+            " placeholder='=LIST(채용, 부서=\"차세대공정\")'>"
+            "<span class='fxout muted'></span></p>"
             "<p class='muted'>조건에 맞는 사람마다 아래 양식이 한 장씩 나옵니다.</p>"
             f"<p>머리 <input type='text' name='head' value='{html.escape(b.머리틀)}'"
             " style='width:100%' class='fx' oninput='fxPreview(this)'"
@@ -5428,13 +5537,16 @@ function fxPreview(el){
     var 틀 = el.value.trim();
     if(!틀){ out.textContent = ''; out.className = 'fxout muted'; return; }
     var q = '/dash/preview?id=' + encodeURIComponent(el.dataset.cid || '')
+          + '&kind=' + (el.dataset.kind || 'row')
+          + '&bid=' + (el.dataset.bid || '')
           + '&line=' + encodeURIComponent(틀);
     fetch(q, {credentials: 'same-origin'})
       .then(function(r){ return r.json(); })
       .then(function(res){
         if(res.error){ out.textContent = res.error; out.className = 'fxout flag'; }
         else {
-          out.textContent = res.text || '(빈 줄 — 이 줄은 안 나옵니다)';
+          out.textContent = res.text ? '→ ' + res.text
+                                     : '→ (빈 값 — 이 줄은 안 나옵니다)';
           out.className = 'fxout ' + (res.text ? 'fxok' : 'muted');
         }
       })
@@ -5785,6 +5897,35 @@ class Handler(BaseHTTPRequestHandler):
             params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             틀 = (params.get("line") or [""])[0]
             cid = (params.get("id") or [""])[0]
+            # 집계 문맥(=COUNT(...)) 과 행 문맥(=한글_이름) 은 계산기가 다르다.
+            # 화면이 어느 쪽인지 알려 준다 — 글만 보고 맞히려 들면 틀린다.
+            if (params.get("kind") or ["row"])[0] == "agg":
+                # 축표 칸 수식의 {행}{열} 은 그대로는 계산이 안 된다. 그 블록의
+                # **첫 축 값**을 넣어서 한 칸만 미리 계산해 본다.
+                if "{행}" in 틀 or "{열}" in 틀:
+                    try:
+                        b = boards.block(int((params.get("bid") or ["0"])[0]))
+                    except (TypeError, ValueError):
+                        b = None
+                    if b is None:
+                        return self._json(
+                            {"text": "", "error": "{행}{열} 은 축을 정해야 계산됩니다"})
+                    축값 = 대시보드_축()
+                    첫행 = (축값.get(b.행축) or b.행이름 or ["(행)"])[0]
+                    첫열 = (축값.get(b.열축) or b.열이름 or ["(열)"])[0]
+                    보임 = 틀.replace("{행}", 첫행).replace("{열}", 첫열)
+                    try:
+                        글, _값 = F.run(보임, 대시보드_행(), 대시보드_열())
+                    except F.FormulaError as exc:
+                        return self._json({"text": "", "error": str(exc)})
+                    return self._json(
+                        {"text": f"{글}   ({첫행} × {첫열} 칸)", "error": ""})
+                try:
+                    글, _값 = F.run(틀, 대시보드_행(), 대시보드_열())
+                except F.FormulaError as exc:
+                    return self._json({"text": "", "error": str(exc)})
+                return self._json({"text": 글, "error": ""})
+            # 여기부터는 행 문맥 — 한 사람의 값이 있어야 계산할 수 있다.
             if not cid or store.get(cid) is None:
                 return self._json({"text": "", "error": "미리볼 지원자가 없습니다"})
             값들 = _프로필값(cid)
@@ -6586,10 +6727,16 @@ class Handler(BaseHTTPRequestHandler):
             data = urllib.parse.parse_qs(
                 self._read_body().decode("utf-8", "replace"), keep_blank_values=True
             )
-            열들 = data.get("col") or []
+            # 줄을 끌어 옮기면 폼 칸이 오는 **차례가 바뀐다.** 차례로 짝을 맞추면
+            # 5번 줄의 순서 값이 1번 줄에 붙는다 (실제로 그랬다). 그래서 열 이름도
+            # 번호를 달아 보내고, 번호로만 짝을 맞춘다.
+            열들 = [(int(k.split("_")[1]), v[0])
+                  for k, v in data.items()
+                  if k.startswith("col_") and k.split("_")[1].isdigit() and v]
+            열들.sort()
             이전 = store.column_config()
             바뀐것: list[str] = []
-            for i, col in enumerate(열들, start=1):
+            for i, col in 열들:
                 # 추가한 열은 이름과 구분(어느 표에 속하는지)까지 고칠 수 있다.
                 # 기본 열은 이 칸을 아예 안 그리므로 여기 걸리지 않는다.
                 옛필드 = store.field(col)

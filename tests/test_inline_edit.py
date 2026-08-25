@@ -12,6 +12,7 @@ import html
 import importlib
 import json
 import os
+import re
 import threading
 import urllib.parse
 import urllib.request
@@ -581,7 +582,7 @@ def test_fields_page_lists_recruit_and_management_columns(web):
 
 def test_recruit_column_can_be_renamed(web, 채용cid):
     """표 항목 탭에서 바꾼 이름이 채용 현황 표 머리글에 나와야 한다."""
-    web.post("/fields/columns", col=["최종상태"], label_1="합격 여부", order_1="")
+    web.post("/fields/columns", col_1="최종상태", label_1="합격 여부", order_1="")
     page = web.get("/recruit")
     assert "합격 여부" in page
 
@@ -589,12 +590,12 @@ def test_recruit_column_can_be_renamed(web, 채용cid):
 def test_management_column_can_be_shown_in_the_candidate_table(web, cid):
     """관리 정보 열은 기본으로 접혀 있지만 숨김을 풀면 표에 나온다."""
     assert "원본_파일명" not in web.module.표열()
-    web.post("/fields/columns", col=["원본_파일명"], label_1="", order_1="")
+    web.post("/fields/columns", col_1="원본_파일명", label_1="", order_1="")
     assert "원본_파일명" in web.module.표열()
 
 
 def test_builtin_column_can_be_renamed_and_hidden(web, cid):
-    web.post("/fields/columns", col=["영문_이름", "생년월일"],
+    web.post("/fields/columns", col_1="영문_이름", col_2="생년월일",
              label_1="English Name", order_1="", label_2="", order_2="", hide_2="on")
     page = web.get("/")
     assert "English Name" in page
@@ -602,12 +603,12 @@ def test_builtin_column_can_be_renamed_and_hidden(web, cid):
 
 
 def test_builtin_column_order_changes_the_table(web, cid):
-    web.post("/fields/columns", col=["검토_필요"], label_1="", order_1="1")
+    web.post("/fields/columns", col_1="검토_필요", label_1="", order_1="1")
     assert web.module.표열()[0] == "검토_필요"
 
 
 def test_column_settings_are_recorded_in_history(web):
-    web.post("/fields/columns", col=["경력_요약"], label_1="경력", order_1="")
+    web.post("/fields/columns", col_1="경력_요약", label_1="경력", order_1="")
     이력 = web.module.audit.recent(50, 대상종류="표항목")
     assert any(e.항목 == "표에 보일 이름" and e.새값 == "경력" for e in 이력)
 
@@ -625,7 +626,7 @@ def test_field_worker_cannot_change_columns(web):
         pass                                   # 다른 테스트에서 이미 만들었을 수 있다
     other = web.__class__.new()
     other.post("/login", userid="hyunup", password="pw1234")
-    code, _ = other.post("/fields/columns", col=["한글_이름"], label_1="이름")
+    code, _ = other.post("/fields/columns", col_1="한글_이름", label_1="이름")
     assert code == 403
 
 
@@ -805,7 +806,7 @@ def test_recruit_scoped_custom_column_is_editable_there(web, 채용cid):
 def test_custom_field_can_be_renamed_without_losing_values(web, cid):
     web.post("/fields/add", name="옛이름", type="텍스트", scope="지원자 정보")
     web.post("/candidate/custom", id=cid, 항목="옛이름", 새값="지킬 값")
-    web.post("/fields/columns", col=["옛이름"], rename_1="새이름",
+    web.post("/fields/columns", col_1="옛이름", rename_1="새이름",
              scope_1="지원자 정보", label_1="", order_1="")
     assert web.module.store.field("옛이름") is None
     assert web.module.store.custom_values(cid).get("새이름") == "지킬 값"
@@ -1450,7 +1451,7 @@ def test_the_recruit_state_is_a_real_column_now(web, cid):
     assert "인재 Pool</span>" in page
     web.post("/candidates/start", id=cid)
     assert "채용 중</span>" in web.get("/")
-    web.post("/fields/columns", col=["채용"], label_1="진행", order_1="")
+    web.post("/fields/columns", col_1="채용", label_1="진행", order_1="")
     assert "진행" in web.get("/")
 
 
@@ -1476,3 +1477,68 @@ def test_the_scholar_link_opens_instead_of_editing(web, cid):
     page = web.get("/")
     assert "구글 스칼라 ↗" in page
     assert "scholar.google.com/scholar?q=Gil+Dong+Hong+KAIST" in page
+
+
+# --- 열 순서는 끌어서 정한다 -------------------------------------------------------
+def test_the_field_list_is_in_the_order_the_table_shows(web, cid):
+    """묶음별로 나눠 보여주면 화면에서 몇 번째 열인지 알 수가 없다."""
+    page = web.get("/fields")
+    본문 = page.split("id='colorder'", 1)[1]
+    나온차례 = re.findall(r"data-col='([^']+)'", 본문)
+    assert 나온차례[:len(web.module.표열())] == web.module.표열()
+    # 아는 열은 하나도 빠지지 않는다
+    assert len(나온차례) == len(web.module.열목록())
+
+
+def test_moving_a_row_moves_the_column(web, cid):
+    """순서 칸에 숫자를 치지 않고 줄을 옮긴다 — 열이 쉰 개면 그게 유일한 길이다."""
+    옛순서 = web.module.표열()
+    옮길것 = 옛순서[4]
+    # 화면이 하는 일과 같다: 줄 차례대로 1..N 을 매겨 보낸다
+    새차례 = [옮길것] + [c for c in 옛순서 if c != 옮길것]
+    필드 = {}
+    for i, col in enumerate(새차례, start=1):
+        필드[f"col_{i}"] = col
+        필드[f"order_{i}"] = str(i)
+        필드[f"label_{i}"] = ""
+    web.post("/fields/columns", **필드)
+    assert web.module.표열()[0] == 옮길것
+
+
+def test_the_order_field_is_not_typed_by_hand_anymore(web):
+    page = web.get("/fields")
+    assert "class='ordfield'" in page          # 숨은 칸이 자리를 받아 적는다
+    assert "colMove(this" in page              # ↑ ↓
+    assert "draggable='true'" in page          # 끌기
+    assert "<th class='ctl'>순서</th>" not in page   # 숫자를 치는 칸은 없다
+
+
+# --- 미리보기는 모든 블록에 -------------------------------------------------------
+def test_preview_works_for_aggregate_formulas_too(web, cid):
+    """숫자·축표 블록에는 미리보기가 아예 없었다 — 그래서 '안 보인다' 였다."""
+    did = web.module.boards.add("미리보기", "admin")
+    web.module.boards.add_block(did, "숫자", 제목="수")
+    page = web.get(f"/dash/edit?id={did}")
+    수식칸 = page.split("name='formula'", 1)[1][:200]
+    assert "class='fx'" in 수식칸 and "data-kind='agg'" in 수식칸
+
+    import json as _json
+    답 = _json.loads(web.get("/dash/preview?kind=agg&line=" + urllib.parse.quote("=COUNT(지원자)")))
+    전체 = len(web.module.store.list_all())      # 앞선 시험들이 만들어 둔 사람까지
+    assert 답["text"] == str(전체) and not 답["error"]
+
+
+def test_an_aggregate_preview_needs_no_candidate(web):
+    """집계는 사람 하나를 고르지 않아도 계산된다."""
+    import json as _json
+    답 = _json.loads(web.get("/dash/preview?kind=agg&id=&line=" + urllib.parse.quote("=COUNT(지원자)")))
+    assert not 답["error"]
+
+
+def test_the_preview_box_is_a_span_so_it_survives_inside_a_paragraph(web):
+    """<p> 안의 <div> 는 브라우저가 <p> 를 먼저 닫아 버려 형제가 아니게 된다."""
+    did = web.module.boards.add("칸모양", "admin")
+    web.module.boards.add_block(did, "숫자", 제목="수")
+    page = web.get(f"/dash/edit?id={did}")
+    assert "<span class='fxout muted'></span>" in page
+    assert "<div class='fxout muted'></div>" not in page
