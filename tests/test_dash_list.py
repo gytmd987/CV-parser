@@ -231,9 +231,12 @@ def test_old_two_column_rows_still_load():
 
 
 def test_the_table_shape_has_sensible_defaults():
+    """기본은 격자다. 열이 여럿이면 가로줄만으로는 칸이 안 갈린다."""
     b = 블록(목록대상="채용", 목록열=[["이름", "=한글_이름"]])
-    assert b.테두리 == "가로줄"
+    assert b.테두리 == "격자"
     assert not b.줄무늬 and not b.촘촘히 and not b.머리배경
+    b.설정["테두리"] = "가로줄"                 # 고르면 그게 이긴다
+    assert b.테두리 == "가로줄"
 
 
 def test_a_list_defaults_to_its_natural_width_so_it_can_scroll():

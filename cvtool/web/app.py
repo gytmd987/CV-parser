@@ -297,7 +297,7 @@ _CSS = """
 /* 색·간격·모서리를 토큰으로 모은다. 예전에는 값이 파일 곳곳에 흩어져 있어서
    한 군데만 고치면 나머지가 어긋났다. */
 :root{
- --bg:#f7f8fa;--card:#fff;--line:#e6e8ec;--line2:#f0f1f4;
+ --bg:#f7f8fa;--card:#fff;--line:#e6e8ec;--line2:#f0f1f4;--grid:#222;
  --txt:#16191d;--txt2:#42474e;--muted:#6b7280;
  --accent:#2f6fed;--accent-w:#eaf1fe;--accent-d:#1d4fc4;
  --r:10px;--r-s:7px;
@@ -360,15 +360,16 @@ button.ghost:hover,.btn.ghost:hover{background:#dc2626;color:#fff;border-color:#
 .bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 14px}
 .bar .muted{margin-left:2px}
 table{border-collapse:collapse;width:100%;font-size:12.5px}
-/* 칸마다 테두리를 두르면 격자무늬가 글자보다 눈에 띈다. 가로줄만 남긴다. */
-th,td{border:0;border-bottom:1px solid var(--line2);padding:7px 9px;text-align:left;
+/* 칸마다 테두리를 두른다. 가로줄만 있으면 열이 여럿일 때 **어디까지가 한 칸인지**
+   눈으로 자를 수가 없다 — 엑셀에서 표를 볼 때 격자를 켜는 이유와 같다.
+   선은 진한 실선이다. 연한 선은 칸을 갈라 주지 못한다. */
+th,td{border:1px solid var(--grid);padding:7px 9px;text-align:left;
  white-space:nowrap;max-width:260px;overflow:hidden;text-overflow:ellipsis}
-tbody tr:last-child td,table tr:last-child td{border-bottom:0}
 /* 머리글은 줄바꿈을 허용한다. 안 그러면 '저널_주저자_수' 같은 긴 이름 하나가
    값은 한 글자뿐인 열을 통째로 넓혀 버린다. keep-all 은 한국어 낱말을 안 쪼갠다. */
 th{background:var(--bg);position:sticky;top:0;white-space:normal;word-break:keep-all;
  line-height:1.3;vertical-align:bottom;font-size:11.5px;font-weight:650;color:var(--txt2);
- padding:8px 9px;border-bottom:1px solid var(--line);z-index:1}
+ padding:8px 9px;border-bottom:1px solid var(--grid);z-index:1}
 /* 열 성격에 맞춘 너비. 다 같게 하면 어떤 건 남고 어떤 건 모자란다. */
 .w-xs{max-width:76px;min-width:52px}
 .w-sm{max-width:96px;min-width:64px}
@@ -478,6 +479,8 @@ table.dtbl th{background:var(--headbg,var(--bg))}
 /* 격자는 **진한 검정 실선**이다. 연한 선은 칸을 갈라 주지 못한다 —
    격자를 켜는 이유가 칸 구분이니, 흐리면 켜는 의미가 없다. */
 table.dtbl.b-grid th,table.dtbl.b-grid td{border:1px solid #222}
+table.dtbl.b-row th,table.dtbl.b-row td{border:0;border-bottom:1px solid var(--line2)}
+table.dtbl.b-row th{border-bottom:1px solid var(--line)}
 table.dtbl.b-none th,table.dtbl.b-none td{border:0}
 table.dtbl.b-none th{border-bottom:1px solid var(--line)}
 /* 내용에 맞춤 — 칸을 억지로 줄이지 않는다. 넘치면 **가로로 스크롤**한다.
@@ -523,7 +526,8 @@ input.fx{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-s
    아무리 잡아도 260px 에서 멈춘다. 여기서는 푼다. */
 .rt-body table td,.rt-body table th,
 .mailbody table td,.mailbody table th{
- max-width:none;min-width:0;white-space:normal;overflow:visible;text-overflow:clip}
+ max-width:none;min-width:0;white-space:normal;overflow:visible;text-overflow:clip;
+ border:0}
 .rt-body table{width:auto}
 .rt-body img{max-width:100%}
 /* 열 경계에 마우스를 대면 끌 수 있다는 걸 알려 준다 */
