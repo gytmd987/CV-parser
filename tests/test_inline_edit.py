@@ -307,7 +307,7 @@ def test_save_tells_what_changed(web, names):
     nid = names["서울대학교"]
     code, body = web.post("/names/save", kind="소속", id=nid,
                           **{f"표시명_{nid}": "SNU"})
-    assert "class='done'" in body                    # 리다이렉트를 따라간 결과 화면
+    assert "class='toast ok'" in body                # 리다이렉트를 따라간 결과 화면
     assert "서울대학교" in body and "SNU" in body
     assert "1건 저장했습니다" in body
 

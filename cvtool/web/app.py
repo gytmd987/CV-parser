@@ -390,6 +390,26 @@ th{background:var(--bg);position:sticky;top:0;white-space:normal;word-break:keep
 .flag{color:#c02626;font-weight:650}
 .ok{color:#15803d}
 .muted{color:var(--muted);font-size:12.5px}
+/* 작업 결과 알림 — 화면 맨 위 띠가 아니라 오른쪽 위에 잠깐 떴다 사라진다.
+   띠로 붙이면 아래 내용이 통째로 밀려서, 방금 고친 자리가 눈에서 사라진다.
+   자리를 차지하지 않게 화면 위에 띄우고, 좁게 잡아 뒤를 가리지 않는다. */
+#알림상자{position:fixed;top:58px;right:18px;z-index:900;display:flex;
+ flex-direction:column;gap:8px;width:min(340px,42vw);pointer-events:none}
+main .toast{display:none}          /* 제자리로 옮기기 전에는 안 보인다 */
+#알림상자 .toast{display:block;pointer-events:auto;cursor:pointer;
+ background:var(--card);border:1px solid var(--line);border-radius:var(--r-s);
+ box-shadow:var(--sh-l);padding:11px 13px 11px 32px;font-size:13.5px;
+ line-height:1.45;color:var(--txt);position:relative;word-break:break-word;
+ opacity:0;transform:translateY(-6px);animation:토스트등장 .16s ease-out forwards}
+#알림상자 .toast::before{content:'';position:absolute;left:12px;top:15px;
+ width:9px;height:9px;border-radius:50%}
+#알림상자 .toast.ok::before{background:#22c55e}
+#알림상자 .toast.bad::before{background:#dc2626}
+#알림상자 .toast.bad{border-color:#f3c9c9}
+#알림상자 .toast.out{opacity:0;transform:translateY(-6px);
+ transition:opacity .35s,transform .35s}
+@keyframes 토스트등장{to{opacity:1;transform:none}}
+@media (max-width:700px){#알림상자{width:auto;left:12px;right:12px;top:52px}}
 .warn{background:#fffaeb;border:1px solid #fde68a;border-left:3px solid #f59e0b;
  padding:11px 14px;border-radius:var(--r-s);margin-bottom:14px;color:#7c4a03}
 .done{background:#f0fdf4;border:1px solid #bbf7d0;border-left:3px solid #22c55e;
@@ -626,6 +646,22 @@ def _지금탭(경로: str, 소속: tuple[str, ...]) -> bool:
     return False
 
 
+def _알림(msg: str = "", err: str = "") -> str:
+    """작업 결과 알림.
+
+    예전에는 화면 맨 위에 띠로 붙였다. 그러면 아래 내용이 통째로 밀려 내려가
+    **방금 고친 자리가 눈에서 사라진다.** 알림은 결과를 알려주는 것뿐이라
+    자리를 뺏을 이유가 없다. 오른쪽 위에 잠깐 띄우고 저절로 없앤다.
+
+    여기 쓰는 건 **한 번 하고 끝나는 일의 결과**뿐이다(저장했습니다 · 지웠습니다).
+    화면에 계속 붙어 있어야 하는 안내 — 연습 모드입니다, 검토가 필요한 CV 가
+    3건 있습니다 — 는 띠 그대로 둔다. 10초 뒤에 사라지면 안 되는 글이다.
+    """
+    조각 = [f"<div class='toast {종류}' role='status'>{html.escape(글)}</div>"
+          for 글, 종류 in ((msg, "ok"), (err, "bad")) if 글]
+    return "".join(조각)
+
+
 def _page(title: str, body: str, nav: bool = True, me: User | None = None,
           폭: str = "") -> bytes:
     # 탭 옆 숫자 = **아직 사람이 안 본 표기 수.** 등급을 안 매긴 것만 세면
@@ -750,6 +786,57 @@ def _status_table() -> str:
 #: 상세 화면과 같은 검사·같은 이력을 타므로 규칙이 갈라지지 않는다.
 #: 페이지를 새로 그리지 않아 넓은 표에서 스크롤 위치가 유지된다.
 _INLINE_JS = """
+/* ---- 알림 ------------------------------------------------------------------
+   화면 맨 위 띠 대신 오른쪽 위에 잠깐 띄운다. 닫기를 누를 필요가 없다 —
+   저절로 사라지고, 마우스를 올리고 있는 동안에는 안 사라진다(읽는 중이니까).
+   잘못됐다는 알림은 더 오래 둔다. 읽고 고쳐야 하는 글이라서. */
+function 알림상자(){
+  var 상자 = document.getElementById('알림상자');
+  if(!상자){
+    상자 = document.createElement('div');
+    상자.id = '알림상자';
+    document.body.appendChild(상자);
+  }
+  return 상자;
+}
+function 알림닫기(t){
+  if(t.__감) return;
+  t.__감 = 1;
+  t.classList.add('out');
+  setTimeout(function(){ if(t.parentNode) t.parentNode.removeChild(t); }, 400);
+}
+function 알림시작(t){
+  var 남은 = t.classList.contains('bad') ? 16000 : 10000;
+  var 켠때 = 0, 타이머 = null;
+  function 걸기(){ 켠때 = Date.now(); 타이머 = setTimeout(function(){ 알림닫기(t); }, 남은); }
+  t.addEventListener('mouseenter', function(){
+    clearTimeout(타이머);
+    남은 -= Date.now() - 켠때;
+  });
+  t.addEventListener('mouseleave', function(){
+    if(남은 < 1200) 남은 = 1200;      /* 스쳐 지나갔다고 바로 없어지면 안 된다 */
+    걸기();
+  });
+  t.addEventListener('click', function(){ 알림닫기(t); });
+  걸기();
+}
+/* 화면 안에서 바로 알릴 때 (칸 저장 실패 등). alert 은 눌러서 꺼야 해서 안 쓴다. */
+function 토스트(글, 나쁨){
+  var t = document.createElement('div');
+  t.className = 'toast ' + (나쁨 ? 'bad' : 'ok');
+  t.textContent = 글;
+  알림상자().appendChild(t);
+  알림시작(t);
+  return t;
+}
+document.addEventListener('DOMContentLoaded', function(){
+  var 것들 = document.querySelectorAll('main .toast');
+  for(var i = 0; i < 것들.length; i++){
+    알림상자().appendChild(것들[i]);
+    알림시작(것들[i]);
+  }
+});
+
 /* ---- 저장하면 보던 자리로 돌아온다 -----------------------------------------
    폼을 내면 페이지가 다시 그려지고 **맨 위로 튄다.** 상세 화면 아래쪽 칸을
    고치거나, 명칭 관리에서 백 줄짜리 표 중간을 고칠 때마다 다시 스크롤해서
@@ -823,11 +910,11 @@ function openCell(td){
          setTimeout(function(){ td.classList.remove('saved'); }, 1200);
        } else {
          td.textContent = before; td.title = d.error;
-         td.classList.add('err'); alert(d.error);
+         td.classList.add('err'); 토스트(d.error, 1);
          setTimeout(function(){ td.classList.remove('err'); }, 4000);
        }
      })
-     .catch(function(e){ td.textContent = before; alert('저장 실패: ' + e); });
+     .catch(function(e){ td.textContent = before; 토스트('저장 실패: ' + e, 1); });
   }
   el.addEventListener('keydown', function(e){
     if(e.key === 'Enter'){ e.preventDefault(); save(); }
@@ -1083,7 +1170,7 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
         f"<a href='/upload'>진행 상황 보기 →</a></div>" if 처리중 else ""
     )
 
-    알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
+    알림 = _알림(msg=msg)
     return _page(
         "인재 Pool",
         f"""{알림}{''.join(warns)}{처리중알림}
@@ -2238,8 +2325,8 @@ function rtImage(input){
   input.value = '';
   if(!f) return;
   if(f.size > 2 * 1024 * 1024){
-    alert('그림이 너무 큽니다 (' + Math.round(f.size / 1024) + 'KB).\n'
-      + '본문에 넣는 그림은 2MB 까지입니다. 큰 파일은 첨부로 붙이세요.');
+    토스트('그림이 너무 큽니다 (' + Math.round(f.size / 1024) + 'KB). '
+      + '본문에 넣는 그림은 2MB 까지입니다. 큰 파일은 첨부로 붙이세요.', 1);
     return;
   }
   var fd = new FormData();
@@ -2258,14 +2345,14 @@ function rtImage(input){
           자리.parentNode.replaceChild(img, 자리);
         }else{
           자리.parentNode.removeChild(자리);
-          alert(res.error || '그림을 올리지 못했습니다.');
+          토스트(res.error || '그림을 올리지 못했습니다.', 1);
         }
       }
     })
     .catch(function(e){
       var 자리 = document.getElementById('rtimgwait');
       if(자리 && 자리.parentNode) 자리.parentNode.removeChild(자리);
-      alert('그림을 올리지 못했습니다: ' + e);
+      토스트('그림을 올리지 못했습니다: ' + e, 1);
     });
 }
 
@@ -2442,9 +2529,9 @@ def _curate_page(me: User, error: str = "", msg: str = "") -> bytes:
         + "</table>"
     )
 
-    오류 = f"<div class='warn'>{html.escape(error or 읽기오류)}</div>" \
-        if (error or 읽기오류) else ""
-    알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
+    오류 = (_알림(err=error)
+          + (f"<div class='warn'>{html.escape(읽기오류)}</div>" if 읽기오류 else ""))
+    알림 = _알림(msg=msg)
     저장바 = (
         "<form method='post' action='/match/curate' id='curform' class='mergebar'>"
         "<button type='submit'>고른 것만 남겨 저장</button>"
@@ -2521,9 +2608,9 @@ def _projects_page(me: User, error: str = "", msg: str = "") -> bytes:
         for p in 목록
     ) or "<tr><td colspan='5' class='muted'>읽은 과제가 없습니다.</td></tr>"
 
-    오류 = f"<div class='warn'>{html.escape(error or 파일오류)}</div>" \
-        if (error or 파일오류) else ""
-    알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
+    오류 = (_알림(err=error)
+          + (f"<div class='warn'>{html.escape(파일오류)}</div>" if 파일오류 else ""))
+    알림 = _알림(msg=msg)
     실행 = (
         "<form method='post' action='/match/all' class='mergebar'"
         " onsubmit=\"return confirm('아직 안 맞춰본 지원자를 전부 맞춰 봅니다. "
@@ -3078,7 +3165,7 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
         "<button type='submit' class='danger ghost'>지원자 삭제</button></form>"
         if can(me, "지원자_삭제") else ""
     )
-    오류 = f"<div class='warn'>{html.escape(error)}</div>" if error else ""
+    오류 = _알림(err=error)
 
     첨부목록 = "".join(
         f"<li><a href='/attachment?id={a['id']}'>{html.escape(a['파일명'])}</a>"
@@ -3108,7 +3195,7 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
         "지원자를 삭제하면 함께 지워집니다.</p></div>"
     )
 
-    알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
+    알림 = _알림(msg=msg)
     return _page(
         f"지원자 {rec.한글_이름 or rec.지원자_ID}",
         f"""{알림}{오류}
@@ -3302,8 +3389,8 @@ def _names_page(종류: str, me: User | None = None,
         f"아직 안 본 것 {len(안본것)}</a>"
         if 전부 else ""
     )
-    알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
-    오류 = f"<div class='warn'>{html.escape(error)}</div>" if error else ""
+    알림 = _알림(msg=msg)
+    오류 = _알림(err=error)
     설명 = (
         "학교·회사가 CV 마다 다르게 적혀 있습니다(포항공대 / POSTECH / 포항공과대학교)."
         if 종류 == "소속"
@@ -3396,8 +3483,8 @@ def _mail_page(me: User, error: str = "", msg: str = "") -> bytes:
         for t in templates
     ) or "<tr><td colspan='7' class='muted'>아직 만든 템플릿이 없습니다.</td></tr>"
 
-    알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
-    오류 = f"<p class='flag'>{html.escape(error)}</p>" if error else ""
+    알림 = _알림(msg=msg)
+    오류 = _알림(err=error)
     return _page(
         "메일",
         알림 + 설정경고
@@ -3591,8 +3678,8 @@ def _mail_template_page(tid: int, me: User, error: str = "", msg: str = "") -> b
         for a in 첨부
     ) or "<tr><td colspan='4' class='muted'>붙인 파일이 없습니다.</td></tr>"
 
-    알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
-    오류 = f"<p class='flag'>{html.escape(error)}</p>" if error else ""
+    알림 = _알림(msg=msg)
+    오류 = _알림(err=error)
     변수JSON = json.dumps([[이름, 항목] for 이름, 항목 in 묶음], ensure_ascii=False)
     설명JSON = json.dumps(MAIL_VAR_NOTES, ensure_ascii=False)
     그림카드 = _mail_image_card(tpl)
@@ -3784,7 +3871,7 @@ def _mail_compose_page(ids: list[str], tid: int, me: User, 뒤로: str = "/",
     templates = mailing.templates()
     고른수 = len(dict.fromkeys(ids))
     돌아가기 = f"<a class='btn sec' href='{html.escape(뒤로)}'>돌아가기</a>"
-    오류 = f"<div class='warn'>{html.escape(error)}</div>" if error else ""
+    오류 = _알림(err=error)
 
     if not ids:
         return _page("메일 보내기", 오류 + "<div class='card'><h2>고른 사람이 없습니다</h2>"
@@ -4021,8 +4108,8 @@ def _mail_test_page(tid: int, me: User, error: str = "", msg: str = "",
     제목미리, _ = render(tpl.제목, 값)
     본문미리, 빈칸 = render(tpl.본문, 값)
 
-    알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
-    오류 = f"<div class='warn'>{html.escape(error)}</div>" if error else ""
+    알림 = _알림(msg=msg)
+    오류 = _알림(err=error)
     연습 = (
         "<div class='warn'><b>연습 모드 (MAIL_DRY_RUN=1)</b> — 실제로 나가지 "
         "않습니다.</div>" if settings.mail_dry_run else ""
@@ -4141,7 +4228,7 @@ def _users_page(me: User, error: str = "") -> bytes:
         f"<option value='{p['id']}'>{html.escape(p['부서명'])} / {html.escape(p['이름'])}</option>"
         for p in projects
     )
-    오류 = f"<p class='flag'>{html.escape(error)}</p>" if error else ""
+    오류 = _알림(err=error)
     안내 = (
         "관리자는 모든 역할을 만들 수 있습니다."
         if me.is_admin
@@ -4244,7 +4331,7 @@ def _org_page(me: User, error: str = "") -> bytes:
             "</div>"
         )
 
-    오류 = f"<p class='flag'>{html.escape(error)}</p>" if error else ""
+    오류 = _알림(err=error)
     본문 = (
         "<div class='card'><h2>부서 추가 "
         "<span class='muted'>과제는 부서에 속합니다</span></h2>" + 오류
@@ -4482,8 +4569,8 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
              " title='보이는 줄만 선택합니다'></th>" if 메일가능 else "")
     머리 = 체크머리 + "<th class='w-xs'></th>" + "".join(
         f"<th class='{열폭(c)}'>{머리글(이름표[c])}</th>" for c in 표열)
-    알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
-    오류 = f"<div class='warn'>{html.escape(error)}</div>" if error else ""
+    알림 = _알림(msg=msg)
+    오류 = _알림(err=error)
     안내 = (
         "배정된 과제의 지원자만 보입니다."
         if 보이는과제 is not None
@@ -4823,8 +4910,8 @@ def _fields_page(me: User, error: str = "", msg: str = "") -> bytes:
             ) + "</td></tr>"
         )
 
-    알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
-    오류 = f"<p class='flag'>{html.escape(error)}</p>" if error else ""
+    알림 = _알림(msg=msg)
+    오류 = _알림(err=error)
     묶음요약 = " · ".join(f"{k} {v}개" for k, v in 묶음수.items())
     return _page(
         "표 항목",
@@ -5131,8 +5218,8 @@ def _dash_list_page(me: User, error: str = "", msg: str = "") -> bytes:
         for d in 보드
     ) or "<tr><td colspan='5' class='muted'>아직 만든 대시보드가 없습니다.</td></tr>"
 
-    알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
-    오류 = f"<p class='flag'>{html.escape(error)}</p>" if error else ""
+    알림 = _알림(msg=msg)
+    오류 = _알림(err=error)
     return _page(
         "대시보드",
         알림
@@ -5752,8 +5839,8 @@ def _dash_edit_page(did: int, me: User, error: str = "", msg: str = "") -> bytes
     종류단추 = "".join(
         f"<button name='kind' value='{k}'>{k}</button> " for k in BLOCK_KINDS
     )
-    알림 = f"<div class='done'>{html.escape(msg)}</div>" if msg else ""
-    오류 = f"<div class='warn'>{html.escape(error)}</div>" if error else ""
+    알림 = _알림(msg=msg)
+    오류 = _알림(err=error)
 
     # 수식 미리보기에 쓸 사람. 실제 값이 보여야 형식을 고칠 수 있다.
     사람들 = store.list_all()[:50]
