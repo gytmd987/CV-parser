@@ -995,12 +995,14 @@ def test_compose_needs_a_selection(web):
 
 
 def test_compose_shows_who_will_get_it(web, cid, 템플릿):
+    """보낼 목록에 사람이 서고, 줄마다 작성창을 열 수 있어야 한다."""
     web.cell(id=cid, 항목="이메일", 새값="a@b.com", 이전값="")
     web.cell(id=cid, 항목="한글_이름", 새값="홍길동", 이전값="")
     코드, 본문 = web.post("/mail/compose", ids=[cid], template=str(템플릿.id))
-    assert "나갈 사람" in 본문
-    assert "홍길동" in 본문
-    assert "보내기 전 마지막 확인" in 본문
+    assert "보낼 목록" in 본문
+    assert "홍길동" in 본문 and "a@b.com" in 본문
+    assert "작성창 열기" in 본문
+    assert "한 번에 보내기" in 본문                  # 예전 방식은 옵션으로 남는다
 
 
 def test_sending_requires_typing_the_headcount(web, cid, 템플릿):
@@ -1025,7 +1027,7 @@ def test_already_sent_and_rejected_still_block(web, cid, 템플릿):
     web.module.mailing.record(cid, 템플릿, "a@b.com", "제목", "본문", "성공",
                               보낸이="admin")
     코드, 본문 = web.post("/mail/compose", ids=[cid], template=str(템플릿.id))
-    assert "못 나가는 사람" in 본문
+    assert "못 보내는 사람" in 본문
     # 그 상태로 보내려 해도 나갈 사람이 0명이라 숫자가 안 맞는다
     코드, 본문 = web.post("/mail/send", ids=[cid], template=str(템플릿.id),
                         confirm="1")
@@ -1376,9 +1378,13 @@ def test_empty_placeholders_no_longer_block_sending(web, cid):
         "박사 학교: {{박사_학교}}<br>전화: {{전화번호}}")
 
     _, body = web.post("/mail/compose", ids=cid, template=str(tid))
-    assert "못 나가는 사람" not in body or "값이 빈 자리표시자" not in body
-    assert "빈 채로" in body                    # 경고는 뜬다
-    assert "메일 보내기" in body                 # 그래도 보낼 수 있다
+    assert "못 보내는 사람" not in body         # 막지 않는다
+    assert "빈 항목" in body                    # 목록에서 눈에 띄게 알린다
+    assert "작성창 열기" in body                 # 그래도 보낼 수 있다
+
+    작성창 = web.get(f"/mail/draft?tpl={tid}&id={cid}")
+    assert "빈 채로" in 작성창                   # 작성창에서 다시 알린다
+    assert "보내기" in 작성창
 
 
 def test_the_pool_table_has_no_name_guess_column(web, cid):
@@ -1686,3 +1692,154 @@ def test_the_shape_editor_is_on_every_table_block(web):
     page = web.get(f"/dash/edit?id={did}")
     assert page.count("name='border'") == 4
     assert page.count("name='tablewidth'") == 4
+
+
+# --- 내부 메일 · 작성창 방식 발송 --------------------------------------------
+#
+# 채용 단계에 따라 지원자가 아니라 **내부로** 나가는 메일이 있다 (면접관에게
+# CV 송부 등). 그리고 이제는 인원수를 쳐 넣는 대신 **한 통씩 작성창을 열어**
+# 내용을 보고 고쳐서 보낸다.
+@pytest.fixture
+def 내부템플릿(web, request):
+    """테스트마다 다른 이름 — 겹치면 남의 발송 기록을 물려받는다."""
+    이름 = f"면접관 CV 송부-{request.node.name[-20:]}"
+    tid = web.module.mailing.add_template(
+        이름, "{{한글_이름}} 지원자 CV", "<p>첨부 확인 부탁드립니다.</p>",
+        받는대상="내부", CV첨부=True)
+    return web.module.mailing.template(tid)
+
+
+def test_internal_mail_needs_no_applicant_address(web, cid, 내부템플릿):
+    """지원자 주소를 몰라도 면접관에게는 보낼 수 있어야 한다."""
+    web.cell(id=cid, 항목="한글_이름", 새값="홍길동", 이전값="")
+    _, 본문 = web.post("/mail/compose", ids=[cid], template=str(내부템플릿.id))
+    assert "못 보내는 사람" not in 본문
+    assert "작성창에서 입력" in 본문                 # 받는 사람은 작성창에서
+    assert "한 번에 보내기가 없습니다" in 본문        # 한 통씩만 보낸다
+
+
+def test_draft_window_shows_everything_that_will_go(web, cid, 내부템플릿):
+    web.cell(id=cid, 항목="한글_이름", 새값="홍길동", 이전값="")
+    창 = web.get(f"/mail/draft?tpl={내부템플릿.id}&id={cid}")
+    assert "홍길동 지원자 CV" in 창                  # 자리표시자가 채워진 제목
+    assert "name='to'" in 창 and "name='subject'" in 창
+    assert "본문칸" in 창                            # 본문을 고칠 수 있다
+    assert "붙어서 나갈 파일" in 창                   # 첨부가 다 보인다
+    assert "<header>" not in 창                      # 창이라 탭이 없다
+
+
+def test_sending_one_keeps_what_i_edited(web, cid, 내부템플릿):
+    """작성창에서 고친 그대로 나가고, 고친 그대로 기록에 남아야 한다."""
+    web.cell(id=cid, 항목="한글_이름", 새값="홍길동", 이전값="")
+    코드, 본문 = web.post(
+        "/mail/send/one", tpl=str(내부템플릿.id), id=cid, send="1",
+        to="interviewer@corp.com", cc="", subject="[면접] 홍길동 CV 송부",
+        body="<p>내일 면접 건입니다.</p>")
+    assert 코드 == 200 and "보냄표시" in 본문          # 부모 목록을 고치고 닫힌다
+
+    (기록,) = web.module.mailing.history(cid)
+    assert 기록["받는사람"] == "interviewer@corp.com"
+    assert 기록["제목"] == "[면접] 홍길동 CV 송부"
+    assert "내일 면접 건입니다" in 기록["본문"]
+    assert 기록["받는대상"] == "내부"
+
+
+def test_sending_one_needs_an_address(web, cid, 내부템플릿):
+    코드, 본문 = web.post("/mail/send/one", tpl=str(내부템플릿.id), id=cid,
+                        send="1", to="", subject="제목", body="<p>글</p>")
+    assert "받는 사람을 적으세요" in 본문
+    assert not web.module.mailing.history(cid)       # 안 나갔다
+
+
+def test_changing_the_attachment_boxes_does_not_send(web, cid, 내부템플릿):
+    """첨부 체크만 바꾼 것은 다시 그리기지 발송이 아니다."""
+    코드, 본문 = web.post("/mail/send/one", tpl=str(내부템플릿.id), id=cid,
+                        to="a@corp.com", subject="제목", body="<p>글</p>")
+    assert "메일 쓰기" in 본문                        # 작성창을 다시 그렸다
+    assert not web.module.mailing.history(cid)
+
+
+def test_the_cv_is_actually_attached(web, cid, 내부템플릿):
+    """CV 첨부를 켜면 그 지원자의 원본이 붙어서 나가야 한다."""
+    store = web.module.store
+    store.store_file(cid, "홍길동_이력서.txt", "CV 내용".encode())
+    rec = store.get(cid)
+    rec.원본_파일명 = "홍길동_이력서.txt"
+    store.save(rec, 저장_파일명=f"{cid}.txt")
+
+    붙는것, 오류 = web.module._지원자자료(cid, True, False)
+    assert not 오류
+    assert [n for n, _ in 붙는것] == ["홍길동_이력서.txt"]
+    assert 붙는것[0][1] == "CV 내용".encode()
+
+    창 = web.get(f"/mail/draft?tpl={내부템플릿.id}&id={cid}")
+    assert "홍길동_이력서.txt" in 창                  # 작성창에 보인다
+
+
+def test_the_history_tells_applicant_mail_from_internal(web, cid, 내부템플릿):
+    web.cell(id=cid, 항목="한글_이름", 새값="홍길동", 이전값="")
+    web.post("/mail/send/one", tpl=str(내부템플릿.id), id=cid, send="1",
+             to="interviewer@corp.com", subject="제목", body="<p>글</p>")
+    기록 = web.get("/mail/log")
+    assert "interviewer@corp.com" in 기록
+    assert "내부" in 기록
+
+
+def test_the_cv_bytes_really_leave_the_building(web, cid, 내부템플릿, monkeypatch):
+    """CV 첨부가 **실제 요청에 실려 나가는지**를 가짜 메일 서버로 확인한다.
+
+    화면에 파일 이름이 보이는 것과, 그 파일이 진짜 나가는 것은 다른 이야기다.
+    """
+    import base64
+    import dataclasses
+    import json as _json
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from cvtool import config as config_mod
+
+    받은것: list[str] = []
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length") or 0)
+            받은것.append(self.rfile.read(n).decode("utf-8"))
+            out = _json.dumps({"resultCode": "SUCCESS"}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    주소 = f"http://127.0.0.1:{srv.server_address[1]}/api/send"
+
+    store = web.module.store
+    store.store_file(cid, "이력서.txt", "진짜 CV 내용".encode())
+    rec = store.get(cid)
+    rec.원본_파일명 = "이력서.txt"
+    store.save(rec, 저장_파일명=f"{cid}.txt")
+
+    실제 = dataclasses.replace(
+        config_mod.settings, mail_api_url=주소, mail_api_token="tok",
+        mail_api_system_id="CVTOOL", mail_api_user_id="admin", mail_dry_run=False)
+    # mailer 는 구현 모듈(mail.py)로 넘겨주는 얇은 껍데기라, 그쪽 설정을 바꾼다
+    from cvtool.clients import mail as 구현
+    monkeypatch.setattr(구현, "settings", 실제)
+    try:
+        코드, _본문 = web.post("/mail/send/one", tpl=str(내부템플릿.id), id=cid,
+                             send="1", to="interviewer@corp.com",
+                             subject="CV 송부", body="<p>보냅니다</p>", cv="1")
+        assert 코드 == 200
+        assert len(받은것) == 1
+        보낸것 = _json.loads(받은것[0])
+    finally:
+        srv.shutdown()
+
+    문자열 = _json.dumps(보낸것, ensure_ascii=False)
+    assert "이력서.txt" in 문자열
+    assert base64.b64encode("진짜 CV 내용".encode()).decode() in 문자열

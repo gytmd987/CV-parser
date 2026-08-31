@@ -124,6 +124,9 @@ CREATE TABLE IF NOT EXISTS templates (
     제목         TEXT NOT NULL DEFAULT '',
     본문         TEXT NOT NULL DEFAULT '',
     탈락메일      INTEGER DEFAULT 0,
+    받는대상      TEXT DEFAULT '지원자', -- 지원자 / 내부 (면접관 등)
+    CV첨부       INTEGER DEFAULT 0,    -- 보낼 때 그 지원자의 CV 원본을 붙인다
+    지원자첨부     INTEGER DEFAULT 0,    -- 그 지원자에게 붙어 있는 첨부파일을 붙인다
     참조         TEXT DEFAULT '',      -- CC. 이 템플릿으로 보내는 모든 메일에 붙는다
     본문형식      TEXT DEFAULT 'HTML',  -- HTML / TEXT
     만든이        TEXT DEFAULT '',
@@ -152,6 +155,7 @@ CREATE TABLE IF NOT EXISTS sent (
     참조         TEXT DEFAULT '',
     첨부         TEXT DEFAULT '',
     탈락메일      INTEGER DEFAULT 0,
+    받는대상      TEXT DEFAULT '지원자', -- 지원자에게 간 것인지, 내부로 간 것인지
     오류         TEXT DEFAULT '',
     보낸이        TEXT DEFAULT '',
     보낸일시      TEXT DEFAULT ''
@@ -168,6 +172,14 @@ CREATE TABLE IF NOT EXISTS body_images (
 );
 CREATE INDEX IF NOT EXISTS bodyimg_tpl ON body_images (template_id);
 """
+
+#: 메일을 누구에게 보내는가.
+#:
+#: 채용 단계에 따라 **지원자가 아니라 내부로** 나가는 메일이 있다 — 면접관에게
+#: 지원자 CV 를 보내는 것 같은. 그것도 그 지원자에 관한 메일이라 **이력은
+#: 지원자별로** 남아야 한다. 받는 사람 주소만 다를 뿐이다.
+RECIPIENT_KINDS = ("지원자", "내부")
+DEFAULT_RECIPIENT = "지원자"
 
 #: 다시 보내도 되는 상태 (실패했으면 한 번 더 시도할 수 있어야 한다)
 _보낸것 = ("성공", "발송안함")
@@ -186,6 +198,19 @@ class Template:
     만든일시: str
     수정일시: str
     그림방식: str = DEFAULT_IMAGE_MODE
+    받는대상: str = DEFAULT_RECIPIENT
+    CV첨부: bool = False
+    지원자첨부: bool = False
+
+    @property
+    def 내부(self) -> bool:
+        """지원자가 아니라 내부(면접관 등)로 나가는 메일인가."""
+        return (self.받는대상 or DEFAULT_RECIPIENT) == "내부"
+
+    @property
+    def 지원자자료(self) -> bool:
+        """보낼 때 그 지원자의 파일을 함께 붙이는가."""
+        return bool(self.CV첨부 or self.지원자첨부)
 
     @property
     def 그림보내기(self) -> str:
@@ -241,8 +266,10 @@ class MailStore:
         """예전 DB 에 없던 열을 붙인다."""
         for 표, 열들 in (
             ("templates", (("참조", "''"), ("본문형식", "'HTML'"),
-                           ("그림방식", f"'{DEFAULT_IMAGE_MODE}'"))),
-            ("sent", (("참조", "''"), ("첨부", "''"))),
+                           ("그림방식", f"'{DEFAULT_IMAGE_MODE}'"),
+                           ("받는대상", f"'{DEFAULT_RECIPIENT}'"))),
+            ("sent", (("참조", "''"), ("첨부", "''"),
+                      ("받는대상", f"'{DEFAULT_RECIPIENT}'"))),
         ):
             있는열 = {r["name"] for r in self._conn.execute(f"PRAGMA table_info({표})")}
             for 열, 기본 in 열들:
@@ -250,6 +277,13 @@ class MailStore:
                     self._conn.execute(
                         f"ALTER TABLE {표} ADD COLUMN {열} TEXT DEFAULT {기본}"
                     )
+        # 켜고 끄는 값이라 숫자 열로 붙인다 (위 반복문은 글자 열 전용)
+        있는열 = {r["name"] for r in self._conn.execute("PRAGMA table_info(templates)")}
+        for 열 in ("CV첨부", "지원자첨부"):
+            if 열 not in 있는열:
+                self._conn.execute(
+                    f"ALTER TABLE templates ADD COLUMN {열} INTEGER DEFAULT 0"
+                )
         self._upgrade_bodies_to_html()
 
     @atomic
@@ -279,19 +313,25 @@ class MailStore:
     # -- 템플릿 -------------------------------------------------------------
     def add_template(self, 이름: str, 제목: str = "", 본문: str = "",
                      탈락메일: bool = False, 만든이: str = "",
-                     참조: str = "", 본문형식: str = "HTML") -> int:
+                     참조: str = "", 본문형식: str = "HTML",
+                     받는대상: str = DEFAULT_RECIPIENT,
+                     CV첨부: bool = False, 지원자첨부: bool = False) -> int:
         이름 = (이름 or "").strip()
         if not 이름:
             raise ValueError("템플릿 이름을 입력하세요")
         if self.template_by_name(이름):
             raise ValueError(f"이미 있는 템플릿 이름입니다: {이름}")
         now = now_kst().strftime("%Y-%m-%d %H:%M:%S")
+        if 받는대상 not in RECIPIENT_KINDS:
+            raise ValueError(f"받는 대상은 {'/'.join(RECIPIENT_KINDS)} 중 하나여야 합니다")
         cur = self._conn.execute(
             "INSERT INTO templates"
-            " (이름,제목,본문,탈락메일,참조,본문형식,만든이,만든일시,수정일시)"
-            " VALUES (?,?,?,?,?,?,?,?,?)",
+            " (이름,제목,본문,탈락메일,참조,본문형식,만든이,만든일시,수정일시,"
+            "  받는대상,CV첨부,지원자첨부)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (이름, 제목 or "", 본문 or "", 1 if 탈락메일 else 0, 참조 or "",
-             (본문형식 or "HTML").upper(), 만든이, now, now),
+             (본문형식 or "HTML").upper(), 만든이, now, now,
+             받는대상, 1 if CV첨부 else 0, 1 if 지원자첨부 else 0),
         )
         self._conn.commit()
         return cur.lastrowid
@@ -300,7 +340,10 @@ class MailStore:
                         제목: str | None = None, 본문: str | None = None,
                         탈락메일: bool | None = None, 참조: str | None = None,
                         본문형식: str | None = None,
-                        그림방식: str | None = None) -> Template | None:
+                        그림방식: str | None = None,
+                        받는대상: str | None = None,
+                        CV첨부: bool | None = None,
+                        지원자첨부: bool | None = None) -> Template | None:
         옛 = self.template(tid)
         if 옛 is None:
             return None
@@ -311,9 +354,13 @@ class MailStore:
         새그림방식 = 옛.그림보내기 if 그림방식 is None else 그림방식
         if 새그림방식 not in IMAGE_MODES:
             raise ValueError(f"그림 방식은 {'/'.join(IMAGE_MODES)} 중 하나여야 합니다")
+        새대상 = 옛.받는대상 if 받는대상 is None else 받는대상
+        if 새대상 not in RECIPIENT_KINDS:
+            raise ValueError(f"받는 대상은 {'/'.join(RECIPIENT_KINDS)} 중 하나여야 합니다")
         self._conn.execute(
             "UPDATE templates SET 이름=?, 제목=?, 본문=?, 탈락메일=?, 참조=?,"
-            " 본문형식=?, 그림방식=?, 수정일시=? WHERE id=?",
+            " 본문형식=?, 그림방식=?, 받는대상=?, CV첨부=?, 지원자첨부=?,"
+            " 수정일시=? WHERE id=?",
             (
                 새이름,
                 옛.제목 if 제목 is None else 제목,
@@ -322,6 +369,10 @@ class MailStore:
                 옛.참조 if 참조 is None else 참조,
                 (옛.본문형식 if 본문형식 is None else 본문형식).upper(),
                 새그림방식,
+                새대상,
+                (1 if 옛.CV첨부 else 0) if CV첨부 is None else (1 if CV첨부 else 0),
+                (1 if 옛.지원자첨부 else 0) if 지원자첨부 is None
+                else (1 if 지원자첨부 else 0),
                 now_kst().strftime("%Y-%m-%d %H:%M:%S"),
                 tid,
             ),
@@ -345,6 +396,9 @@ class MailStore:
     def _row(self, row: sqlite3.Row) -> Template:
         d = dict(row)
         d["탈락메일"] = bool(d["탈락메일"])
+        d["CV첨부"] = bool(d.get("CV첨부"))
+        d["지원자첨부"] = bool(d.get("지원자첨부"))
+        d["받는대상"] = d.get("받는대상") or DEFAULT_RECIPIENT
         return Template(**d)
 
     def template(self, tid: int) -> Template | None:
@@ -411,13 +465,16 @@ class MailStore:
     def record(self, 지원자_ID: str, tpl: Template, 받는사람: str, 제목: str,
                본문: str, 상태: str, 오류: str = "", 보낸이: str = "",
                참조: str = "", 첨부: str = "") -> int:
+        """보낸 것을 남긴다. **내부로 나간 메일도 그 지원자 이력에 남는다** —
+        누구에게 무엇을 보냈는지가 기록이라, 받는 사람 주소를 그대로 적는다."""
         cur = self._conn.execute(
             "INSERT INTO sent (지원자_ID,template_id,템플릿이름,받는사람,제목,본문,"
-            " 상태,탈락메일,오류,보낸이,보낸일시,참조,첨부)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " 상태,탈락메일,오류,보낸이,보낸일시,참조,첨부,받는대상)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (지원자_ID, tpl.id, tpl.이름, 받는사람, 제목, 본문, 상태,
              1 if tpl.탈락메일 else 0, 오류, 보낸이,
-             now_kst().strftime("%Y-%m-%d %H:%M:%S"), 참조, 첨부),
+             now_kst().strftime("%Y-%m-%d %H:%M:%S"), 참조, 첨부,
+             tpl.받는대상 or DEFAULT_RECIPIENT),
         )
         self._conn.commit()
         return cur.lastrowid

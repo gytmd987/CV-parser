@@ -608,3 +608,60 @@ def test_sent_summary_marks_failures_and_rejections(ms, 템플릿, 탈락):
 
 def test_sent_summary_is_empty_for_untouched_people(ms):
     assert ms.sent_summary() == {}
+
+
+# --- 내부로 보내는 메일 ---------------------------------------------------------
+#
+# 채용 단계에 따라 **지원자가 아니라 내부로** 나가는 메일이 있다 — 면접관에게
+# 지원자 CV 를 보내는 것 같은. 받는 사람만 다르고, 이력은 그 지원자에 남는다.
+def test_a_template_can_be_marked_internal(ms):
+    tid = ms.add_template("면접관 CV 송부", 받는대상="내부", CV첨부=True)
+    t = ms.template(tid)
+    assert t.내부 and t.CV첨부 and t.지원자자료
+    assert not ms.template(ms.add_template("서류 안내")).내부      # 기본은 지원자
+
+
+def test_internal_is_the_only_other_kind(ms):
+    with pytest.raises(ValueError):
+        ms.add_template("이상한 것", 받는대상="면접관")
+
+
+def test_attach_flags_can_be_turned_on_later(ms, 템플릿):
+    ms.update_template(템플릿.id, 받는대상="내부", CV첨부=True, 지원자첨부=True)
+    t = ms.template(템플릿.id)
+    assert t.내부 and t.CV첨부 and t.지원자첨부
+
+
+def test_history_keeps_who_it_actually_went_to(ms):
+    """내부 메일도 그 지원자 이력에 남고, **받는 사람 주소가 그대로** 남는다."""
+    tid = ms.add_template("면접관 송부", 받는대상="내부")
+    t = ms.template(tid)
+    ms.record("CV-1", t, "interviewer@corp.com", "홍길동 CV", "보냅니다", "성공")
+    (기록,) = ms.history("CV-1")
+    assert 기록["받는대상"] == "내부"
+    assert 기록["받는사람"] == "interviewer@corp.com"
+
+
+def test_old_db_gets_the_new_columns(tmp_path):
+    """쓰던 DB 를 그대로 이어 쓴다."""
+    import sqlite3
+
+    p = tmp_path / "old.db"
+    c = sqlite3.connect(p)
+    c.executescript(
+        "CREATE TABLE templates (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " 이름 TEXT NOT NULL UNIQUE, 제목 TEXT DEFAULT '', 본문 TEXT DEFAULT '',"
+        " 탈락메일 INTEGER DEFAULT 0, 만든이 TEXT DEFAULT '',"
+        " 만든일시 TEXT DEFAULT '', 수정일시 TEXT DEFAULT '');"
+        "CREATE TABLE sent (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " 지원자_ID TEXT NOT NULL, template_id INTEGER NOT NULL,"
+        " 템플릿이름 TEXT DEFAULT '', 받는사람 TEXT DEFAULT '', 제목 TEXT DEFAULT '',"
+        " 본문 TEXT DEFAULT '', 상태 TEXT DEFAULT '성공', 탈락메일 INTEGER DEFAULT 0,"
+        " 오류 TEXT DEFAULT '', 보낸이 TEXT DEFAULT '', 보낸일시 TEXT DEFAULT '');"
+        "INSERT INTO templates (이름,제목,본문) VALUES ('예전 것','안녕','<p>글</p>');"
+    )
+    c.commit()
+    c.close()
+
+    옛것 = MailStore(p).template_by_name("예전 것")
+    assert 옛것.받는대상 == "지원자" and not 옛것.CV첨부   # 쓰던 건 그대로 지원자 메일

@@ -61,6 +61,7 @@ GET_정책 = {
     "/mail/attachment": 거부,
     "/mail/image": 거부,
     "/mail/log": 거부,
+    "/mail/draft": 거부,
     "/mail/test": 거부,
     "/mail/template": 거부,
     "/match": 거부,                  # 회사 연구 과제 전체가 보인다
@@ -111,6 +112,7 @@ POST_정책 = {
     "/mail/attachment/delete": 거부,
     "/mail/compose": 거부,
     "/mail/send": 거부,
+    "/mail/send/one": 거부,
     "/mail/test": 거부,
     "/mail/template/add": 거부,
     "/mail/template/delete": 거부,
