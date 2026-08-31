@@ -498,6 +498,17 @@ td.sel{background:#bfdbfe !important;outline:1px solid #2563eb;outline-offset:-1
 button.tiny{padding:1px 6px;font-size:12px;min-width:22px;line-height:1.3}
 #colform button.dirty{background:#b45309;border-color:#b45309}
 /* 수식 미리보기 — 친 대로 바로 아래에 결과가 뜬다 */
+/* 수식 자동완성 — 치는 대로 열 이름·함수를 좁혀 보여준다.
+   열 이름을 외우고 있어야 쓸 수 있는 도구는 아무도 안 쓴다. */
+#fxdrop{position:absolute;z-index:120;background:var(--card);
+ border:1px solid var(--line);border-radius:var(--r-s);box-shadow:var(--sh-l);
+ padding:4px;max-height:260px;overflow:auto;min-width:220px;font-size:13px}
+#fxdrop .it{display:flex;gap:8px;align-items:baseline;padding:5px 9px;
+ border-radius:5px;cursor:pointer;white-space:nowrap}
+#fxdrop .it:hover,#fxdrop .it.on{background:#eff6ff}
+#fxdrop .it b{font-weight:650;color:var(--txt)}
+#fxdrop .it i{font-style:normal;font-size:11px;color:var(--muted);margin-left:auto}
+#fxdrop .head{padding:4px 9px;color:var(--muted);font-size:11.5px}
 .fxout{display:block;font-size:12px;margin-top:3px;min-height:16px;word-break:break-all;white-space:pre-line}
 /* 대시보드 표 모양 — 만드는 사람이 고른다 */
 table.dtbl th{background:var(--headbg,var(--bg))}
@@ -5947,6 +5958,14 @@ def _블록편집(b, 축값, 미리볼사람: str = "") -> str:
         f"<input type='hidden' name='id' value='{b.id}'>"
         "<p><input type='text' name='말' style='width:100%'"
         f" placeholder='{html.escape(_초안예시(b.종류))}'></p>"
+        "<p class='muted' style='margin-bottom:4px'>예시 표 "
+        "<span class='muted'>(안 넣어도 됩니다) — 엑셀에서 복사해 그대로 "
+        "붙여넣거나 <code>|</code> 로 칸을 나눠 적으세요. "
+        "<b>값은 예시로만 보고</b> 그 모양이 나오는 수식을 만듭니다.</span></p>"
+        "<p><textarea name='예시' rows='4' style='width:100%'"
+        " placeholder='지원자 | 이력&#10;"
+        "홍길동(27세)/Neurips 1저자 | 경)서울대 포닥 (&#39;25.2~&#39;26.8)'>"
+        "</textarea></p>"
         "<p><button type='submit'>초안 만들기</button> "
         "<span class='muted'>지금 내용을 <b>덮어씁니다.</b> 만든 뒤 보고 고쳐서 "
         "저장하세요 — 저장하기 전에는 아무것도 바뀌지 않습니다.</span></p>"
@@ -6156,10 +6175,10 @@ def _dash_edit_page(did: int, me: User, error: str = "", msg: str = "") -> bytes
         "<form method='post' action='/dash/block/add' style='margin-top:10px'>"
         f"<input type='hidden' name='dash' value='{did}'>"
         f"<p>블록 추가: {종류단추}</p></form>"
-        + _수식도움() + _틀도움() + 미리보기고르기 + "</div>"
+        + _수식도움() + _틀도움() + _열목록도움() + 미리보기고르기 + "</div>"
         + ("".join(_블록편집(b, 축값, 미리볼사람) for b in 블록들)
            or "<div class='card'><p class='muted'>블록이 없습니다. 위에서 추가하세요.</p></div>")
-        + _FX_JS,
+        + _수식목록() + _FX_JS + _FXAC_JS,
         me=me,
     )
 
@@ -6169,6 +6188,169 @@ def _dash_edit_page(did: int, me: User, error: str = "", msg: str = "") -> bytes
 #: 저장하고 대시보드로 가서 확인하고 다시 돌아오는 왕복이 있으면, 수식 하나
 #: 고치는 데 세 화면이 든다. 그러면 아무도 안 고친다. 서버에 물어보는 이유는
 #: 하나다 — **화면과 대시보드가 같은 계산기를 써야** 미리보기를 믿을 수 있다.
+def _수식목록() -> str:
+    """자동완성이 쓸 목록을 화면에 한 번만 심는다.
+
+    서버에 다시 묻지 않는다 — 글자 하나 칠 때마다 왕복하면 느리고, 폐쇄망에서
+    끊기면 자동완성이 통째로 죽는다. 목록은 열 몇십 개라 실어도 가볍다.
+    """
+    from .. import expr
+    from .. import formula as F
+
+    자료 = {
+        "열": sorted(대시보드_열()),
+        "행함수": list(expr.FUNC_NAMES),
+        "집계함수": list(F.FUNCTIONS),
+        "대상": list(F.TARGETS),
+    }
+    return ("<script>window.수식목록 = "
+            + json.dumps(자료, ensure_ascii=False) + ";</script>")
+
+
+def _열목록도움() -> str:
+    """쓸 수 있는 열 이름을 통째로 훑어볼 자리.
+
+    자동완성은 **치면서 찾는** 것이고 이건 **훑어보는** 것이다. 무엇이 있는지
+    모르면 칠 수도 없어서 둘 다 필요하다.
+    """
+    이름들 = sorted(대시보드_열())
+    칸 = "".join(f"<code style='margin:0 6px 4px 0;display:inline-block'>"
+               f"{html.escape(n)}</code>" for n in 이름들)
+    return (
+        f"<details><summary class='muted'>쓸 수 있는 열 이름 전부 ({len(이름들)}개)"
+        "</summary><div style='margin-top:8px;line-height:2'>"
+        "<p class='muted'>수식 칸에 <b>이름 일부를 치면</b> 그것으로 시작하는 "
+        "이름이 바로 뜹니다. 아래는 훑어보기용입니다.</p>"
+        f"{칸}</div></details>"
+    )
+
+
+#: 수식 칸 자동완성.
+#:
+#: 치고 있는 낱말을 캐럿에서 뒤로 읽어, 그것으로 **시작하는** 이름을 먼저,
+#: 그 다음 **중간에 든** 이름을 보여준다. 칸이 비어 있으면 열 이름 전체를
+#: 띄운다 — 무엇을 쓸 수 있는지 둘러보는 자리다.
+_FXAC_JS = """
+<script>
+(function(){
+  var 목록 = window.수식목록 || {열: [], 행함수: [], 집계함수: [], 대상: []};
+  var 상자 = null, 지금칸 = null, 후보 = [], 고른것 = -1;
+
+  function 낱말(el){
+    var 앞 = el.value.slice(0, el.selectionStart);
+    var m = 앞.match(/[0-9A-Za-z_가-힣]+$/);
+    return m ? m[0] : '';
+  }
+  function 살것(el){
+    var 집계 = (el.dataset.kind || 'row') === 'agg';
+    var 것 = [], 본것 = {};
+    function 담기(n, 갈래, 함수){
+      /* `채용` 은 열이면서 대상이다. 두 번 뜨면 잘못 만든 것처럼 보인다 —
+         한 줄로 합치고 갈래만 이어 적는다. */
+      if(본것[n]){ 본것[n].갈래 += ' · ' + 갈래; return; }
+      본것[n] = {글: n, 갈래: 갈래, 함수: 함수 || 0};
+      것.push(본것[n]);
+    }
+    if(집계) 목록.대상.forEach(function(n){ 담기(n, '대상'); });
+    목록.열.forEach(function(n){ 담기(n, '열'); });
+    (집계 ? 목록.집계함수 : 목록.행함수).forEach(function(n){ 담기(n, '함수', 1); });
+    return 것;
+  }
+  function 고르기(el, 말){
+    var 전부 = 살것(el);
+    if(!말){
+      return 전부.filter(function(x){ return x.갈래.indexOf('함수') < 0; })
+                 .slice(0, 40);
+    }
+    var 낮 = 말.toLowerCase(), 앞 = [], 안 = [];
+    전부.forEach(function(x){
+      var t = x.글.toLowerCase();
+      if(t.indexOf(낮) === 0) 앞.push(x);
+      else if(t.indexOf(낮) > 0) 안.push(x);
+    });
+    return 앞.concat(안).slice(0, 12);
+  }
+  function 닫기(){
+    if(상자){ 상자.remove(); 상자 = null; }
+    지금칸 = null; 후보 = []; 고른것 = -1;
+  }
+  function 그리기(el){
+    var 말 = 낱말(el);
+    후보 = 고르기(el, 말);
+    if(!후보.length){ 닫기(); return; }
+    if(!상자){
+      상자 = document.createElement('div');
+      상자.id = 'fxdrop';
+      document.body.appendChild(상자);
+    }
+    지금칸 = el;
+    고른것 = 0;
+    var 안 = 말 ? '' : "<div class='head'>쓸 수 있는 열 — 이름 일부를 치면 좁혀집니다</div>";
+    상자.innerHTML = 안 + 후보.map(function(x, i){
+      return "<div class='it" + (i === 0 ? ' on' : '') + "' data-i='" + i + "'>"
+           + '<b>' + x.글 + '</b><i>' + x.갈래 + '</i></div>';
+    }).join('');
+    var r = el.getBoundingClientRect();
+    상자.style.left = (r.left + window.scrollX) + 'px';
+    상자.style.top = (r.bottom + window.scrollY + 3) + 'px';
+    상자.style.minWidth = Math.min(r.width, 520) + 'px';
+    상자.querySelectorAll('.it').forEach(function(d){
+      d.addEventListener('mousedown', function(e){
+        e.preventDefault();                     /* blur 보다 먼저 잡는다 */
+        넣기(+d.dataset.i);
+      });
+    });
+  }
+  function 표시(){
+    if(!상자) return;
+    상자.querySelectorAll('.it').forEach(function(d, i){
+      d.classList.toggle('on', i === 고른것);
+      if(i === 고른것 && d.scrollIntoView) d.scrollIntoView({block: 'nearest'});
+    });
+  }
+  function 넣기(i){
+    if(!지금칸 || !후보[i]) return;
+    var el = 지금칸, x = 후보[i];
+    var 끝 = el.selectionStart, 말 = 낱말(el);
+    var 앞 = el.value.slice(0, 끝 - 말.length);
+    var 뒤 = el.value.slice(끝);
+    var 넣을것 = x.글 + (x.함수 ? '(' : '');
+    el.value = 앞 + 넣을것 + 뒤;
+    var 자리 = (앞 + 넣을것).length;
+    닫기();
+    el.focus();
+    el.setSelectionRange(자리, 자리);
+    if(window.fxPreview) fxPreview(el);         /* 미리보기도 따라 바뀐다 */
+  }
+
+  document.addEventListener('input', function(e){
+    if(e.target.classList && e.target.classList.contains('fx')) 그리기(e.target);
+  });
+  document.addEventListener('focusin', function(e){
+    if(e.target.classList && e.target.classList.contains('fx')) 그리기(e.target);
+  });
+  document.addEventListener('focusout', function(e){
+    if(e.target.classList && e.target.classList.contains('fx')) setTimeout(닫기, 120);
+  });
+  document.addEventListener('keydown', function(e){
+    if(!상자 || e.target !== 지금칸) return;
+    if(e.key === 'ArrowDown'){
+      e.preventDefault(); 고른것 = (고른것 + 1) % 후보.length; 표시();
+    }else if(e.key === 'ArrowUp'){
+      e.preventDefault(); 고른것 = (고른것 - 1 + 후보.length) % 후보.length; 표시();
+    }else if(e.key === 'Enter' || e.key === 'Tab'){
+      /* 목록이 열려 있는 동안 Enter 는 **폼을 보내지 않는다.** 고르는 중이다. */
+      e.preventDefault(); 넣기(고른것);
+    }else if(e.key === 'Escape'){
+      e.preventDefault(); 닫기();
+    }
+  }, true);
+  window.addEventListener('scroll', 닫기, true);
+  window.addEventListener('resize', 닫기);
+})();
+</script>"""
+
+
 _FX_JS = """
 <script>
 function fxWhoChanged(sel){
@@ -7384,6 +7566,7 @@ class Handler(BaseHTTPRequestHandler):
                 설정, 메모 = dash_draft.draft(
                     말, 대시보드_열(), 종류=b.종류,
                     축목록=[a for a in AXIS_SOURCES if a != "직접 입력"],
+                    예시표=(data.get("예시") or [""])[0],
                 )
                 뒤로 = f"/dash/edit?id={b.dashboard_id}"
                 if not 설정:

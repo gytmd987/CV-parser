@@ -1843,3 +1843,42 @@ def test_the_cv_bytes_really_leave_the_building(web, cid, 내부템플릿, monke
     문자열 = _json.dumps(보낸것, ensure_ascii=False)
     assert "이력서.txt" in 문자열
     assert base64.b64encode("진짜 CV 내용".encode()).decode() in 문자열
+
+
+# --- 예시 표 · 수식 자동완성 ------------------------------------------------------
+#
+# 열 이름과 함수를 전부 외우고 있어야 쓸 수 있는 도구는 아무도 안 쓴다.
+def test_the_draft_form_takes_an_example_table(web):
+    did = web.module.boards.add("예시표", "admin")
+    web.module.boards.add_block(did, "목록", 제목="목록")
+    page = web.get(f"/dash/edit?id={did}")
+    assert "name='예시'" in page                     # 붙여넣을 칸이 있다
+    assert "엑셀에서 복사해" in page
+    assert "값은 예시로만 보고" in page               # 값을 베끼지 않는다고 알린다
+
+
+def test_the_edit_page_carries_the_autocomplete_list(web):
+    """서버에 다시 묻지 않게 목록을 화면에 한 번 심는다."""
+    import json as _json
+
+    did = web.module.boards.add("자동완성", "admin")
+    web.module.boards.add_block(did, "목록", 제목="목록")
+    page = web.get(f"/dash/edit?id={did}")
+    자료 = _json.loads(page.split("window.수식목록 = ", 1)[1].split(";</script>", 1)[0])
+
+    assert "박사_학교" in 자료["열"] and "박사_전공" in 자료["열"]
+    assert "TEXTJOIN" in 자료["행함수"] and "IFERROR" in 자료["행함수"]
+    assert "COUNT" in 자료["집계함수"] and 자료["대상"] == ["지원자", "채용"]
+    assert "쓸 수 있는 열 이름 전부" in page          # 훑어보는 자리도 있다
+
+
+def test_the_function_list_is_not_copied_by_hand(web):
+    """화면 목록과 실제 함수가 어긋나면, 있는 함수를 없다고 알려 주게 된다."""
+    from cvtool import expr
+
+    import json as _json
+    did = web.module.boards.add("함수목록", "admin")
+    web.module.boards.add_block(did, "목록", 제목="목록")
+    page = web.get(f"/dash/edit?id={did}")
+    자료 = _json.loads(page.split("window.수식목록 = ", 1)[1].split(";</script>", 1)[0])
+    assert set(자료["행함수"]) == set(expr.FUNC_NAMES)

@@ -161,3 +161,78 @@ def test_every_block_kind_has_a_prompt():
         assert len(안내) > 100, 종류
         # 열 목록 자체는 안내문에 안 박고 부를 때 붙인다 (한 군데서 관리)
         assert "{열목록}" not in 안내
+
+
+# --- 예시 표를 보고 만들기 --------------------------------------------------------
+#
+# 말로만 설명하면 "이런 모양" 이 전달되지 않는다. 엑셀에 이미 만들어 둔 표를
+# 그대로 붙여넣으면, 그 모양이 나오도록 수식을 만들게 한다.
+def test_parse_table_reads_what_excel_pastes():
+    """엑셀에서 복사하면 탭으로 구분된 글자가 온다."""
+    assert dash_draft.parse_table("지원자\t이력\n홍길동\t서울대") == [
+        ["지원자", "이력"], ["홍길동", "서울대"]]
+
+
+def test_parse_table_reads_pipes_and_commas():
+    assert dash_draft.parse_table("지원자 | 이력\n홍길동(27세) | 경)서울대") == [
+        ["지원자", "이력"], ["홍길동(27세)", "경)서울대"]]
+    assert dash_draft.parse_table("가,나\n1,2") == [["가", "나"], ["1", "2"]]
+    assert dash_draft.parse_table("| 가 | 나 |\n| 1 | 2 |") == [["가", "나"], ["1", "2"]]
+
+
+def test_parse_table_skips_blank_lines_and_caps_size():
+    assert dash_draft.parse_table("가|나\n\n\n1|2") == [["가", "나"], ["1", "2"]]
+    assert dash_draft.parse_table("") == []
+    긴것 = "\n".join("a|b" for _ in range(100))
+    assert len(dash_draft.parse_table(긴것)) == dash_draft.MAX_예시줄
+    assert len(dash_draft.parse_table("|".join("c" * 40 for _ in range(40)))[0]) \
+        == dash_draft.MAX_예시칸
+    assert len(dash_draft.parse_table("x" * 500)[0][0]) == dash_draft.MAX_칸글자
+
+
+def _프롬프트잡기(답: dict):
+    """LLM 에 실제로 보낸 글을 잡아 둔다."""
+    보낸것: list[str] = []
+
+    def handler(request):
+        보낸것.append(request.content.decode("utf-8"))
+        return httpx.Response(200, json={"choices": [
+            {"finish_reason": "stop",
+             "message": {"content": json.dumps(답, ensure_ascii=False)}}]})
+
+    return LLMClient(client=httpx.Client(transport=httpx.MockTransport(handler))), 보낸것
+
+
+def test_the_example_table_reaches_the_prompt():
+    llm, 보낸것 = _프롬프트잡기({"제목": "지원자", "대상": "지원자",
+                            "열": [{"머리글": "이름", "수식": "=한글_이름"}]})
+    설정, 메모 = dash_draft.draft(
+        "예시처럼 만들어줘", 아는열, llm=llm, 종류="목록",
+        예시표="지원자 | 이력\n홍길동(27세)/Neurips 1저자 | 경)서울대 포닥")
+
+    글 = 보낸것[0]
+    assert "예시 표" in 글
+    assert "홍길동(27세)/Neurips 1저자" in 글          # 표가 그대로 실려 나간다
+    assert "그대로 쓰지 마라" in 글                    # 값이 아니라 모양이라고 일러둔다
+    assert any("예시 표 2줄" in m for m in 메모)       # 사람에게도 알린다
+
+
+def test_no_example_table_works_exactly_as_before():
+    llm, 보낸것 = _프롬프트잡기({"제목": "지원자", "대상": "지원자",
+                            "열": [{"머리글": "이름", "수식": "=한글_이름"}]})
+    설정, 메모 = dash_draft.draft("이름만", 아는열, llm=llm, 종류="목록")
+    assert "예시 표" not in 보낸것[0]
+    assert not any("예시 표" in m for m in 메모)
+    assert 설정["목록열"] == [["이름", "=한글_이름", ""]]
+
+
+def test_an_example_table_alone_is_enough():
+    """설명을 안 적고 표만 붙여넣어도 만들어 준다."""
+    llm, 보낸것 = _프롬프트잡기({"제목": "표", "대상": "지원자",
+                            "열": [{"머리글": "이름", "수식": "=한글_이름"}]})
+    설정, 메모 = dash_draft.draft("", 아는열, llm=llm, 종류="목록",
+                               예시표="이름\n홍길동")
+    assert 설정["목록열"] == [["이름", "=한글_이름", ""]]
+
+    _, 메모2 = dash_draft.draft("", 아는열, llm=_llm({}), 종류="목록")
+    assert 메모2 and "적어 주세요" in 메모2[0]          # 둘 다 없으면 안내
