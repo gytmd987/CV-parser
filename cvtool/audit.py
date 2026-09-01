@@ -96,6 +96,21 @@ class AuditLog:
         )
         return [Entry(**dict(r)) for r in rows]
 
+    def for_candidate(self, 지원자_ID: str, limit: int = 200) -> list[Entry]:
+        """한 지원자에 붙은 이력 전부 — 지원자 정보든 채용 단계든.
+
+        채용 단계 변경은 `대상종류='채용현황'` 으로 쌓인다. 상세 화면이
+        `for_target("지원자", …)` 만 읽던 동안에는 **단계를 바꿔도 그 사람
+        이력에 아무것도 안 뜨는 것처럼 보였다.** 사람 눈에는 한 사람에게
+        일어난 한 가지 일이라, 읽을 때 합친다.
+        """
+        rows = self._conn.execute(
+            "SELECT * FROM audit WHERE 대상=? AND 대상종류 IN ('지원자','채용현황')"
+            " ORDER BY id DESC LIMIT ?",
+            (지원자_ID, limit),
+        )
+        return [Entry(**dict(r)) for r in rows]
+
     def recent(self, limit: int = 200, 사용자: str = "", 대상종류: str = "") -> list[Entry]:
         sql = "SELECT * FROM audit WHERE 1=1"
         args: list = []

@@ -71,6 +71,7 @@ GET_정책 = {
     "/org/edit": 거부,
     "/status/rows": 거부,            # 업로드 현황 조각 (지원자 추가 권한과 같다)
     "/upload": 거부,
+    "/upload/template.xlsx": 거부,
     "/users": 거부,
 }
 
@@ -137,6 +138,7 @@ POST_정책 = {
     "/status/clear": 거부,
     "/table.xlsx": 무관,             # 보낸 표를 그대로 엑셀로 바꿔 돌려줄 뿐
     "/upload": 거부,
+    "/upload/xlsx": 거부,
     "/users/add": 거부,
     "/users/delete": 거부,
     "/users/toggle": 거부,

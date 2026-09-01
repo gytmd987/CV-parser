@@ -716,7 +716,25 @@ def test_field_worker_can_open_their_own_candidate(web, 현업, cid):
     c, did, pid = 현업
     web.module.recruit.set_assignment(cid, did, pid, "admin")
     본문 = c.get("/candidate?id=" + urllib.parse.quote(cid))
-    assert "관리 정보" in 본문
+    assert "추출 결과" in 본문
+
+
+def test_field_worker_does_not_see_management_cards(web, 현업, cid):
+    """현업은 자기 과제 지원자가 어디까지 왔는지만 보면 된다.
+
+    LLM 이 무엇을 확신하지 못했나(검토 필요) · 언제 누가 등록했나(관리 정보) ·
+    누가 무엇을 고쳤나(변경 이력)는 채용을 굴리는 쪽의 일이다.
+    """
+    c, did, pid = 현업
+    web.module.recruit.set_assignment(cid, did, pid, "admin")
+    본문 = c.get("/candidate?id=" + urllib.parse.quote(cid))
+    assert "관리 정보" not in 본문
+    assert "변경 이력" not in 본문
+    assert "검토 필요" not in 본문
+    # 채용담당자에게는 그대로 보인다
+    담당자본문 = web.get("/candidate?id=" + urllib.parse.quote(cid))
+    assert "관리 정보" in 담당자본문
+    assert "변경 이력" in 담당자본문
 
 
 def test_purge_needs_delete_permission(현업):

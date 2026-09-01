@@ -55,15 +55,18 @@ from ..edit import (
     apply_edit,
     custom_field_spec,
     field_spec,
+    validate,
     validate_custom,
 )
+from .. import bulk
+from ..xlsx_read import XlsxError
 from ..dotenv import LOADED_FROM, candidate_paths
 from ..export import build_xlsx, records_to_xlsx
 from ..fsutil import is_world_readable, mode_of, safe_filename, secure_dir, secure_file
 from ..extract import extract_cv_from_text
 from ..ingestion.parsers import UnsupportedFormat, extract_text
 from ..normalize import MULTI_SEP
-from ..schemas import NAME_COLUMNS, TIER_COLUMN_PREFIX
+from ..schemas import NAME_COLUMNS, TIER_COLUMN_PREFIX, CVRecord
 from ..schemas import columns as table_columns
 from ..store import CUSTOM_SCOPES, CUSTOM_TYPES, SUPPORTED_SUFFIXES, CandidateStore
 from ..timeutil import now_kst
@@ -2721,7 +2724,109 @@ def _busy_count() -> int:
         return sum(1 for s in _status.values() if s["state"] in ("대기중", "처리중"))
 
 
-def _upload_page(me: User) -> bytes:
+def _엑셀양식열() -> tuple[list[str], dict[str, str]]:
+    """엑셀 양식에 낼 열과 머리글. 화면·양식·읽기가 같은 것을 보게 한 곳에서."""
+    열 = bulk.양식열(store)
+    return 열, 라벨(열)
+
+
+def _엑셀등록(data: bytes, me: User) -> tuple[list[str], list[str], list[str]]:
+    """채워 올린 양식을 읽어 지원자를 만든다.
+
+    Returns:
+        (만든 지원자_ID 들, 빠진 줄 설명, 못 알아본 머리글)
+
+    **틀린 줄은 그 줄만 빠진다.** 100명 중 2명 때문에 98명을 다시 올리게 하면
+    아무도 안 쓴다. 대신 몇 행이 왜 빠졌는지 그대로 돌려준다.
+    """
+    열, 머리 = _엑셀양식열()
+    줄들, 모르는것 = bulk.읽기(data, 열, 머리)
+
+    만든것: list[str] = []
+    빠진것: list[str] = []
+    for 행번호, 값들 in 줄들:
+        rec = CVRecord(지원자_ID=f"CV-{uuid.uuid4().hex[:8].upper()}")
+        추가값: dict[str, str] = {}
+        년도 = ""
+        탈 = ""
+        for 항목, 값 in 값들.items():
+            if not 값:
+                continue
+            try:
+                if 항목 == "등록년도":
+                    년도 = 값
+                elif 항목 in REGISTRY_FIELDS:
+                    # 명칭 사전이 관리하는 열은 **사전에 있는 이름만** 받는
+                    # edit.validate_registry 를 쓰지 않는다. 새 지원자를 무더기로
+                    # 넣는 자리에서는 거의 다 걸린다. CV 업로드가 가는 길과 같게
+                    # 원문 표기를 그대로 담고, 아래 observe_record 가 사전에
+                    # 등록한다 (미분류로 올라와 명칭 관리에서 판별한다).
+                    setattr(rec, 항목, 값)
+                elif (정의 := store.field(항목)) is not None:
+                    추가값[항목] = validate_custom(정의, 값)
+                else:
+                    setattr(rec, 항목, validate(항목, 값))
+            except (ValidationError, ValueError) as exc:
+                탈 = f"{행번호}행 {항목}: {exc}"
+                break
+        if 탈:
+            빠진것.append(탈)
+            continue
+
+        # 사람이 손으로 적은 값이라 **무조건** 검토를 거친다.
+        사유 = [bulk.등록사유]
+        미분류 = observe_record(rec, registry)
+        if 미분류:
+            사유.append("미분류 학회/저널: " + ", ".join(미분류))
+        # 지문(CV 원문)이 없어도 이메일·전화·이름+생년월일 일치는 잡힌다.
+        후보 = find_duplicates(rec, [], store.fingerprints())
+        메모 = " / ".join(str(m) for m in 후보)
+        if 후보:
+            사유.append(("중복 확실: " if any(m.수준 == "확실" for m in 후보)
+                       else "중복 의심: ") + 메모)
+        rec.검토_필요 = "Y"
+        rec.검토_사유 = " / ".join(사유)
+
+        store.save(rec, 저장_파일명="", 지문=[], 중복_메모=메모)
+        if 년도:
+            try:
+                store.set_year(rec.지원자_ID, 년도)
+            except ValueError as exc:
+                빠진것.append(f"{행번호}행 등록년도: {exc} (나머지는 등록했습니다)")
+        for 이름, 값 in 추가값.items():
+            store.set_custom(rec.지원자_ID, 이름, 값)
+        audit.record(me.아이디, "지원자", rec.지원자_ID, 비고="엑셀로 등록")
+        만든것.append(rec.지원자_ID)
+    return 만든것, 빠진것, 모르는것
+
+
+def _엑셀결과카드(만든것: list[str], 빠진것: list[str], 모르는것: list[str]) -> str:
+    이름 = {r.지원자_ID: (r.한글_이름 or r.영문_이름 or r.지원자_ID)
+          for r in store.list_all()}
+    줄 = "".join(
+        f"<li><a href='/candidate?id={urllib.parse.quote(c)}'>"
+        f"{html.escape(이름.get(c, c))}</a></li>" for c in 만든것
+    )
+    본 = [f"<div class='card'><h2>{len(만든것)}명 등록했습니다</h2>"]
+    if 만든것:
+        본.append("<p class='muted'>전부 <b>검토 필요</b> 로 표시돼 있습니다 — "
+                "손으로 적은 값이라 한 번 보고 <b>확인함</b> 을 눌러 주세요.</p>"
+                f"<ul style='columns:3'>{줄}</ul>")
+    if 빠진것:
+        본.append("<h2 style='margin-top:14px'>빠진 줄 "
+                f"<span class='pill p-검토필요'>{len(빠진것)}</span></h2>"
+                "<p class='muted'>아래 줄만 등록하지 못했습니다. 엑셀에서 그 행을 "
+                "고쳐 <b>그 줄만</b> 다시 올리면 됩니다.</p><ul class='flag'>"
+                + "".join(f"<li>{html.escape(x)}</li>" for x in 빠진것) + "</ul>")
+    if 모르는것:
+        본.append("<p class='muted'>모르는 열은 그냥 넘겼습니다: "
+                + html.escape(", ".join(모르는것[:10])) + "</p>")
+    본.append("<p><a class='btn sec' href='/upload'>지원자 추가로</a> "
+            "<a class='btn sec' href='/'>인재 Pool 로</a></p></div>")
+    return "".join(본)
+
+
+def _upload_page(me: User, error: str = "") -> bytes:
     """지원자 추가 — CV 를 올리거나, CV 없이 빈 줄을 만든다.
 
     예전에는 지원자 목록 맨 위에 업로드 상자가 붙어 있어서, 표를 보러 올 때마다
@@ -2746,15 +2851,28 @@ def _upload_page(me: User) -> bytes:
         <div class='card'><h2>CV 없이 지원자 추가</h2>
           <form method='post' action='/candidate/new'>
             <button type='submit' class='sec'>빈 지원자 만들기</button>
-            <span class='muted'>다른 지원서로 지원한 경우. 빈 칸을 직접 채웁니다.</span>
+            <span class='muted'>한 명만 넣을 때. 상세 화면에서 빈 칸을 직접 채웁니다.</span>
           </form>
+          <p class='muted' style='margin:14px 0 6px'><b>여러 명 한 번에</b> —
+          지금 표 열 그대로 만든 빈 양식을 받아 채운 뒤 올리세요
+          (열 {len(_엑셀양식열()[0])}개).</p>
+          <form method='post' action='/upload/xlsx' enctype='multipart/form-data'
+                style='display:flex;gap:8px;align-items:center;flex-wrap:wrap'>
+            <a class='btn sec' href='/upload/template.xlsx'>엑셀 양식 받기</a>
+            <input type='file' name='files' accept='.xlsx'>
+            <button type='submit'>올려서 등록</button>
+          </form>
+          <p class='muted'>첫 줄(열 이름)은 지우지 마세요. 형식이 틀린 줄만
+          빠지고 나머지는 등록됩니다. 올린 사람은 전부 <b>검토 필요</b> 로
+          표시됩니다 — 손으로 적은 값이라 한 번 보고 넘기라는 뜻입니다.</p>
         </div>
         <div class='card'><h2>보관 설정</h2>
           <p class='muted'>원문 텍스트 보관: <b>{보관}</b> ·
           보관 기간 {settings.retention_months}개월
           (0 = 무제한) · 설정은 <code>.env</code> 에서 바꿉니다.</p>
         </div>"""
-    return _page("지원자 추가", 본문 + _status_table() + _STATUS_POLL_JS, me=me)
+    return _page("지원자 추가",
+                 _알림(err=error) + 본문 + _status_table() + _STATUS_POLL_JS, me=me)
 
 
 #: 현황 표만 갈아 끼우는 폴링.
@@ -2800,6 +2918,10 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
     meta = store.meta(지원자_ID) or {}
     row = rec.to_row(registry)
     수정가능 = can(me, "지원자_수정")
+    # 현업에게는 검토 필요·관리 정보·변경 이력을 내지 않는다. 자기 과제 지원자가
+    # 어디까지 왔는지만 보면 되는 자리라, 추출 신뢰도·등록 경위·누가 무엇을
+    # 고쳤는지까지 열어 둘 이유가 없다.
+    관리정보 = can(me, "지원자_관리정보")
 
     # 검토가 필요한 항목이 어느 열에 대한 이야기인지 미리 알아 둔다.
     끝낸검토 = store.review_done(지원자_ID)
@@ -2949,7 +3071,7 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
         )
 
     검토카드 = ""
-    if 검토항목:
+    if 검토항목 and 관리정보:
         줄 = ("".join(검토줄(x, False) for x in 남은검토)
              + "".join(검토줄(x, True) for x in 본검토))
         머리 = (f"검토 필요 <span class='pill p-검토필요'>{len(남은검토)}건</span>"
@@ -3076,6 +3198,8 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
     중복 = store.duplicate_note(지원자_ID)
     if 중복:
         관리 += f"<tr><th>중복 후보</th><td class='flag' style='white-space:normal'>{html.escape(중복)}</td></tr>"
+    관리카드 = (f"<div class='card'><h2>관리 정보</h2><table>{관리}</table></div>"
+             if 관리정보 else "")
 
     매칭 = store.matches(지원자_ID)
     매칭카드 = ""
@@ -3196,12 +3320,22 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
         + "</div>"
     ) if (메일기록 or 보내기단추) else ""
 
-    이력 = audit.for_target("지원자", 지원자_ID)
+    # 지원자 정보를 고친 것과 **채용 단계를 바꾼 것**을 함께 본다. 사람 눈에는
+    # 한 사람에게 일어난 한 가지 일이라, 따로 두면 단계 변경이 어디에도 안 뜬다.
+    이력 = audit.for_candidate(지원자_ID) if can(me, "변경이력_조회") else []
     이력행 = "".join(
         f"<tr><td>{html.escape(e.일시)}</td><td>{html.escape(e.사용자)}</td>"
-        f"<td title='{html.escape(e.summary())}'>{html.escape(e.summary())}</td></tr>"
+        + ("<td><span class='pill p-처리중'>채용</span></td>"
+           if e.대상종류 == "채용현황" else "<td class='muted'>지원자 정보</td>")
+        + f"<td title='{html.escape(e.summary())}'>{html.escape(e.summary())}</td></tr>"
         for e in 이력
-    ) or "<tr><td colspan=3 class='muted'>아직 수정 내역이 없습니다.</td></tr>"
+    ) or "<tr><td colspan=4 class='muted'>아직 수정 내역이 없습니다.</td></tr>"
+    이력카드 = (
+        "<div class='card'><h2>변경 이력</h2><div class='scroll'><table>"
+        "<tr><th>일시</th><th>사용자</th><th>종류</th><th>내용</th></tr>"
+        + 이력행 + "</table></div></div>"
+        if can(me, "변경이력_조회") else ""
+    )
 
     원본있음 = meta.get("원본보유")
     원본버튼 = (
@@ -3263,7 +3397,7 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
           {'<p class=muted>수정 권한이 없어 읽기 전용입니다.</p>' if not 수정가능 else ''}
         </div>
         {검토카드}
-        <div class='card'><h2>관리 정보</h2><table>{관리}</table></div>
+        {관리카드}
         <div class='card' id='추출결과'><h2>추출 결과</h2>
           {저장바}
           <table>{''.join(항목행)}</table></div>
@@ -3272,9 +3406,7 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
         {매칭카드}
         {첨부카드}
         {메일카드}
-        <div class='card'><h2>변경 이력</h2><div class='scroll'>
-          <table><tr><th>일시</th><th>사용자</th><th>내용</th></tr>{이력행}</table>
-        </div></div>""",
+        {이력카드}""",
         me=me,
     )
 
@@ -4891,7 +5023,7 @@ def _history_page(me: User, 대상종류: str = "", limit: int = 300) -> bytes:
     탭 = " ".join(
         f"<a class='btn {'' if k == 대상종류 else 'sec'}'"
         f" href='/history?kind={urllib.parse.quote(k)}'>{k or '전체'}</a>"
-        for k in ("", "지원자", "계정", "명칭", "과제", "로그인")
+        for k in ("", "지원자", "채용현황", "계정", "명칭", "과제", "로그인")
     )
     return _page(
         "변경 이력",
@@ -6748,7 +6880,20 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/upload":
             if not can(me, "지원자_등록"):
                 return self._deny()
-            return self._send(_upload_page(me))
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            return self._send(_upload_page(me, (params.get("err") or [""])[0]))
+        if path == "/upload/template.xlsx":
+            if not can(me, "지원자_등록"):
+                return self._deny()
+            열, 머리 = _엑셀양식열()
+            이름 = urllib.parse.quote(bulk.파일이름)
+            return self._send(
+                bulk.양식(열, 머리),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                extra={"Content-Disposition":
+                       'attachment; filename="candidate_template.xlsx";'
+                       f" filename*=UTF-8\'\'{이름}"},
+            )
         if path == "/candidate":
             params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             if not _볼수있나(me, (params.get("id") or [""])[0]):
@@ -7111,6 +7256,23 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as exc:  # noqa: BLE001
                     _set_status(safe_name, "실패", f"{type(exc).__name__}: {exc}")
             return self._redirect("/upload")
+
+        if path == "/upload/xlsx":
+            # 결과를 그 자리에서 그린다. 빠진 줄 목록은 주소창에 담을 길이가
+            # 아니라, 리다이렉트하면 "몇 명 등록" 만 남고 이유가 사라진다.
+            if not can(me, "지원자_등록"):
+                return self._deny()
+            form = parse_multipart(self._read_body(), self.headers.get("Content-Type", ""))
+            올린것 = [f for f in form.files if f.content]
+            if not 올린것:
+                return self._redirect("/upload?err=" + urllib.parse.quote(
+                    "채운 엑셀 파일을 고른 뒤 올려 주세요."))
+            try:
+                만든것, 빠진것, 모르는것 = _엑셀등록(올린것[0].content, me)
+            except XlsxError as exc:
+                return self._redirect("/upload?err=" + urllib.parse.quote(str(exc)))
+            return self._send(_page(
+                "엑셀로 지원자 추가", _엑셀결과카드(만든것, 빠진것, 모르는것), me=me))
 
         if path == "/table.xlsx":
             data = urllib.parse.parse_qs(
