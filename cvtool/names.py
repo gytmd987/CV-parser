@@ -333,6 +333,27 @@ class NameRegistry:
         ).fetchone()
         return self._row(row) if row else None
 
+    def by_display(self, 종류: str, 표시명: str) -> Name | None:
+        """**화면에 뜬 이름**으로 찾는다. 없으면 None.
+
+        `lookup` 은 CV 에 적힌 표기를 푸는 함수라 원표기·정규화키만 본다.
+        그런데 화면의 소속·학교 목록은 사람이 정한 **표시명**으로 만든다.
+        둘을 같은 함수에 섞으면 CV 등록·중복 판정까지 뜻이 달라지므로,
+        화면에서 고른 이름을 푸는 일은 여기서 따로 한다.
+
+        같은 이름을 쓰는 표기가 여럿이면(포항공대 · 포항공과대학교) **가장 많이
+        나온 표기**를 그 이름의 대표로 본다.
+        """
+        이름 = (표시명 or "").strip()
+        if not 이름:
+            return None
+        row = self._conn.execute(
+            "SELECT * FROM names WHERE 종류=? AND 표시명=?"
+            " ORDER BY 발견횟수 DESC, id LIMIT 1",
+            (canonical_kind(종류), 이름),
+        ).fetchone()
+        return self._row(row) if row else None
+
     def display(self, 종류: str, 원문: str) -> str:
         """화면·엑셀에 보여줄 이름. 사전에 없으면 원문 그대로."""
         found = self.lookup(종류, 원문)

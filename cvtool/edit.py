@@ -83,7 +83,12 @@ class FieldSpec:
     도움말: str = ""
 
 
-def field_spec(항목: str) -> FieldSpec:
+#: 여러 줄을 켤 수 있는 입력 종류. 형식이 정해진 칸(날짜·연월·전화·이메일·
+#: 선택·숫자)은 켤 수 없다 — 줄바꿈이 들어가면 그 형식이 무너진다.
+MULTILINE_OK = "text"
+
+
+def field_spec(항목: str, 긴글: bool = False) -> FieldSpec:
     """화면에서 어떤 입력칸을 그릴지 정한다."""
     if 항목 in CHOICE_FIELDS:
         return FieldSpec(항목, "select", CHOICE_FIELDS[항목], "목록에서 고르세요")
@@ -95,14 +100,20 @@ def field_spec(항목: str) -> FieldSpec:
         return FieldSpec(항목, "email", [], "여러 개면 쉼표로 구분")
     if 항목 in _PHONE_FIELDS:
         return FieldSpec(항목, "phone", [], "010-1234-5678")
+    if 긴글:
+        return FieldSpec(항목, "긴글", [], "여러 줄을 쓸 수 있습니다")
     return FieldSpec(항목, "text", [])
 
 
-def validate(항목: str, 값: str) -> str:
+def validate(항목: str, 값: str, 긴글: bool = False) -> str:
     """입력값을 검사하고 저장할 형태로 정규화한다.
 
     형식이 어긋나면 ValidationError 를 낸다. 조용히 고쳐서 넣지 않는다 —
     사람이 잘못 입력한 것을 모르고 지나가면 안 되기 때문이다.
+
+    `긴글` 이면 줄바꿈을 살린다. 어느 열이 그런지는 관리자가 «표 항목» 에서
+    정하고, 부르는 쪽이 그 값을 넘긴다. 형식이 정해진 열은 그 검사가 먼저
+    걸리므로 여기까지 오지 않는다.
     """
     if 항목 in READONLY_FIELDS:
         raise ValidationError(f"'{항목}' 은 수정할 수 없습니다.")
@@ -112,7 +123,7 @@ def validate(항목: str, 값: str) -> str:
             f"'명칭 관리' 에서 대표명을 고치세요 (표에 바로 반영됩니다)."
         )
 
-    원본 = (값 or "").strip()
+    원본 = N.paragraph(값) if 긴글 else (값 or "").strip()
 
     if 항목 in CHOICE_FIELDS:
         허용 = CHOICE_FIELDS[항목]
@@ -154,15 +165,43 @@ def validate(항목: str, 값: str) -> str:
     if 항목 in _MULTI_FIELDS:
         return N.multi(원본)
 
-    return N.text(원본)
+    return N.paragraph(원본) if 긴글 else N.text(원본)
 
 
-def validate_registry(항목: str, 값: str, registry) -> str:
+def registry_entry(항목: str, 값: str, registry):
+    """그 값이 가리키는 사전 항목. 없으면 None.
+
+    화면의 소속·학교 칸은 **표시명**으로 고르게 돼 있고(사람이 정한 이름),
+    레코드에는 **원표기**가 들어 있다(CV 에 적힌 그대로). 둘 다 같은 항목을
+    가리킬 수 있어야 해서 두 갈래로 찾는다.
+    """
+    종류 = NAME_COLUMNS.get(항목)
+    if 종류 is None or not (값 or "").strip():
+        return None
+    표기 = 값.strip()
+    return registry.lookup(종류, 표기) or registry.by_display(종류, 표기)
+
+
+def registry_display(항목: str, 값: str, registry) -> str:
+    """그 값이 화면에 어떻게 보이나. 사전에 없으면 값 그대로."""
+    found = registry_entry(항목, 값, registry)
+    return found.표시명 if found else (값 or "").strip()
+
+
+def validate_registry(항목: str, 값: str, registry, 현재값: str = "") -> str:
     """소속·전공처럼 명칭 사전이 관리하는 항목의 값을 검사한다.
 
-    **자유 입력을 받지 않는다.** 사전에 이미 있는 이름 중에서만 고를 수 있다.
-    자유 입력을 허용하면 표에 보이는 대표명을 그대로 저장해 버리는 일이 생기고,
-    그러면 원문 표기가 사라져 나중에 사전을 고쳐도 되돌릴 수 없다.
+    **자유 입력을 받지 않는다.** 사전에 이미 있는 것 중에서만 고를 수 있다.
+    다만 «있다» 의 뜻이 둘이다 — CV 에 적힌 **원표기**로 있을 수도 있고,
+    사람이 정한 **표시명**으로 있을 수도 있다. 화면은 표시명으로 고르게 하므로
+    표시명도 받아야 한다. (표시명을 안 받던 동안에는 `서울대학교` 의 이름을
+    `서울대` 로 바꿔 두면 그 목록에서 고른 값이 "명칭 사전에 없습니다" 로
+    되돌아왔다.)
+
+    **돌려주는 것은 표시명이 아니라 원표기다.** 표에 보이는 이름은 볼 때마다
+    사전에서 다시 읽으므로(`CVRecord.to_row`), 저장은 원표기로 둬야 나중에
+    사전에서 이름을 고쳤을 때 따라온다. 표시명을 저장해 버리면 원문 표기가
+    사라져 되돌릴 수 없다.
     """
     종류 = NAME_COLUMNS.get(항목)
     if 종류 is None:
@@ -170,16 +209,21 @@ def validate_registry(항목: str, 값: str, registry) -> str:
     원본 = (값 or "").strip()
     if not 원본:
         return ""
-    found = registry.lookup(종류, 원본)
+    found = registry_entry(항목, 원본, registry)
     if found is None:
         raise ValidationError(
             f"'{원본}' 은 명칭 사전에 없습니다. '명칭 관리' 화면의 {종류} 목록에서 고르세요."
         )
-    return found.표시명
+    # 지금 값이 이미 같은 항목을 가리키면 **아무것도 바꾸지 않는다.**
+    # 화면이 표시명을 되돌려 보냈다는 이유로 원표기를 갈아치우면 안 된다.
+    지금 = registry_entry(항목, 현재값, registry)
+    if 지금 is not None and 지금.표시명 == found.표시명:
+        return (현재값 or "").strip()
+    return found.원표기
 
 
 def apply_edit(rec, 항목: str, 새값: str, 기대_이전값: str | None = None,
-               registry=None) -> tuple[str, str]:
+               registry=None, 긴글: bool = False) -> tuple[str, str]:
     """레코드의 한 항목만 고친다.
 
     Args:
@@ -194,8 +238,15 @@ def apply_edit(rec, 항목: str, 새값: str, 기대_이전값: str | None = Non
         raise ValidationError(f"없는 항목입니다: {항목}")
 
     현재값 = str(getattr(rec, 항목) or "")
-    if 기대_이전값 is not None and 현재값 != str(기대_이전값 or ""):
-        raise ConflictError(항목, 현재값, str(기대_이전값 or ""))
+    사전열 = 항목 in REGISTRY_FIELDS and registry is not None
+    # 명칭 사전 열은 **보이는 이름끼리** 견준다. 화면은 표시명을 들고 있고
+    # 레코드는 원표기를 들고 있어서, 날값끼리 견주면 손도 안 댄 칸이 매번
+    # "다른 사람이 방금 바꿨습니다" 가 된다.
+    비교값 = registry_display(항목, 현재값, registry) if 사전열 else 현재값
+    # 줄 끝은 맞춰 놓고 견준다 — 브라우저가 폼을 보낼 때 줄바꿈을 CRLF 로
+    # 바꿔 놓아서, 안 그러면 여러 줄 칸이 저장할 때마다 충돌로 잡힌다.
+    if 기대_이전값 is not None and N.lines(비교값) != N.lines(기대_이전값):
+        raise ConflictError(항목, 비교값, str(기대_이전값 or ""))
 
     if 항목 in REGISTRY_FIELDS:
         if registry is None:
@@ -203,9 +254,9 @@ def apply_edit(rec, 항목: str, 새값: str, 기대_이전값: str | None = Non
                 f"'{항목}' 은 표에서 직접 고칠 수 없습니다. 지원자 상세 화면에서 "
                 f"명칭 사전에 있는 이름 중 골라 주세요."
             )
-        저장값 = validate_registry(항목, 새값, registry)
+        저장값 = validate_registry(항목, 새값, registry, 현재값=현재값)
     else:
-        저장값 = validate(항목, 새값)
+        저장값 = validate(항목, 새값, 긴글=긴글)
     setattr(rec, 항목, 저장값)
     return 현재값, 저장값
 
@@ -213,14 +264,14 @@ def apply_edit(rec, 항목: str, 새값: str, 기대_이전값: str | None = Non
 # ---------------------------------------------------------------------------
 # 사용자 정의 열
 # ---------------------------------------------------------------------------
-def validate_custom(field: dict, 값: str) -> str:
+def validate_custom(field: dict, 값: str, 긴글: bool = False) -> str:
     """관리자가 웹에서 만든 열의 값을 검사한다.
 
     기본 열과 같은 원칙이다 — 형식이 어긋나면 저장을 거부한다.
     """
     이름 = field.get("이름", "열")
     유형 = field.get("유형", "텍스트")
-    원본 = (값 or "").strip()
+    원본 = N.paragraph(값) if 긴글 else (값 or "").strip()
 
     if 유형 == "선택":
         허용 = [o.strip() for o in (field.get("선택지") or "").split("|") if o.strip()]
@@ -247,10 +298,10 @@ def validate_custom(field: dict, 값: str) -> str:
             raise ValidationError(f"'{이름}' 은 숫자여야 합니다. 입력값: {원본!r}") from None
         return 정리
 
-    return N.text(원본)
+    return N.paragraph(원본) if 긴글 else N.text(원본)
 
 
-def custom_field_spec(field: dict) -> FieldSpec:
+def custom_field_spec(field: dict, 긴글: bool = False) -> FieldSpec:
     """사용자 정의 열의 입력칸 모양."""
     유형 = field.get("유형", "텍스트")
     이름 = field.get("이름", "")
@@ -263,4 +314,6 @@ def custom_field_spec(field: dict) -> FieldSpec:
         return FieldSpec(이름, "yyyymm", [], "YYYYMM 6자리 (예: 202603)")
     if 유형 == "숫자":
         return FieldSpec(이름, "number", [], "숫자만")
+    if 긴글:
+        return FieldSpec(이름, "긴글", [], "여러 줄을 쓸 수 있습니다")
     return FieldSpec(이름, "text", [])

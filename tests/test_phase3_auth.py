@@ -284,14 +284,82 @@ def test_registry_managed_field_needs_the_dictionary(tmp_path):
 
 
 def test_registry_field_accepts_representative_name(tmp_path):
-    """사전에서 대표명을 바꿨으면 그 대표명으로 저장된다."""
+    """대표명으로 골라도 통하고, **저장은 원표기로** 된다.
+
+    화면의 소속 목록은 사람이 정한 대표명으로 만든다. 그 이름으로 골라도
+    받아 줘야 하고(예전에는 "명칭 사전에 없습니다" 가 났다), 저장되는 값은
+    CV 에 적힌 원표기여야 한다 — 표에 보이는 이름은 볼 때마다 사전에서
+    다시 읽으므로, 원표기를 지우면 사전을 고쳐도 되돌릴 수 없다.
+    """
     from cvtool.names import NameRegistry
 
     reg = NameRegistry(tmp_path / "n.db")
     나 = reg.observe("소속", "포항공대")
     reg.classify(나.id, 표시명="POSTECH")
     rec = CVRecord(지원자_ID="T")
-    assert apply_edit(rec, "박사_학교", "포항공대", registry=reg)[1] == "POSTECH"
+    # 원표기로 골라도, 대표명으로 골라도 둘 다 원표기가 저장된다
+    assert apply_edit(rec, "박사_학교", "포항공대", registry=reg)[1] == "포항공대"
+    rec2 = CVRecord(지원자_ID="T2")
+    assert apply_edit(rec2, "박사_학교", "POSTECH", registry=reg)[1] == "포항공대"
+    assert rec2.to_row(reg)["박사_학교"] == "POSTECH"     # 표에는 대표명으로
+
+
+def test_picking_the_same_name_leaves_the_record_untouched(tmp_path):
+    """화면이 대표명을 되돌려 보내도 저장된 원표기를 갈아치우지 않는다."""
+    from cvtool.names import NameRegistry
+
+    reg = NameRegistry(tmp_path / "n.db")
+    나 = reg.observe("소속", "서울대학교")
+    reg.classify(나.id, 표시명="서울대")
+    rec = CVRecord(지원자_ID="T", 박사_학교="서울대학교")
+    옛값, 새값 = apply_edit(rec, "박사_학교", "서울대", 기대_이전값="서울대",
+                          registry=reg)
+    assert (옛값, 새값) == ("서울대학교", "서울대학교")   # 바뀐 것이 없다
+    assert rec.박사_학교 == "서울대학교"
+
+
+def test_registry_conflict_is_judged_by_the_visible_name(tmp_path):
+    """낙관적 잠금도 보이는 이름끼리 견준다.
+
+    화면은 대표명을, 레코드는 원표기를 들고 있다. 날값끼리 견주면 손도 안 댄
+    칸이 매번 "다른 사람이 방금 바꿨습니다" 가 된다.
+    """
+    from cvtool.names import NameRegistry
+
+    reg = NameRegistry(tmp_path / "n.db")
+    나 = reg.observe("소속", "서울대학교")
+    reg.classify(나.id, 표시명="서울대")
+    다른 = reg.observe("소속", "연세대학교")
+    reg.classify(다른.id, 표시명="연세대")
+    rec = CVRecord(지원자_ID="T", 박사_학교="서울대학교")
+    # 화면에 보이던 값('서울대')을 이전 값으로 보내도 충돌이 아니다
+    assert apply_edit(rec, "박사_학교", "연세대", 기대_이전값="서울대",
+                      registry=reg)[1] == "연세대학교"
+
+
+def test_registry_field_still_rejects_a_name_that_is_not_there(tmp_path):
+    from cvtool.names import NameRegistry
+
+    reg = NameRegistry(tmp_path / "n.db")
+    reg.observe("소속", "서울대학교")
+    rec = CVRecord(지원자_ID="T")
+    with pytest.raises(ValidationError):
+        apply_edit(rec, "박사_학교", "듣도보도못한대", registry=reg)
+
+
+def test_by_display_picks_the_most_seen_spelling(tmp_path):
+    """이름 하나에 표기가 여럿이면 가장 많이 나온 표기를 대표로 본다."""
+    from cvtool.names import NameRegistry
+
+    reg = NameRegistry(tmp_path / "n.db")
+    적은것 = reg.observe("소속", "포항공대")
+    많은것 = reg.observe("소속", "포항공과대학교")
+    for _ in range(3):
+        reg.observe("소속", "포항공과대학교")
+    reg.classify(적은것.id, 표시명="POSTECH")
+    reg.classify(많은것.id, 표시명="POSTECH")
+    assert reg.by_display("소속", "POSTECH").원표기 == "포항공과대학교"
+    assert reg.by_display("소속", "없는이름") is None
 
 
 def test_conflict_when_someone_else_changed_it():

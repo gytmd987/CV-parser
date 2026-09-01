@@ -66,7 +66,8 @@ CREATE TABLE IF NOT EXISTS column_config (
     열이름        TEXT PRIMARY KEY,   -- 기본 열·추가 열 공통
     표시이름      TEXT DEFAULT '',    -- 비면 열이름 그대로
     숨김         INTEGER DEFAULT 0,
-    순서         INTEGER DEFAULT 0    -- 0 이면 원래 순서
+    순서         INTEGER DEFAULT 0,   -- 0 이면 원래 순서
+    긴글         INTEGER DEFAULT 0    -- 여러 줄을 넣을 수 있는 열인가
 );
 CREATE TABLE IF NOT EXISTS review_done (
     지원자_ID    TEXT NOT NULL,
@@ -98,6 +99,13 @@ _ADDED_COLUMNS = {
     "중복_메모": "TEXT DEFAULT ''",      # 등록 시 발견한 중복 후보
     "등록년도": "TEXT DEFAULT ''",       # 기본은 등록 시점 연도. 수정 가능
 }
+
+#: `column_config` 에 나중에 생긴 열
+_ADDED_CONFIG_COLUMNS = {"긴글": "INTEGER DEFAULT 0"}
+
+#: 처음부터 여러 줄로 두는 열. 원래 문단이 들어가는 자리다.
+#: (관리자가 «표 항목» 에서 다른 열도 켜고 이 둘을 끌 수 있다.)
+DEFAULT_LONG_COLUMNS = ("경력_요약", "비고")
 
 SUPPORTED_SUFFIXES = {".pdf", ".docx", ".txt", ".md"}
 
@@ -138,6 +146,13 @@ class CandidateStore:
         for col, decl in _ADDED_COLUMNS.items():
             if col not in existing:
                 self._conn.execute(f"ALTER TABLE candidates ADD COLUMN {col} {decl}")
+        설정열 = {
+            r["name"] for r in self._conn.execute("PRAGMA table_info(column_config)")
+        }
+        for col, decl in _ADDED_CONFIG_COLUMNS.items():
+            if col not in 설정열:
+                self._conn.execute(
+                    f"ALTER TABLE column_config ADD COLUMN {col} {decl}")
 
     # -- 원본 파일 ---------------------------------------------------------
     def store_file(self, 지원자_ID: str, 원본_파일명: str, content: bytes) -> str:
@@ -517,29 +532,46 @@ class CandidateStore:
 
     # -- 열 설정 (기본 열 + 추가 열 공통) -----------------------------------
     def column_config(self) -> dict[str, dict]:
-        """{열이름: {표시이름, 숨김, 순서}}. 설정한 열만 들어 있다."""
+        """{열이름: {표시이름, 숨김, 순서, 긴글}}. 설정한 열만 들어 있다."""
         return {
             r["열이름"]: {"표시이름": r["표시이름"] or "", "숨김": bool(r["숨김"]),
-                        "순서": r["순서"] or 0}
+                        "순서": r["순서"] or 0, "긴글": bool(r["긴글"])}
             for r in self._conn.execute("SELECT * FROM column_config")
         }
 
+    def 긴글열(self) -> set[str]:
+        """여러 줄을 넣을 수 있는 열.
+
+        화면(어떤 입력칸을 그릴까)·검사(줄바꿈을 살릴까)·엑셀(줄을 펴서
+        보여줄까)이 **같은 곳**을 봐야 한다. 설정이 없는 열은 기본값을 따른다.
+        """
+        cfg = self.column_config()
+        켠것 = {col for col, c in cfg.items() if c.get("긴글")}
+        켠것 |= {col for col in DEFAULT_LONG_COLUMNS if col not in cfg}
+        return 켠것
+
     def set_column(self, 열이름: str, *, 표시이름: str | None = None,
-                   숨김: bool | None = None, 순서: int | None = None) -> None:
-        """기본 열이든 추가 열이든 보이는 이름·숨김·순서를 정한다."""
+                   숨김: bool | None = None, 순서: int | None = None,
+                   긴글: bool | None = None) -> None:
+        """기본 열이든 추가 열이든 보이는 이름·숨김·순서·긴 글 여부를 정한다."""
         현재 = self.column_config().get(
-            열이름, {"표시이름": "", "숨김": False, "순서": 0}
+            열이름,
+            {"표시이름": "", "숨김": False, "순서": 0,
+             "긴글": 열이름 in DEFAULT_LONG_COLUMNS},
         )
         새것 = {
             "표시이름": 현재["표시이름"] if 표시이름 is None else 표시이름.strip(),
             "숨김": 현재["숨김"] if 숨김 is None else bool(숨김),
             "순서": 현재["순서"] if 순서 is None else int(순서 or 0),
+            "긴글": 현재.get("긴글", False) if 긴글 is None else bool(긴글),
         }
         self._conn.execute(
-            "INSERT INTO column_config (열이름, 표시이름, 숨김, 순서) VALUES (?,?,?,?)"
+            "INSERT INTO column_config (열이름, 표시이름, 숨김, 순서, 긴글)"
+            " VALUES (?,?,?,?,?)"
             " ON CONFLICT(열이름) DO UPDATE SET 표시이름=excluded.표시이름,"
-            " 숨김=excluded.숨김, 순서=excluded.순서",
-            (열이름, 새것["표시이름"], 1 if 새것["숨김"] else 0, 새것["순서"]),
+            " 숨김=excluded.숨김, 순서=excluded.순서, 긴글=excluded.긴글",
+            (열이름, 새것["표시이름"], 1 if 새것["숨김"] else 0, 새것["순서"],
+             1 if 새것["긴글"] else 0),
         )
         self._conn.commit()
 

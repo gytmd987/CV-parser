@@ -53,8 +53,10 @@ from ..edit import (
     ConflictError,
     ValidationError,
     apply_edit,
+    MULTILINE_OK,
     custom_field_spec,
     field_spec,
+    registry_display,
     validate,
     validate_custom,
 )
@@ -65,10 +67,17 @@ from ..export import build_xlsx, records_to_xlsx
 from ..fsutil import is_world_readable, mode_of, safe_filename, secure_dir, secure_file
 from ..extract import extract_cv_from_text
 from ..ingestion.parsers import UnsupportedFormat, extract_text
+from .. import normalize as N
 from ..normalize import MULTI_SEP
 from ..schemas import NAME_COLUMNS, TIER_COLUMN_PREFIX, CVRecord
 from ..schemas import columns as table_columns
-from ..store import CUSTOM_SCOPES, CUSTOM_TYPES, SUPPORTED_SUFFIXES, CandidateStore
+from ..store import (
+    CUSTOM_SCOPES,
+    CUSTOM_TYPES,
+    DEFAULT_LONG_COLUMNS as store_DEFAULT_LONG,
+    SUPPORTED_SUFFIXES,
+    CandidateStore,
+)
 from ..timeutil import now_kst
 from ..dedup import fingerprint, find_duplicates
 from ..names import (
@@ -623,6 +632,9 @@ input.fx{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-s
 /* 보내야 하는 때 — 단계마다 한 줄. 열일곱 개를 한 줄로 늘어놓으면 못 훑는다. */
 .whenrow{display:flex;align-items:center;gap:2px 4px;flex-wrap:wrap;padding:2px 0}
 .whenname{display:inline-block;min-width:76px;color:var(--muted);font-size:12.5px}
+/* 표 안에서 여는 여러 줄 입력칸 */
+textarea.cellbox{width:100%;min-width:240px;resize:vertical;font:inherit}
+.cellhint{color:var(--muted);font-size:11px;margin-top:2px}
 .mailbody{border:1px solid var(--line);border-radius:var(--r);padding:14px 16px;
  background:#fff;max-height:420px;overflow:auto;font:12pt/1.7 "맑은 고딕",sans-serif}
 .mailbody img{max-width:100%}
@@ -933,13 +945,26 @@ function openCell(td){
       if(o === raw) op.selected = true;
       el.appendChild(op);
     });
+  } else if(kind === '긴글'){
+    el = document.createElement('textarea');
+    el.rows = 4; el.value = raw; el.className = 'cellbox';
+    if(td.dataset.help) el.placeholder = td.dataset.help;
   } else {
     el = document.createElement('input');
     el.type = 'text'; el.value = raw;
     if(td.dataset.help) el.placeholder = td.dataset.help;
   }
   var before = td.textContent, done = false;
-  td.textContent = ''; td.appendChild(el); el.focus();
+  td.textContent = ''; td.appendChild(el);
+  if(kind === '긴글'){
+    /* 여러 줄 상자에서 Enter 는 줄바꿈이다. 저장하는 방법을 적어 둔다 —
+       안 적으면 어떻게 끝내는지 알 수가 없다. */
+    var 힌트 = document.createElement('div');
+    힌트.className = 'cellhint';
+    힌트.textContent = 'Ctrl+Enter 저장 · Esc 취소';
+    td.appendChild(힌트);
+  }
+  el.focus();
   if(el.select) el.select();
   function cancel(){ if(done) return; done = true; td.textContent = before; }
   function save(){
@@ -971,7 +996,12 @@ function openCell(td){
      .catch(function(e){ td.textContent = before; 토스트('저장 실패: ' + e, 1); });
   }
   el.addEventListener('keydown', function(e){
-    if(e.key === 'Enter'){ e.preventDefault(); save(); }
+    if(e.key === 'Enter'){
+      /* 여러 줄 칸에서는 Enter 가 줄바꿈이다. 보이는 게 여러 줄짜리 상자인데
+         Enter 가 저장이면 손이 배신당한다. 저장은 Ctrl(⌘)+Enter. */
+      if(kind === '긴글' && !(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault(); save();
+    }
     else if(e.key === 'Escape'){ e.preventDefault(); cancel(); }
   });
   el.addEventListener('blur', save);
@@ -988,13 +1018,36 @@ def _cell(cid: str, col: str, 표시: str, 원본: str, spec, *,
     거쳐 대표명으로 보이기 때문이다. 편집은 언제나 원본을 고친다.
     """
     opts = json.dumps(list(spec.선택지), ensure_ascii=False) if spec.입력 == "select" else "[]"
+    # 속성 안의 줄바꿈을 브라우저가 어떻게 다루는지에 기대지 않는다. 값이
+    # 한 칸 밀리면 편집칸에 엉뚱한 글이 들어간다.
+    담기 = lambda v: html.escape(v).replace("\n", "&#10;")
     return (
         f"<td class='edit{cls}' data-id='{html.escape(cid)}' data-col='{html.escape(col)}'"
-        f" data-raw='{html.escape(원본)}' data-kind='{html.escape(spec.입력)}'"
+        f" data-raw='{담기(원본)}' data-kind='{html.escape(spec.입력)}'"
         f" data-opts='{html.escape(opts)}' data-scope='{scope}'"
-        f" data-help='{html.escape(spec.도움말)}' title='{html.escape(표시)}'>"
+        f" data-help='{html.escape(spec.도움말)}' title='{담기(표시)}'>"
         f"{html.escape(표시)}</td>"
     )
+
+
+def _긴글가능(col: str, 추가열: dict | None, 구분: str = "") -> bool:
+    """이 열에 «긴 글» 을 켤 수 있나.
+
+    형식이 정해진 칸(날짜·연월·전화·이메일·선택·숫자)은 안 된다 — 줄바꿈이
+    들어가면 그 형식 검사가 무너진다. 명칭 사전 열과 계산 결과 열도 값을 사람이
+    직접 쓰는 자리가 아니라 뺀다.
+    """
+    if 추가열 is not None:
+        return custom_field_spec(추가열).입력 == MULTILINE_OK
+    if 구분 == "채용 현황":
+        return col == "비고"
+    if 구분 == "관리 정보":
+        return False
+    if col in REGISTRY_FIELDS or col in READONLY_FIELDS:
+        return False
+    if col.startswith(TIER_COLUMN_PREFIX):
+        return False
+    return field_spec(col).입력 == MULTILINE_OK
 
 
 def _editable(col: str) -> bool:
@@ -1098,6 +1151,7 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
 
     COLS = 표열()
     사용자열정의 = {f["이름"]: f for f in store.fields()}
+    긴글열 = store.긴글열()
     사용자값맵 = store.custom_map()
     표값 = _표값맵()
     보기전용열 = set(RECRUIT_COLUMNS) | set(추가열("채용 현황")) | {MAIL_COLUMN}
@@ -1156,7 +1210,8 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
                 값 = 사용자값맵.get(cid, {}).get(c, "")
                 if 수정가능:
                     cells.append(_cell(cid, c, 값, 값,
-                                       custom_field_spec(사용자열정의[c]),
+                                       custom_field_spec(사용자열정의[c],
+                                                         c in 긴글열),
                                        scope="사용자", cls=" " + 폭))
                 else:
                     cells.append(f"<td class='{폭}' title='{html.escape(값)}'>"
@@ -1166,7 +1221,7 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
             cls = " flag" if c == "검토_필요" and 표시 == "Y" else ""
             if 수정가능 and _editable(c):
                 cells.append(_cell(cid, c, 표시, str(getattr(rec, c, "") or ""),
-                                   field_spec(c), cls=cls + " " + 폭))
+                                   field_spec(c, c in 긴글열), cls=cls + " " + 폭))
             else:
                 v = html.escape(표시)
                 cells.append(f"<td class='{cls.strip()} {폭}' title='{v}'>{v}</td>")
@@ -1214,7 +1269,8 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
 
     안내 = (
         "<p class='muted'>표의 칸을 눌러 바로 고칠 수 있습니다. "
-        "Enter 로 저장, Esc 로 취소. 회색 칸(계산·자동 항목)은 고칠 수 없습니다.</p>"
+        "Enter 로 저장, Esc 로 취소. 여러 줄 칸은 Enter 가 줄바꿈이고 "
+        "<b>Ctrl+Enter</b> 로 저장합니다. 회색 칸(계산·자동 항목)은 고칠 수 없습니다.</p>"
         if 수정가능 else ""
     )
     checked = " checked" if review_only else ""
@@ -1266,7 +1322,8 @@ function cellText(td){
       var o = f.options[f.selectedIndex];
       return o ? o.text.replace(/\s+/g,' ').trim() : '';
     }
-    return f.value;
+    /* 여러 줄 칸의 줄바꿈을 그대로 내보내면 붙여넣은 TSV 의 줄이 깨진다 */
+    return f.value.replace(/\s+/g,' ').trim();
   }
   return (td.textContent || '').replace(/\s+/g,' ').trim();
 }
@@ -2741,6 +2798,7 @@ def _엑셀등록(data: bytes, me: User) -> tuple[list[str], list[str], list[str
     """
     열, 머리 = _엑셀양식열()
     줄들, 모르는것 = bulk.읽기(data, 열, 머리)
+    긴글열 = store.긴글열()
 
     만든것: list[str] = []
     빠진것: list[str] = []
@@ -2763,9 +2821,9 @@ def _엑셀등록(data: bytes, me: User) -> tuple[list[str], list[str], list[str
                     # 등록한다 (미분류로 올라와 명칭 관리에서 판별한다).
                     setattr(rec, 항목, 값)
                 elif (정의 := store.field(항목)) is not None:
-                    추가값[항목] = validate_custom(정의, 값)
+                    추가값[항목] = validate_custom(정의, 값, 항목 in 긴글열)
                 else:
-                    setattr(rec, 항목, validate(항목, 값))
+                    setattr(rec, 항목, validate(항목, 값, 긴글=항목 in 긴글열))
             except (ValidationError, ValueError) as exc:
                 탈 = f"{행번호}행 {항목}: {exc}"
                 break
@@ -2918,6 +2976,7 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
     meta = store.meta(지원자_ID) or {}
     row = rec.to_row(registry)
     수정가능 = can(me, "지원자_수정")
+    긴글열 = store.긴글열()
     # 현업에게는 검토 필요·관리 정보·변경 이력을 내지 않는다. 자기 과제 지원자가
     # 어디까지 왔는지만 보면 되는 자리라, 추출 신뢰도·등록 경위·누가 무엇을
     # 고쳤는지까지 열어 둘 이유가 없다.
@@ -2932,7 +2991,9 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
         """한 칸. 이름은 값_{i} 처럼 번호를 달아 **한 폼에** 담는다."""
         if 항목 in REGISTRY_FIELDS:
             종류 = NAME_COLUMNS[항목]
-            현재 = registry.display(종류, 값) if 값 else ""
+            # 숨은 «이전 값» 칸과 **같은 함수**로 뽑는다. 둘이 갈라지면 손도 안
+            # 댄 칸이 바뀐 것으로 잡힌다.
+            현재 = registry_display(항목, 값, registry) if 값 else ""
             보기 = [""] + [n.표시명 for n in registry.list_all(종류)]
             opts = "".join(
                 f"<option value='{html.escape(o)}'{' selected' if o == 현재 else ''}>"
@@ -2941,7 +3002,7 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
             )
             return (f"<select form='saveform' name='{이름}' onchange='markDirty(this)'"
                     f" data-orig='{html.escape(현재)}'>{opts}</select>")
-        spec = field_spec(항목)
+        spec = field_spec(항목, 항목 in 긴글열)
         if spec.입력 == "select":
             opts = "".join(
                 f"<option value='{html.escape(o)}'{' selected' if o == 값 else ''}>"
@@ -2951,6 +3012,11 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
             return (f"<select form='saveform' name='{이름}' onchange='markDirty(this)'"
                     f" data-orig='{html.escape(값)}'>{opts}</select>")
         도움 = f" placeholder='{html.escape(spec.도움말)}'" if spec.도움말 else ""
+        if spec.입력 == "긴글":
+            return (f"<textarea form='saveform' name='{이름}' rows='4'"
+                    f" style='width:100%;max-width:640px'"
+                    f" data-orig='{html.escape(값)}' oninput='markDirty(this)'"
+                    f"{도움}>{html.escape(값)}</textarea>")
         return (f"<input type='text' form='saveform' name='{이름}'"
                 f" value='{html.escape(값)}' style='width:100%;max-width:420px'"
                 f" data-orig='{html.escape(값)}' oninput='markDirty(this)'{도움}>")
@@ -2985,11 +3051,16 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
             continue
         번호 += 1
         원본값 = str(getattr(rec, c, "") or "")
+        # 명칭 사전 열은 **화면에 뜬 이름**을 이전 값으로 보낸다. 칸이 표시명을
+        # 고르는 <select> 인데 이전 값에 원표기를 담으면, 손도 안 댄 칸이 매번
+        # 바뀐 것으로 잡혀 «바뀐 것» 목록·알림·검사에 끼어든다.
+        이전값 = (registry_display(c, 원본값, registry)
+               if c in REGISTRY_FIELDS else 원본값)
         숨은칸.append(
             f"<input type='hidden' form='saveform' name='항목_{번호}'"
             f" value='{html.escape(c)}'>"
             f"<input type='hidden' form='saveform' name='이전_{번호}'"
-            f" value='{html.escape(원본값)}'>"
+            f" value='{html.escape(이전값)}'>"
         )
         항목행.append(
             f"<tr{줄표시}><th style='width:180px'>{html.escape(이름표[c])}"
@@ -3010,7 +3081,7 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
             )
             continue
         번호 += 1
-        spec = custom_field_spec(f)
+        spec = custom_field_spec(f, 이름 in 긴글열)
         if spec.입력 == "select":
             opts = "".join(
                 f"<option value='{html.escape(o)}'{' selected' if o == 값 else ''}>"
@@ -3018,6 +3089,13 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
             )
             칸 = (f"<select form='saveform' name='값_{번호}' onchange='markDirty(this)'"
                  f" data-orig='{html.escape(값)}'>{opts}</select>")
+        elif spec.입력 == "긴글":
+            칸 = (
+                f"<textarea form='saveform' name='값_{번호}' rows='4'"
+                f" style='width:100%;max-width:640px'"
+                f" data-orig='{html.escape(값)}' oninput='markDirty(this)'"
+                f" placeholder='{html.escape(spec.도움말)}'>{html.escape(값)}</textarea>"
+            )
         else:
             칸 = (
                 f"<input type='text' form='saveform' name='값_{번호}'"
@@ -5137,6 +5215,7 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
     열번호 = {c: n for n, c in enumerate(표열) if c in 채용사용자열}
     수정가능 = can(me, "채용현황_수정")
     담당자 = can(me, "지원자_수정")
+    긴글열 = store.긴글열()
 
     부서옵션전체 = "".join(
         f"<option value='{d['id']}'>{html.escape(d['이름'])}</option>" for d in depts
@@ -5196,13 +5275,18 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
                     f"<option value=''>-</option>{과제옵션}</select></td>"
                 )
             elif col == "비고" and 수정가능:
-                cells.append(
-                    f"<td class='ctl'><input type='text' form='recruitform'"
+                칸 = (
+                    f"<textarea form='recruitform' rows='2'"
+                    f" name='비고_{html.escape(cid)}' style='width:180px;resize:vertical'"
+                    f" data-orig='{v}' oninput='markDirty(this)'>{v}</textarea>"
+                    if "비고" in 긴글열 else
+                    f"<input type='text' form='recruitform'"
                     f" name='비고_{html.escape(cid)}' value='{v}' style='width:180px'"
-                    f" data-orig='{v}' oninput='markDirty(this)'></td>"
+                    f" data-orig='{v}' oninput='markDirty(this)'>"
                 )
+                cells.append(f"<td class='ctl'>{칸}</td>")
             elif col in 채용사용자열 and 수정가능:
-                spec = custom_field_spec(채용사용자열[col])
+                spec = custom_field_spec(채용사용자열[col], col in 긴글열)
                 이름 = f"사용자_{열번호[col]}_{html.escape(cid)}"
                 if spec.입력 == "select":
                     옵션 = "".join(
@@ -5211,6 +5295,11 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
                     )
                     칸 = (f"<select form='recruitform' name='{이름}' data-orig='{v}'"
                          f" onchange='markDirty(this)'>{옵션}</select>")
+                elif spec.입력 == "긴글":
+                    칸 = (f"<textarea form='recruitform' name='{이름}' rows='2'"
+                         f" style='width:140px;resize:vertical' data-orig='{v}'"
+                         f" oninput='markDirty(this)'"
+                         f" title='{html.escape(spec.도움말)}'>{v}</textarea>")
                 else:
                     칸 = (f"<input type='text' form='recruitform' name='{이름}'"
                          f" value='{v}' style='width:140px' data-orig='{v}'"
@@ -5457,6 +5546,7 @@ def _fields_page(me: User, error: str = "", msg: str = "") -> bytes:
     """
     사용자열 = {f["이름"]: f for f in store.fields()}
     cfg = store.column_config()
+    긴글열 = store.긴글열()
     유형옵션 = "".join(f"<option>{t}</option>" for t in CUSTOM_TYPES)
     구분옵션 = "".join(f"<option>{g}</option>" for g in CUSTOM_SCOPES)
     쓰는채용열 = set(recruit.columns())
@@ -5516,7 +5606,7 @@ def _fields_page(me: User, error: str = "", msg: str = "") -> bytes:
     for i, (구분, col, 추가열) in enumerate(차례, start=1):
         if i == 첫숨김 + 1:
             rows.append(
-                "<tr class='grouphead'><td colspan='7'><b>숨긴 열</b> "
+                "<tr class='grouphead'><td colspan='8'><b>숨긴 열</b> "
                 f"<span class='muted'>{len(숨은것)}개 — 표에 안 나옵니다. "
                 "숨김을 풀면 여기 순서대로 뒤에 붙습니다.</span></td></tr>"
             )
@@ -5565,7 +5655,12 @@ def _fields_page(me: User, error: str = "", msg: str = "") -> bytes:
             f"<td><label><input type='checkbox' form='colform' name='hide_{i}'"
             f"{' checked' if 숨김중 else ''} onchange='markDirty(this)'"
             f" data-orig=''> 숨김</label></td>"
-            f"<td>" + (
+            + ("<td><label><input type='checkbox' form='colform'"
+               f" name='long_{i}'{' checked' if col in 긴글열 else ''}"
+               " onchange='markDirty(this)' data-orig=''> 긴 글</label></td>"
+               if _긴글가능(col, 사용자열.get(col), 구분)
+               else "<td class='muted'>-</td>")
+            + "<td>" + (
                 "<form method='post' action='/fields/delete' style='display:inline'"
                 " onsubmit=\"return confirm('이 열과 여기 들어있던 모든 값이 지워집니다.')\">"
                 f"<input type='hidden' name='name' value='{html.escape(col)}'>"
@@ -5603,10 +5698,15 @@ def _fields_page(me: User, error: str = "", msg: str = "") -> bytes:
         "<div class='scroll'><table data-name='표 항목' id='colorder'>"
         "<tr><th class='ctl' style='width:86px'>순서</th>"
         "<th>열 이름</th><th>구분</th><th>입력 형식</th>"
-        "<th class='ctl'>표에 보일 이름</th><th>숨김</th><th></th></tr>"
+        "<th class='ctl'>표에 보일 이름</th><th>숨김</th>"
+        "<th title='켜면 그 칸에 여러 줄을 넣을 수 있습니다'>긴 글</th>"
+        "<th></th></tr>"
         + "".join(rows) + "</table></div>"
         + _COLORDER_JS +
         "<p class='muted'>여기서 정한 이름·순서·숨김은 <b>화면과 엑셀에 함께</b> 적용됩니다. "
+        "<b>긴 글</b>을 켠 열은 표에서 칸을 눌렀을 때 여러 줄 상자가 "
+        "뜹니다 (Enter 는 줄바꿈, Ctrl+Enter 가 저장). 형식이 정해진 열은 "
+        "켤 수 없습니다. "
         "고칠 수 있는 것과 없는 것의 경계는 하나입니다 — <b>형식 검사와 추출 스키마</b>. "
         "단계 상태 목록과 추가한 열의 선택지·유형·이름은 고칠 수 있고, 지원자 정보 열의 "
         "선택지는 추출 스키마에 걸려 있어 못 고칩니다. 안 쓰는 열은 <b>숨김</b>으로 두세요.</p>"
@@ -7299,6 +7399,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             보이는 = auth.visible_project_ids(me)
             바뀐것: list[str] = []
+            긴글열 = store.긴글열()
             이름맵 = {r.지원자_ID: (r.한글_이름 or r.영문_이름 or r.지원자_ID)
                      for r in store.list_all()}
 
@@ -7335,10 +7436,12 @@ class Handler(BaseHTTPRequestHandler):
                     cid = key[len("비고_"):]
                     if not 볼수있나(cid):
                         continue
-                    이전 = recruit.set_note(cid, 값들[0], me.아이디)
-                    if 이전 != 값들[0]:
+                    새비고 = (N.paragraph(값들[0]) if "비고" in 긴글열
+                            else N.text(값들[0]))
+                    이전 = recruit.set_note(cid, 새비고, me.아이디)
+                    if 이전 != 새비고:
                         audit.record(me.아이디, "채용현황", cid, 항목="비고",
-                                     이전값=이전, 새값=값들[0])
+                                     이전값=이전, 새값=새비고)
                         바뀐것.append(f"{이름맵.get(cid, cid)} 비고")
 
                 # 3) '채용 현황' 으로 만든 추가 열
@@ -7358,7 +7461,7 @@ class Handler(BaseHTTPRequestHandler):
                         if not 볼수있나(cid):
                             continue
                         try:
-                            새값 = validate_custom(정의, 값들2[0])
+                            새값 = validate_custom(정의, 값들2[0], 열이름 in 긴글열)
                         except ValidationError as exc:
                             return self._redirect(
                                 "/recruit?err=" + urllib.parse.quote(str(exc)))
@@ -8081,6 +8184,7 @@ class Handler(BaseHTTPRequestHandler):
                   if k.startswith("col_") and k.split("_")[1].isdigit() and v]
             열들.sort()
             이전 = store.column_config()
+            구분맵 = {c: g for g, c, _a in 열목록()}
             바뀐것: list[str] = []
             for i, col in 열들:
                 # 추가한 열은 이름과 구분(어느 표에 속하는지)까지 고칠 수 있다.
@@ -8109,18 +8213,27 @@ class Handler(BaseHTTPRequestHandler):
                 새라벨 = (data.get(f"label_{i}") or [""])[0].strip()
                 순서값 = (data.get(f"order_{i}") or [""])[0].strip()
                 숨김 = f"hide_{i}" in data
+                # 켤 수 없는 열은 체크박스를 아예 안 그린다. 그런 열까지
+                # "체크 없음 = 끔" 으로 읽으면 기본값이 조용히 꺼진다.
+                긴글가능 = _긴글가능(col, store.field(col), 구분맵.get(col, ""))
+                긴글 = (f"long_{i}" in data) if 긴글가능 else None
                 # 관리 정보 열은 설정이 없으면 "숨김" 이 기본이다. 그 상태에서
                 # 체크를 풀었으면 바뀐 것으로 봐야 설정이 저장된다.
                 옛 = 이전.get(
-                    col, {"표시이름": "", "숨김": 기본숨김(col, 이전), "순서": 0}
+                    col,
+                    {"표시이름": "", "숨김": 기본숨김(col, 이전), "순서": 0,
+                     "긴글": col in store_DEFAULT_LONG},
                 )
                 try:
                     새순서 = int(순서값) if 순서값 else 0
                 except ValueError:
                     새순서 = 옛["순서"]
-                if (새라벨, 숨김, 새순서) == (옛["표시이름"], 옛["숨김"], 옛["순서"]):
+                옛긴글 = bool(옛.get("긴글"))
+                if (새라벨, 숨김, 새순서, 긴글 if 긴글 is not None else 옛긴글) == (
+                        옛["표시이름"], 옛["숨김"], 옛["순서"], 옛긴글):
                     continue
-                store.set_column(col, 표시이름=새라벨, 숨김=숨김, 순서=새순서)
+                store.set_column(col, 표시이름=새라벨, 숨김=숨김, 순서=새순서,
+                                 긴글=긴글)
                 조각 = []
                 if 새라벨 != 옛["표시이름"]:
                     조각.append(f"이름 {새라벨 or '(원래대로)'}")
@@ -8134,6 +8247,10 @@ class Handler(BaseHTTPRequestHandler):
                     조각.append(f"순서 {새순서 or '원래대로'}")
                     audit.record(me.아이디, "표항목", col, 항목="순서",
                                  이전값=str(옛["순서"] or ""), 새값=str(새순서 or ""))
+                if 긴글 is not None and 긴글 != 옛긴글:
+                    조각.append("긴 글" if 긴글 else "긴 글 끔")
+                    audit.record(me.아이디, "표항목", col, 항목="긴 글",
+                                 이전값="Y" if 옛긴글 else "", 새값="Y" if 긴글 else "")
                 바뀐것.append(f"{col}({', '.join(조각)})")
             if not 바뀐것:
                 return self._redirect("/fields?msg=" + urllib.parse.quote("바뀐 내용이 없습니다."))
@@ -8289,7 +8406,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json({"ok": False, "error": str(
                         ConflictError(항목, 현재, 이전값))}, code=409)
                 try:
-                    저장값 = validate_custom(field, 새값)
+                    저장값 = validate_custom(field, 새값, 항목 in store.긴글열())
                 except ValidationError as exc:
                     return self._json({"ok": False, "error": str(exc)}, code=400)
                 이전 = store.set_custom(cid, 항목, 저장값)
@@ -8302,7 +8419,8 @@ class Handler(BaseHTTPRequestHandler):
             if rec is None:
                 return self._json({"ok": False, "error": "지원자를 찾을 수 없습니다."}, code=404)
             try:
-                옛값, 저장값 = apply_edit(rec, 항목, 새값, 기대_이전값=이전값)
+                옛값, 저장값 = apply_edit(rec, 항목, 새값, 기대_이전값=이전값,
+                                       긴글=항목 in store.긴글열())
             except ConflictError as exc:
                 return self._json({"ok": False, "error": str(exc)}, code=409)
             except ValidationError as exc:
@@ -8335,13 +8453,16 @@ class Handler(BaseHTTPRequestHandler):
             바뀐것: list[str] = []
             문제: list[str] = []
             레코드바뀜 = False
+            긴글열 = store.긴글열()
             for i in range(1, 끝 + 1):
                 항목 = (data.get(f"항목_{i}") or [""])[0]
                 if not 항목:
                     continue
                 새값 = (data.get(f"값_{i}") or [""])[0]
                 이전값 = (data.get(f"이전_{i}") or [""])[0]
-                if 새값 == 이전값:
+                # 브라우저는 폼을 보낼 때 줄바꿈을 CRLF 로 바꾼다. 맞춰 놓고
+                # 견주지 않으면 여러 줄 칸이 손 안 대도 매번 바뀐 것이 된다.
+                if N.lines(새값) == N.lines(이전값):
                     continue
                 구분 = (data.get(f"구분_{i}") or [""])[0]
                 if 구분 == "년도":
@@ -8361,7 +8482,7 @@ class Handler(BaseHTTPRequestHandler):
                     if field is None:
                         continue
                     try:
-                        저장값 = validate_custom(field, 새값)
+                        저장값 = validate_custom(field, 새값, 항목 in 긴글열)
                     except ValidationError as exc:
                         문제.append(str(exc))
                         continue
@@ -8373,7 +8494,8 @@ class Handler(BaseHTTPRequestHandler):
                     continue
                 try:
                     옛값, 저장값 = apply_edit(rec, 항목, 새값, 기대_이전값=이전값,
-                                            registry=registry)
+                                            registry=registry,
+                                            긴글=항목 in 긴글열)
                 except (ValidationError, ConflictError) as exc:
                     문제.append(str(exc))
                     continue

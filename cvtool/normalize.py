@@ -119,20 +119,22 @@ _AREA_3 = (
 _SPECIAL_4 = ("15", "16", "18")
 
 
-def _strip_kr_country_code(text: str, digits: str) -> str:
-    """+82 / 0082 / 82 로 시작하면 국내 형식(0으로 시작)으로 되돌린다.
+def _kr_candidates(digits: str) -> list[str]:
+    """이 숫자열이 국내 번호일 수 있는 모양들. 앞의 것부터 시도한다.
 
-    '+82 (0)10-...' 처럼 국가번호와 0 이 같이 적힌 경우도 있어서,
-    국가번호를 뗀 뒤 남은 0 을 한 번 더 걷어내고 0 을 새로 붙인다.
+    예전에는 **원문 글자**가 '+82' 로 시작하는지 봤다. 그래서 `(+82) 10-...`
+    처럼 괄호가 앞에 붙으면 국가번호를 못 알아보고 그대로 뒀다. 앞에 무엇이
+    붙어 있든(괄호·따옴표·`Tel:`) 상관없게 **숫자만** 보고 판단한다.
+
+    '+82 (0)10-...' 처럼 국가번호와 0 이 같이 적힌 경우도 있어서, 국가번호를
+    뗀 뒤 남은 0 을 한 번 더 걷어내고 0 을 새로 붙인다.
     """
-    국가번호 = text.lstrip().startswith(("+82", "0082", "82"))
-    if not 국가번호:
-        return digits
+    후보 = [digits]
     if digits.startswith("0082"):
-        digits = digits[4:]
+        후보.append("0" + digits[4:].lstrip("0"))
     elif digits.startswith("82"):
-        digits = digits[2:]
-    return "0" + digits.lstrip("0")
+        후보.append("0" + digits[2:].lstrip("0"))
+    return 후보
 
 
 def _format_kr(digits: str) -> str:
@@ -152,6 +154,10 @@ def phone(value: str) -> str:
     """전화번호를 010-1234-5678 꼴로. 국가번호(+82)는 0 으로 되돌린다.
 
     한국 번호가 아니면(+1 등) 손대지 않는다. 지어내는 것보다 원문이 낫다.
+
+    국가번호를 뗀 결과가 **국내 형식에 맞을 때만** 그 결과를 쓴다. 그래서
+    82 로 시작하지만 한국 번호가 아닌 것을 잘못 고칠 일이 없다 (국내 번호는
+    전부 0 으로 시작하므로 숫자가 82 로 시작하는 국내 번호도 없다).
     """
     if not value:
         return ""
@@ -159,8 +165,11 @@ def phone(value: str) -> str:
     digits = _digits(text)
     if not digits:
         return ""
-    digits = _strip_kr_country_code(text, digits)
-    return _format_kr(digits) or text
+    for 후보 in _kr_candidates(digits):
+        맞춘것 = _format_kr(후보)
+        if 맞춘것:
+            return 맞춘것
+    return text
 
 
 def email(value: str) -> str:
@@ -182,6 +191,34 @@ def enum(value: str, allowed: list[str], fallback: str = "") -> str:
 def text(value: str) -> str:
     """셀 안 줄바꿈·탭을 없앤다. 엑셀 표가 깨지지 않게."""
     return " ".join(str(value or "").split())
+
+
+#: 이어진 빈 줄은 여기까지만 남긴다 (문단 사이 한 칸)
+_빈줄_RE = re.compile(r"\n{3,}")
+
+
+def lines(value: str) -> str:
+    """줄 끝을 `\n` 하나로 맞춘다.
+
+    **브라우저는 폼을 보낼 때 줄바꿈을 전부 CRLF 로 바꾼다.** 그래서 화면에서
+    `\n` 이던 값이 서버에는 `\r\n` 으로 도착한다. 저장된 값과 견주는 자리에서
+    이걸 안 맞추면, 아무도 안 고친 칸이 "다른 사람이 방금 바꿨습니다" 가 된다.
+    """
+    return str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def paragraph(value: str) -> str:
+    """여러 줄을 **줄바꿈을 살려서** 다듬는다.
+
+    `text()` 는 줄바꿈까지 공백으로 뭉갠다. 대부분의 열은 그래야 표와 엑셀이
+    안 깨지지만, 경력 요약이나 비고처럼 원래 여러 줄인 자리가 있다. 그런 열만
+    이 함수를 탄다 (어느 열인지는 관리자가 «표 항목» 에서 켠다).
+
+    지우는 게 아니라 다듬는다 — 줄 사이는 살리고, **줄 안**은 `text()` 와 같은
+    규칙으로 정리한다. 그래야 한 줄짜리 값의 결과가 두 함수에서 같다.
+    """
+    줄들 = [text(줄) for 줄 in lines(value).split("\n")]
+    return _빈줄_RE.sub("\n\n", "\n".join(줄들)).strip("\n")
 
 
 # ---------------------------------------------------------------------------

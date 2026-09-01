@@ -76,9 +76,45 @@ def test_phone(raw, expected):
     assert N.phone(raw) == expected
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # 국가번호 앞뒤에 무엇이 붙어 있어도 알아본다. 예전에는 원문 글자가
+        # '+82' 로 **시작**하는지 봐서, 괄호 하나에 전부 못 알아봤다.
+        "(+82) 10-1234-5678",
+        "(+82)10.1234.5678",
+        "[+82] 10 1234 5678",
+        "Tel: +82-10-1234-5678",
+        "+82 10-1234-5678",
+        "0082 10 1234 5678",
+        "82 10 1234 5678",
+        "+82 (0)10-1234-5678",      # 국가번호와 0 이 같이 적힌 경우
+    ],
+)
+def test_phone_understands_country_code_anywhere(raw):
+    assert N.phone(raw) == "010-1234-5678"
+
+
 def test_phone_keeps_unknown_shape_as_is():
     """모르는 형태를 억지로 고치면 없는 번호를 만들어낸다."""
     assert N.phone("02-123-4567") == "02-123-4567"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "+1 415 555 2671",          # 외국 번호는 손대지 않는다
+        "8210-1234",                # 82 로 시작하지만 한국 번호가 아니다
+        "+44 20 7946 0958",
+    ],
+)
+def test_phone_leaves_non_korean_numbers_alone(raw):
+    """국가번호를 뗀 결과가 국내 형식에 맞을 때만 고친다."""
+    assert N.phone(raw) == raw
+
+
+def test_phone_still_handles_seoul_with_country_code():
+    assert N.phone("(+82) 2-1234-5678") == "02-1234-5678"
 
 
 # --- enum --------------------------------------------------------------------
