@@ -1,4 +1,4 @@
-"""채용 현황 — 단계별 진행 상태 · 부서/과제 배정 · 비고.
+"""채용 현황 — 단계별 진행 상태 · 부서/과제 배정 · 채용 비고.
 
 지원자 DB 는 하나만 쓴다. 여기에는 채용 진행에 관한 것만 담고,
 지원자 정보 자체는 candidates 쪽에 그대로 둔다.
@@ -37,14 +37,14 @@ FIXED_STATUSES = ("", "합격", "불합격")
 #: 보이는데 관리 목록에는 없는 열이 된다).
 STARTED_COLUMN = "채용"
 
-RECRUIT_COLUMNS = (STARTED_COLUMN, "부서", "과제", *STAGES, "최종상태", "비고")
+RECRUIT_COLUMNS = (STARTED_COLUMN, "부서", "과제", *STAGES, "최종상태", "채용_비고")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS recruit (
     지원자_ID    TEXT PRIMARY KEY,
     부서_id      INTEGER,
     project_id  INTEGER,
-    비고         TEXT DEFAULT '',
+    비고         TEXT DEFAULT '',   -- 밖에서는 '채용_비고'. 지원자 쪽 '비고' 와 다르다
     갱신일시      TEXT DEFAULT '',
     갱신자        TEXT DEFAULT '',
     채용시작일시   TEXT DEFAULT ''   -- 비면 인재 Pool 에만 있는 사람
@@ -74,7 +74,9 @@ class Progress:
     지원자_ID: str
     부서_id: int | None = None
     project_id: int | None = None
-    비고: str = ""
+    #: 이번 채용에 대한 메모. 지원자 자체에 대한 메모는 지원자 DB 의 `비고` 다.
+    #: (SQLite 열 이름은 `비고` 그대로다 — 밖으로 드러나는 이름만 바꿨다.)
+    채용_비고: str = ""
     갱신일시: str = ""
     갱신자: str = ""
     채용시작일시: str = ""
@@ -122,16 +124,40 @@ class RecruitStore:
         self._conn = Db(self.path)
         self._conn.executescript(_SCHEMA)
         self._migrate()
+        self._rename_note_column()
         self._conn.commit()
         for suffix in ("", "-wal", "-shm"):
             secure_file(Path(str(self.path) + suffix))
+
+    #: 한 번만 도는 이관 표시 (`PRAGMA user_version`).
+    #: 1 = 표에 보일 열 설정의 `비고` 를 `채용_비고` 로 옮겼다.
+    SCHEMA_VERSION = 1
+
+    @atomic
+    def _rename_note_column(self) -> None:
+        """채용 현황 표에 보일 열 설정에서 `비고` → `채용_비고`.
+
+        지원자 쪽에 `비고` 가 새로 생기면서 이름이 겹쳤다. 이관 시점에 `비고`
+        라는 이름을 쓰는 것은 채용 쪽 하나뿐이라 이 바꿔치기는 맞다.
+        **딱 한 번만** 돈다 — 두 번 돌면 그 사이에 사람이 채용 현황 표에 올린
+        지원자 `비고` 열까지 끌어간다.
+        """
+        판 = self._conn.execute("PRAGMA user_version").fetchone()[0]
+        if 판 >= self.SCHEMA_VERSION:
+            return
+        있는것 = {r["열이름"] for r in
+                self._conn.execute("SELECT 열이름 FROM view_columns")}
+        if "비고" in 있는것 and "채용_비고" not in 있는것:
+            self._conn.execute(
+                "UPDATE view_columns SET 열이름='채용_비고' WHERE 열이름='비고'")
+        self._conn.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
 
     @atomic
     def _migrate(self) -> None:
         """예전 DB 에 없던 열을 붙인다.
 
         채용시작일시가 없던 시절에는 인재 Pool 에 있는 사람이 모두 채용 현황에
-        나왔다. 그때 이미 손댄 사람(부서·과제 배정, 비고, 단계 상태)은 채용을
+        나왔다. 그때 이미 손댄 사람(부서·과제 배정, 채용 비고, 단계 상태)은 채용을
         시작한 것으로 봐야 화면에서 갑자기 사라지지 않는다.
         """
         있는열 = {r["name"] for r in self._conn.execute("PRAGMA table_info(recruit)")}
@@ -161,7 +187,7 @@ class RecruitStore:
                 지원자_ID=지원자_ID,
                 부서_id=row["부서_id"],
                 project_id=row["project_id"],
-                비고=row["비고"] or "",
+                채용_비고=row["비고"] or "",
                 갱신일시=row["갱신일시"] or "",
                 갱신자=row["갱신자"] or "",
                 채용시작일시=row["채용시작일시"] or "",
@@ -182,7 +208,7 @@ class RecruitStore:
                 지원자_ID=row["지원자_ID"],
                 부서_id=row["부서_id"],
                 project_id=row["project_id"],
-                비고=row["비고"] or "",
+                채용_비고=row["비고"] or "",
                 갱신일시=row["갱신일시"] or "",
                 갱신자=row["갱신자"] or "",
                 채용시작일시=row["채용시작일시"] or "",
@@ -270,11 +296,11 @@ class RecruitStore:
         self._conn.commit()
         return before.부서_id, before.project_id
 
-    def set_note(self, 지원자_ID: str, 비고: str, 사용자: str) -> str:
-        before = self.get(지원자_ID).비고
+    def set_note(self, 지원자_ID: str, 채용_비고: str, 사용자: str) -> str:
+        before = self.get(지원자_ID).채용_비고
         self._touch(지원자_ID, 사용자)
         self._conn.execute(
-            "UPDATE recruit SET 비고=? WHERE 지원자_ID=?", (비고 or "", 지원자_ID)
+            "UPDATE recruit SET 비고=? WHERE 지원자_ID=?", (채용_비고 or "", 지원자_ID)
         )
         self._conn.commit()
         return before

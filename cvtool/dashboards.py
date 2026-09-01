@@ -248,9 +248,59 @@ class DashboardStore:
         있는열 = {r["name"] for r in self._conn.execute("PRAGMA table_info(dashboards)")}
         if "너비" not in 있는열:
             self._conn.execute("ALTER TABLE dashboards ADD COLUMN 너비 TEXT DEFAULT ''")
+        self._rename_recruit_note()
         self._conn.commit()
         for suffix in ("", "-wal", "-shm"):
             secure_file(Path(str(self.path) + suffix))
+
+    #: 한 번만 도는 이관 표시 (`PRAGMA user_version`).
+    #: 1 = 수식 안의 `비고` 를 `채용_비고` 로 옮겼다.
+    SCHEMA_VERSION = 1
+
+    #: 수식이 들어 있는 자리. 여기만 바꾼다 — 제목·머리글·`글` 은 사람이 쓴
+    #: 글이라 손대면 안 된다.
+    _수식칸 = ("수식", "칸수식", "목록조건")
+
+    def _rename_recruit_note(self) -> None:
+        """저장된 수식 안의 낱말 `비고` 를 `채용_비고` 로 바꾼다.
+
+        지원자 쪽에 `비고` 가 새로 생기면서 이름이 겹쳤다. 이관 시점에 `비고`
+        라고 쓴 수식은 전부 채용 쪽을 가리키던 것이라 이 바꿔치기는 맞다.
+        **딱 한 번만** 돈다 — 두 번 돌면 그 뒤에 사람이 새로 쓴 지원자 `비고`
+        수식까지 채용 쪽으로 끌어간다.
+        """
+        판 = self._conn.execute("PRAGMA user_version").fetchone()[0]
+        if 판 >= self.SCHEMA_VERSION:
+            self._conn.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
+            return
+        낱말 = re.compile(r"(?<![0-9A-Za-z가-힣_])비고(?![0-9A-Za-z가-힣_])")
+
+        def 바꾸기(글: str) -> str:
+            return 낱말.sub("채용_비고", str(글 or ""))
+
+        for row in self._conn.execute("SELECT id, 설정_json FROM blocks").fetchall():
+            try:
+                설정 = json.loads(row["설정_json"] or "{}")
+            except json.JSONDecodeError:
+                continue
+            이전 = json.dumps(설정, ensure_ascii=False, sort_keys=True)
+            for 키 in self._수식칸:
+                if 설정.get(키):
+                    설정[키] = 바꾸기(설정[키])
+            if isinstance(설정.get("칸"), dict):
+                설정["칸"] = {k: 바꾸기(v) for k, v in 설정["칸"].items()}
+            if isinstance(설정.get("목록열"), list):
+                설정["목록열"] = [
+                    ([줄[0]] + [바꾸기(줄[1])] + list(줄[2:]))
+                    if isinstance(줄, list) and len(줄) >= 2 else 줄
+                    for 줄 in 설정["목록열"]
+                ]
+            if json.dumps(설정, ensure_ascii=False, sort_keys=True) != 이전:
+                self._conn.execute(
+                    "UPDATE blocks SET 설정_json=? WHERE id=?",
+                    (json.dumps(설정, ensure_ascii=False), row["id"]),
+                )
+        self._conn.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
 
     # -- 대시보드 ------------------------------------------------------------
     def add(self, 이름: str, 만든이: str = "", 설명: str = "") -> int:

@@ -104,8 +104,12 @@ _ADDED_COLUMNS = {
 _ADDED_CONFIG_COLUMNS = {"긴글": "INTEGER DEFAULT 0"}
 
 #: 처음부터 여러 줄로 두는 열. 원래 문단이 들어가는 자리다.
-#: (관리자가 «표 항목» 에서 다른 열도 켜고 이 둘을 끌 수 있다.)
-DEFAULT_LONG_COLUMNS = ("경력_요약", "비고")
+#: (관리자가 «표 항목» 에서 다른 열도 켜고 이것들을 끌 수 있다.)
+DEFAULT_LONG_COLUMNS = ("경력_요약", "비고", "채용_비고")
+
+#: 한 번만 도는 이관을 적어 두는 자리 (`PRAGMA user_version`).
+#: 1 = 채용 쪽 `비고` 를 `채용_비고` 로 옮겼다 (지원자 쪽에 `비고` 가 새로 생겨서).
+SCHEMA_VERSION = 1
 
 SUPPORTED_SUFFIXES = {".pdf", ".docx", ".txt", ".md"}
 
@@ -153,6 +157,26 @@ class CandidateStore:
             if col not in 설정열:
                 self._conn.execute(
                     f"ALTER TABLE column_config ADD COLUMN {col} {decl}")
+        self._rename_recruit_note()
+
+    def _rename_recruit_note(self) -> None:
+        """채용 쪽 `비고` 열 설정을 `채용_비고` 로 옮긴다.
+
+        지원자 쪽에 `비고` 가 새로 생기면서 이름이 겹쳤다. 이관 시점에는
+        `비고` 라는 이름을 쓰는 것이 채용 쪽 하나뿐이라 이 바꿔치기는 맞다.
+
+        **딱 한 번만 돌아야 한다.** 두 번 돌면 그 사이에 사람이 새로 만든
+        지원자 `비고` 설정까지 채용 쪽으로 끌어간다. `user_version` 으로 막는다.
+        """
+        판 = self._conn.execute("PRAGMA user_version").fetchone()[0]
+        if 판 >= SCHEMA_VERSION:
+            return
+        있는것 = {r["열이름"] for r in
+                self._conn.execute("SELECT 열이름 FROM column_config")}
+        if "비고" in 있는것 and "채용_비고" not in 있는것:
+            self._conn.execute(
+                "UPDATE column_config SET 열이름='채용_비고' WHERE 열이름='비고'")
+        self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     # -- 원본 파일 ---------------------------------------------------------
     def store_file(self, 지원자_ID: str, 원본_파일명: str, content: bytes) -> str:

@@ -28,7 +28,7 @@ def test_statuses():
 
 
 def test_recruit_columns_include_stages_and_note():
-    for c in (*STAGES, "부서", "과제", "비고", "최종상태"):
+    for c in (*STAGES, "부서", "과제", "채용_비고", "최종상태"):
         assert c in RECRUIT_COLUMNS
 
 
@@ -122,7 +122,7 @@ def test_assignment_returns_previous(rc):
 
 def test_note(rc):
     assert rc.set_note("A", "2차 면접 조율중", "hr1") == ""
-    assert rc.get("A").비고 == "2차 면접 조율중"
+    assert rc.get("A").채용_비고 == "2차 면접 조율중"
 
 
 def test_delete_removes_everything(rc):
@@ -130,7 +130,7 @@ def test_delete_removes_everything(rc):
     rc.set_note("A", "메모", "hr1")
     rc.delete("A")
     p = rc.get("A")
-    assert p.단계상태 == {} and p.비고 == ""
+    assert p.단계상태 == {} and p.채용_비고 == ""
 
 
 # --- 표 열 구성 --------------------------------------------------------------
@@ -140,14 +140,14 @@ def test_default_columns_include_stages(rc):
 
 
 def test_admin_can_set_columns_and_order(rc):
-    rc.set_columns(["최종상태", "한글_이름", "비고"])
-    assert rc.columns() == ["최종상태", "한글_이름", "비고"]
+    rc.set_columns(["최종상태", "한글_이름", "채용_비고"])
+    assert rc.columns() == ["최종상태", "한글_이름", "채용_비고"]
 
 
 def test_setting_columns_replaces_previous(rc):
     rc.set_columns(["한글_이름"])
-    rc.set_columns(["비고"])
-    assert rc.columns() == ["비고"]
+    rc.set_columns(["채용_비고"])
+    assert rc.columns() == ["채용_비고"]
 
 
 # --- 첨부파일 ---------------------------------------------------------------

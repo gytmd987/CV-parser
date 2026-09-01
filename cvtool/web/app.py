@@ -669,11 +669,11 @@ def _탭들(me: User | None, badge: str,
          (), can(me, "지원자_목록")),
         ("채용 현황", "/recruit", ("/recruit",), (),
          can(me, "채용현황_수정") or can(me, "지원자_조회")),
-        ("대시보드", "/dash", ("/dash",), (), can(me, "대시보드_조회")),
         (f"메일{메일배지}", "/mail", ("/mail",),
          (("메일 템플릿 관리", "/mail"),
           (f"메일 발송이력{메일배지}", "/mail/log")),
          can(me, "메일_템플릿")),
+        ("대시보드", "/dash", ("/dash",), (), can(me, "대시보드_조회")),
         (f"명칭 관리{badge}", 학회, ("/names",), (), can(me, "명칭_관리")),
         # 과제 파일 관리는 이 아래 하위 화면으로 들어갔다 (/match/*)
         ("부서·과제", "/org", ("/org", "/match"),
@@ -1040,7 +1040,7 @@ def _긴글가능(col: str, 추가열: dict | None, 구분: str = "") -> bool:
     if 추가열 is not None:
         return custom_field_spec(추가열).입력 == MULTILINE_OK
     if 구분 == "채용 현황":
-        return col == "비고"
+        return col == "채용_비고"
     if 구분 == "관리 정보":
         return False
     if col in REGISTRY_FIELDS or col in READONLY_FIELDS:
@@ -1091,7 +1091,7 @@ def 대시보드_행() -> F.Rows:
         행["부서"] = 부서명.get(p.부서_id, "") if p else ""
         행["과제"] = 과제명.get(p.project_id, "") if p else ""
         행["최종상태"] = p.최종상태 if p else "미시작"
-        행["비고"] = p.비고 if p else ""
+        행["채용_비고"] = p.채용_비고 if p else ""
         for 단계 in STAGES:
             행[단계] = (p.단계상태.get(단계, "") if p else "")
         m = 상위매칭.get(cid)
@@ -1794,7 +1794,7 @@ def 표열(registry_=None) -> list[str]:
 #: 열 이름별 너비 등급. 값이 짧은 열에 넓은 자리를 주면 정작 긴 글이 잘린다.
 _넓은열 = {
     "경력_요약", "검토_사유", "연구분야_키워드", "1저자_해외논문_제출처",
-    "메일_발송이력", "비고", "현재_소속_상세", "중복_메모", "원본_파일명",
+    "메일_발송이력", "비고", "채용_비고", "현재_소속_상세", "중복_메모", "원본_파일명",
 }
 _중간열 = {
     "한글_이름", "영문_이름", "이메일", "전화번호", "현재_소속", "부서", "과제",
@@ -1856,7 +1856,7 @@ def _표값맵() -> dict[str, dict[str, str]]:
         칸["부서"] = 부서명.get(p.부서_id, "")
         칸["과제"] = 과제명.get(p.project_id, "")
         칸["최종상태"] = p.최종상태
-        칸["비고"] = p.비고
+        칸["채용_비고"] = p.채용_비고
         for 단계 in STAGES:
             칸[단계] = p.단계상태.get(단계, "")
     for cid, 보낸것 in mailing.sent_summary().items():
@@ -5170,8 +5170,8 @@ def _recruit_rows(me: User, sort: str = ""):
             return 과제명.get(p.project_id, "") if p else ""
         if col == "최종상태":
             return p.최종상태 if p else "미시작"
-        if col == "비고":
-            return p.비고 if p else ""
+        if col == "채용_비고":
+            return p.채용_비고 if p else ""
         if col in STAGES:
             return (p.단계상태.get(col, "") if p else "")
         if col in 사용자열이름:
@@ -5274,14 +5274,15 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
                     f" data-orig='{v}' onchange='markDirty(this)'>"
                     f"<option value=''>-</option>{과제옵션}</select></td>"
                 )
-            elif col == "비고" and 수정가능:
+            elif col == "채용_비고" and 수정가능:
                 칸 = (
                     f"<textarea form='recruitform' rows='2'"
-                    f" name='비고_{html.escape(cid)}' style='width:180px;resize:vertical'"
+                    f" name='채용비고_{html.escape(cid)}'"
+                    f" style='width:180px;resize:vertical'"
                     f" data-orig='{v}' oninput='markDirty(this)'>{v}</textarea>"
-                    if "비고" in 긴글열 else
+                    if "채용_비고" in 긴글열 else
                     f"<input type='text' form='recruitform'"
-                    f" name='비고_{html.escape(cid)}' value='{v}' style='width:180px'"
+                    f" name='채용비고_{html.escape(cid)}' value='{v}' style='width:180px'"
                     f" data-orig='{v}' oninput='markDirty(this)'>"
                 )
                 cells.append(f"<td class='ctl'>{칸}</td>")
@@ -5332,7 +5333,9 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
     if not (수정가능 or 담당자):
         안내 += " 보기 전용입니다."
     else:
-        안내 += " 지원자 정보 열은 여기서 고칠 수 없습니다 (인재 Pool 에서 고치세요)."
+        안내 += (" 지원자 정보 열은 여기서 고칠 수 없습니다 (인재 Pool 에서 고치세요)."
+              " <b>채용_비고</b>는 이번 채용에 대한 메모입니다 — 그 사람 자체에 대한"
+              " 메모는 인재 Pool·상세의 <b>비고</b>에 적으세요.")
     열이름칸 = "".join(
         f"<input type='hidden' form='recruitform' name='사용자열_{n}'"
         f" value='{html.escape(c)}'>" for c, n in 열번호.items()
@@ -5748,7 +5751,7 @@ def _프로필값(cid: str) -> dict[str, str]:
     행["부서"] = 부서명.get(p.부서_id, "")
     행["과제"] = 과제명.get(p.project_id, "")
     행["최종상태"] = p.최종상태
-    행["비고"] = p.비고
+    행["채용_비고"] = p.채용_비고
     for 단계 in STAGES:
         행[단계] = p.단계상태.get(단계, "")
     m = store.top_matches().get(cid) or {}
@@ -7429,20 +7432,20 @@ class Handler(BaseHTTPRequestHandler):
                                      이전값=이전, 새값=값들[0])
                         바뀐것.append(f"{이름맵.get(cid, cid)} {단계} {값들[0] or '(빈칸)'}")
 
-                # 2) 비고
+                # 2) 채용 비고 (지원자 쪽 '비고' 와 다른 값이다)
                 for key, 값들 in data.items():
-                    if not key.startswith("비고_"):
+                    if not key.startswith("채용비고_"):
                         continue
-                    cid = key[len("비고_"):]
+                    cid = key[len("채용비고_"):]
                     if not 볼수있나(cid):
                         continue
-                    새비고 = (N.paragraph(값들[0]) if "비고" in 긴글열
+                    새비고 = (N.paragraph(값들[0]) if "채용_비고" in 긴글열
                             else N.text(값들[0]))
                     이전 = recruit.set_note(cid, 새비고, me.아이디)
                     if 이전 != 새비고:
-                        audit.record(me.아이디, "채용현황", cid, 항목="비고",
+                        audit.record(me.아이디, "채용현황", cid, 항목="채용_비고",
                                      이전값=이전, 새값=새비고)
-                        바뀐것.append(f"{이름맵.get(cid, cid)} 비고")
+                        바뀐것.append(f"{이름맵.get(cid, cid)} 채용_비고")
 
                 # 3) '채용 현황' 으로 만든 추가 열
                 for 키, 열이름들 in data.items():

@@ -387,17 +387,17 @@ def test_recruit_saves_many_rows_at_once(web, cid, org):
     code, body = web.post(
         "/recruit/save",
         **{f"부서_{cid}": str(did), f"과제_{cid}": str(pid),
-           f"단계_{cid}_서류 검토": "합격", f"비고_{cid}": "1차 통과"},
+           f"단계_{cid}_서류 검토": "합격", f"채용비고_{cid}": "1차 통과"},
     )
     p = web.module.recruit.get(cid)
     assert (p.부서_id, p.project_id) == (did, pid)
     assert p.단계상태["서류 검토"] == "합격"
-    assert p.비고 == "1차 통과"
+    assert p.채용_비고 == "1차 통과"
     assert "저장했습니다" in body
 
 
 def test_recruit_save_reports_nothing_changed(web, cid):
-    code, body = web.post("/recruit/save", **{f"비고_{cid}": ""})
+    code, body = web.post("/recruit/save", **{f"채용비고_{cid}": ""})
     assert "바뀐 내용이 없습니다" in body
 
 
@@ -574,7 +574,7 @@ def test_fields_page_lists_every_group_of_columns(web):
 def test_fields_page_lists_recruit_and_management_columns(web):
     """예전에는 없던 채용 현황 열과 관리 정보 열도 관리할 수 있어야 한다."""
     page = web.get("/fields")
-    for col in ("부서", "과제", "최종상태", "비고"):
+    for col in ("부서", "과제", "최종상태", "채용_비고"):
         assert col in page, col
     for col in ("등록년도", "등록일시", "원본_파일명", "보관_만료일"):
         assert col in page, col
@@ -968,7 +968,7 @@ def test_export_follows_the_search_filter(web):
 def test_pool_table_shows_recruit_and_mail_columns(web, cid):
     """한 사람에 대해 아는 것을 보려고 화면을 옮겨 다니지 않아도 되게."""
     열 = web.module.표열()
-    for c in ("부서", "과제", "서류 검토", "최종상태", "비고", "메일_발송이력"):
+    for c in ("부서", "과제", "서류 검토", "최종상태", "채용_비고", "메일_발송이력"):
         assert c in 열, c
     page = web.get("/")
     # 머리글은 밑줄 뒤에 <wbr> 를 넣어 줄바꿈을 허용한다

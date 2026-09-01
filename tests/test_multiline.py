@@ -43,13 +43,13 @@ def store(tmp_path):
 
 
 def test_경력_요약과_비고는_처음부터_켜져_있다(store):
-    assert store.긴글열() == {"경력_요약", "비고"}
+    assert store.긴글열() == {"경력_요약", "비고", "채용_비고"}
 
 
 def test_켜고_끌_수_있다(store):
     store.set_column("연구분야_키워드", 긴글=True)
     store.set_column("경력_요약", 긴글=False)
-    assert store.긴글열() == {"연구분야_키워드", "비고"}
+    assert store.긴글열() == {"연구분야_키워드", "비고", "채용_비고"}
 
 
 def test_다른_설정을_고쳐도_긴글은_그대로다(store):

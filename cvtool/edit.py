@@ -87,6 +87,12 @@ class FieldSpec:
 #: 선택·숫자)은 켤 수 없다 — 줄바꿈이 들어가면 그 형식이 무너진다.
 MULTILINE_OK = "text"
 
+#: 형식은 자유인데 **무엇을 적는 자리인지** 헷갈리는 열의 안내.
+#: 비고는 이름이 같은 짝(`채용_비고`)이 채용 현황에 따로 있어서 특히 그렇다.
+_안내 = {
+    "비고": "이 사람에 대한 메모 (채용 이야기는 채용 현황의 채용_비고 에)",
+}
+
 
 def field_spec(항목: str, 긴글: bool = False) -> FieldSpec:
     """화면에서 어떤 입력칸을 그릴지 정한다."""
@@ -100,9 +106,8 @@ def field_spec(항목: str, 긴글: bool = False) -> FieldSpec:
         return FieldSpec(항목, "email", [], "여러 개면 쉼표로 구분")
     if 항목 in _PHONE_FIELDS:
         return FieldSpec(항목, "phone", [], "010-1234-5678")
-    if 긴글:
-        return FieldSpec(항목, "긴글", [], "여러 줄을 쓸 수 있습니다")
-    return FieldSpec(항목, "text", [])
+    도움 = _안내.get(항목, "여러 줄을 쓸 수 있습니다" if 긴글 else "")
+    return FieldSpec(항목, "긴글" if 긴글 else "text", [], 도움)
 
 
 def validate(항목: str, 값: str, 긴글: bool = False) -> str:
