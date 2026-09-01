@@ -808,6 +808,15 @@ class CandidateStore:
             records = [r for r in records if hit(r)]
         return records
 
+    def ids(self) -> set[str]:
+        """등록된 지원자 ID 만.
+
+        '있는 사람인가' 만 알면 될 때 :meth:`list_all` 을 부르면 레코드를 전부
+        JSON 에서 풀어 낸다. 사람 수가 늘면 그 값이 그대로 화면 여는 시간이 된다.
+        """
+        return {r["지원자_ID"] for r in
+                self._conn.execute("SELECT 지원자_ID FROM candidates")}
+
     def get(self, 지원자_ID: str) -> CVRecord | None:
         row = self._conn.execute(
             "SELECT record_json FROM candidates WHERE 지원자_ID=?", (지원자_ID,)

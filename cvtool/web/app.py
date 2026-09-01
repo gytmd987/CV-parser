@@ -326,6 +326,15 @@ header .brand{color:var(--txt);font-weight:750;font-size:15px;letter-spacing:-.0
 header a:hover{color:var(--txt)}
 /* 지금 보고 있는 탭. 색만으로 알려주지 않고 굵기와 아래 밑줄이 함께 바뀐다. */
 header a.on{color:var(--accent);font-weight:700;border-bottom-color:var(--accent)}
+/* 갈 곳이 둘인 탭. 마우스를 올리거나 키보드로 들어오면 아래로 펴진다.
+   :hover 만 걸면 키보드로는 영영 못 여니 :focus-within 을 같이 건다. */
+header .tab{position:relative;display:flex}
+header .tab .sub{display:none;position:absolute;top:100%;left:0;min-width:172px;
+ background:var(--card);border:1px solid var(--line);border-radius:0 0 var(--r) var(--r);
+ border-top:0;box-shadow:var(--sh-l);padding:4px 0;flex-direction:column;z-index:60}
+header .tab:hover .sub,header .tab:focus-within .sub{display:flex}
+header .tab .sub a{padding:9px 14px;border-bottom:0;font-weight:500}
+header .tab .sub a:hover{background:var(--bg);color:var(--accent);text-decoration:none}
 header .sp{flex:1}
 /* 오른쪽 끝의 '누구로 들어와 있나'. 두 글자가 아래위로 어긋나 보이지 않게
    같은 줄에 세우고, 역할은 작은 딱지로 붙인다. */
@@ -608,6 +617,9 @@ input.fx{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-s
  color:var(--txt);padding:5px 8px;border-radius:var(--r-s);font-size:13px}
 #rtdrop .vm-item:hover{background:#eff6ff}
 #rtdrop .hide{display:none}
+/* 보내야 하는 때 — 단계마다 한 줄. 열일곱 개를 한 줄로 늘어놓으면 못 훑는다. */
+.whenrow{display:flex;align-items:center;gap:2px 4px;flex-wrap:wrap;padding:2px 0}
+.whenname{display:inline-block;min-width:76px;color:var(--muted);font-size:12.5px}
 .mailbody{border:1px solid var(--line);border-radius:var(--r);padding:14px 16px;
  background:#fff;max-height:420px;overflow:auto;font:12pt/1.7 "맑은 고딕",sans-serif}
 .mailbody img{max-width:100%}
@@ -624,28 +636,40 @@ pre.rubric{background:var(--bg);border:1px solid var(--line);border-radius:var(-
 #: 요청마다 스레드가 따로라 값이 섞이지 않는다.
 현재경로: contextvars.ContextVar[str] = contextvars.ContextVar("현재경로", default="")
 
-#: (라벨, 주소, 이 탭에 속하는 경로들, 볼 수 있나)
+#: (라벨, 주소, 이 탭에 속하는 경로들, 하위 목록, 볼 수 있나)
 #: 소속 경로를 적어 두는 이유: 지원자 상세(/candidate)는 탭이 아니지만
 #: 인재 Pool 에서 들어간 화면이라 그 탭에 불이 켜져 있어야 한다.
-def _탭들(me: User | None, badge: str) -> list[tuple[str, str, tuple[str, ...]]]:
+#:
+#: 하위 목록은 **탭에 마우스를 올리면 펴지는 것**이다. 갈 곳이 둘인데 눌러
+#: 들어가서 다시 고르게 하면 걸음이 하나 더 든다 (부서·과제가 그랬다).
+#: 하위가 없는 탭은 빈 튜플이라 지금까지와 똑같이 동작한다.
+def _탭들(me: User | None, badge: str,
+        메일배지: str = "") -> list[tuple[str, str, tuple[str, ...],
+                                       tuple[tuple[str, str], ...]]]:
     학회 = "/names?kind=" + urllib.parse.quote("학회·저널")
     후보 = [
         # 일이 흘러가는 순서대로: 넣고 → 보고 → 뽑고 → 들여다본다
-        ("지원자 추가", "/upload", ("/upload",), can(me, "지원자_등록")),
+        ("지원자 추가", "/upload", ("/upload",), (), can(me, "지원자_등록")),
         ("인재 Pool", "/", ("/", "/candidate", "/attachment", "/export.xlsx"),
-         can(me, "지원자_목록")),
-        ("채용 현황", "/recruit", ("/recruit",),
+         (), can(me, "지원자_목록")),
+        ("채용 현황", "/recruit", ("/recruit",), (),
          can(me, "채용현황_수정") or can(me, "지원자_조회")),
-        ("대시보드", "/dash", ("/dash",), can(me, "대시보드_조회")),
-        ("메일", "/mail", ("/mail",), can(me, "메일_템플릿")),
-        (f"명칭 관리{badge}", 학회, ("/names",), can(me, "명칭_관리")),
+        ("대시보드", "/dash", ("/dash",), (), can(me, "대시보드_조회")),
+        (f"메일{메일배지}", "/mail", ("/mail",),
+         (("메일 템플릿 관리", "/mail"),
+          (f"메일 발송이력{메일배지}", "/mail/log")),
+         can(me, "메일_템플릿")),
+        (f"명칭 관리{badge}", 학회, ("/names",), (), can(me, "명칭_관리")),
         # 과제 파일 관리는 이 아래 하위 화면으로 들어갔다 (/match/*)
-        ("부서·과제", "/org", ("/org", "/match"), can(me, "부서과제_관리")),
-        ("계정", "/users", ("/users",), can(me, "계정_현업추가")),
-        ("표 항목", "/fields", ("/fields",), can(me, "열_구성")),
-        ("변경 이력", "/history", ("/history",), can(me, "변경이력_조회")),
+        ("부서·과제", "/org", ("/org", "/match"),
+         (("부서·과제 편집", "/org/edit"), ("과제 정보 관리", "/match")),
+         can(me, "부서과제_관리")),
+        ("계정", "/users", ("/users",), (), can(me, "계정_현업추가")),
+        ("표 항목", "/fields", ("/fields",), (), can(me, "열_구성")),
+        ("변경 이력", "/history", ("/history",), (), can(me, "변경이력_조회")),
     ]
-    return [(라벨, 주소, 소속) for 라벨, 주소, 소속, 보임 in 후보 if 보임]
+    return [(라벨, 주소, 소속, 하위)
+            for 라벨, 주소, 소속, 하위, 보임 in 후보 if 보임]
 
 
 def _지금탭(경로: str, 소속: tuple[str, ...]) -> bool:
@@ -684,16 +708,27 @@ def _page(title: str, body: str, nav: bool = True, me: User | None = None,
     # 소속·전공은 늘 0 이라, 학교 이름이 엉뚱하게 들어와도 아무 표시가 없었다.
     안본것 = registry.unconfirmed_count() if nav else 0
     badge = f' <span class="pill p-안본것">{안본것}</span>' if 안본것 else ""
+    # 메일 탭 옆 숫자 = **보냈어야 하는데 안 보낸 메일 수.** 화면을 열 때마다
+    # 세지만, 보내야 하는 때를 정해 둔 템플릿이 없으면 아예 세지 않는다.
+    안보낸 = sum(_안보낸수(me).values()) if nav else 0
+    메일배지 = f' <span class="pill p-안본것">{안보낸}</span>' if 안보낸 else ""
     경로 = 현재경로.get()
     켜진것 = ""
-    for _라벨, 주소, 소속 in _탭들(me, badge):
+    for _라벨, 주소, 소속, _하위 in _탭들(me, badge, 메일배지):
         if _지금탭(경로, 소속):
             켜진것 = 주소
             break
-    링크 = [
-        f"<a href='{주소}'{' class=on' if 주소 == 켜진것 else ''}>{라벨}</a>"
-        for 라벨, 주소, _소속 in _탭들(me, badge)
-    ]
+    링크 = []
+    for 라벨, 주소, _소속, 하위 in _탭들(me, badge, 메일배지):
+        불 = " class=on" if 주소 == 켜진것 else ""
+        본체 = f"<a href='{주소}'{불}>{라벨}</a>"
+        if not 하위:
+            링크.append(본체)
+            continue
+        # 탭 자체를 눌러도 첫 화면으로 간다. 마우스를 못 쓰는 상황에서
+        # 하위가 안 펴진다고 아예 못 들어가는 자리가 되면 안 된다.
+        폄 = "".join(f"<a href='{ㅈ}'>{ㄹ}</a>" for ㄹ, ㅈ in 하위)
+        링크.append(f"<span class='tab'>{본체}<span class='sub'>{폄}</span></span>")
     누구 = (
         f"<span class='who'>{html.escape(me.이름)}"
         f"<b>{html.escape(me.역할)}</b></span>"
@@ -3453,6 +3488,123 @@ def _볼수있는지원자(cid: str, me: User) -> bool:
     return 보이는 is None or recruit.get(cid).project_id in 보이는
 
 
+def _고른조건(고른것: list[str]) -> str:
+    """화면에서 온 조건을 담을 모양으로. **지금 있는 조건만** 남긴다.
+
+    단계나 상태 이름이 바뀌면 옛 조건은 아무도 맞히지 못하는 죽은 값이 되므로,
+    저장할 때 걸러 낸다.
+    """
+    쓸수있는것 = recruit.발송조건들()
+    남길것 = [c for c in dict.fromkeys(고른것) if c in 쓸수있는것]
+    return "\n".join(남길것)
+
+
+def _발송조건칸(tpl: Template) -> str:
+    """이 메일을 보내야 하는 때 — 단계별로 묶은 체크박스.
+
+    상태가 열일곱 개라 한 줄로 늘어놓으면 눈으로 훑을 수가 없다. 채용 현황 표와
+    같은 순서로 **단계마다 한 줄**씩 끊는다.
+    """
+    고른것 = set(tpl.조건들)
+    줄 = []
+    for 묶음, 것들 in recruit.발송조건묶음():
+        칸 = "".join(
+            "<label class='rt-lbl'><input type='checkbox' name='when'"
+            f" value='{html.escape(c)}'{' checked' if c in 고른것 else ''}>"
+            f" {html.escape(c[len(묶음):].strip() if c.startswith(묶음 + ' ') else c)}</label>"
+            for c in 것들
+        )
+        줄.append(
+            "<div class='whenrow'>"
+            f"<span class='whenname'>{html.escape(묶음)}</span>{칸}</div>"
+        )
+    return (
+        "<p class='bar' style='align-items:flex-start'>"
+        "<b style='padding-top:5px'>보내야 하는 때</b>"
+        f"<span style='flex:1'>{''.join(줄)}</span></p>"
+        "<p class='muted' style='margin-top:-4px'>고른 상태가 된 사람 중에 이 메일을"
+        " 아직 못 받은 사람을 <b>메일 발송이력</b> 화면에서 찾아 줍니다."
+        " 안 골라도 됩니다 — 그러면 찾지 않습니다. 보내는 것은 늘 사람이 누릅니다.</p>"
+    )
+
+
+def _조건에맞는사람(조건들: list[str], 진행: dict) -> dict[str, str]:
+    """그 상태에 있는 사람들. {지원자_ID: 걸린 조건}
+
+    보는 것은 **지금 상태뿐**이다. `Progress.최종상태` 가 그렇게 만들어져 있어서,
+    서류 불합격이던 사람을 되돌리면 목록에서도 빠진다. 지난 상태를 뒤져 소급하지
+    않는 이유는 되돌린 것도 사람이 한 판단이기 때문이다.
+    """
+    if not 조건들:
+        return {}
+    고른것 = set(조건들)
+    시작도 = "채용 시작" in 고른것
+    걸린것: dict[str, str] = {}
+    for cid, p in 진행.items():
+        if not p.시작함:
+            continue
+        상태 = p.최종상태
+        if 상태 in 고른것:
+            걸린것[cid] = 상태
+        elif 시작도:
+            걸린것[cid] = "채용 시작"
+    return 걸린것
+
+
+def _메일문맥(me: User | None) -> dict:
+    """안 보낸 것을 셀 때 템플릿마다 다시 읽지 않아도 되는 것들.
+
+    모든 화면이 `_page` 를 거치며 이 셈을 하므로, 템플릿 수만큼 채용 현황과
+    지원자 목록을 다시 읽으면 그게 그대로 화면 여는 시간이 된다. 한 번만 읽는다.
+    """
+    return {
+        "진행": recruit.all(),
+        "있는사람": store.ids(),
+        "탈락자": mailing.rejected_ids(),
+        "보이는": auth.visible_project_ids(me) if me else None,
+    }
+
+
+def _안보낸것(tpl: Template, me: User | None = None,
+           문맥: dict | None = None) -> dict[str, str]:
+    """이 템플릿을 **보냈어야 하는데 안 보낸** 사람들. {지원자_ID: 걸린 조건}
+
+    사람이 기억하고 있어야 했던 것을 대신 세어 준다. 빼는 것은 셋:
+    이미 받은 사람 · 보낼 수 없는 사람(탈락 메일을 이미 받았거나) · 그리고 지금
+    들어와 있는 사람이 볼 수 없는 지원자. 마지막 것을 빼지 않으면 **현업에게
+    배정 안 된 과제의 지원자 수가 배지 숫자로 새어 나간다.**
+    """
+    문맥 = 문맥 or _메일문맥(me)
+    걸린것 = _조건에맞는사람(tpl.조건들, 문맥["진행"])
+    if not 걸린것:
+        return {}
+    보낸사람 = mailing.sent_ids(tpl.id)
+    있는사람, 탈락자, 보이는 = 문맥["있는사람"], 문맥["탈락자"], 문맥["보이는"]
+    남은것: dict[str, str] = {}
+    for cid, 조건 in 걸린것.items():
+        if cid in 보낸사람 or cid in 탈락자 or cid not in 있는사람:
+            continue
+        if 보이는 is not None and 문맥["진행"][cid].project_id not in 보이는:
+            continue
+        남은것[cid] = 조건
+    return 남은것
+
+
+def _안보낸수(me: User | None) -> dict[int, int]:
+    """템플릿마다 안 보낸 사람 수. 조건을 안 정한 템플릿은 아예 세지 않는다.
+
+    모든 화면이 `_page` 를 거치면서 이걸 부르므로, **이 기능을 안 쓰는 동안에는
+    셈이 한 번도 돌지 않게** 조건이 붙은 템플릿이 있는지부터 본다.
+    """
+    if not me or not can(me, "메일_템플릿"):
+        return {}
+    쓰는것 = [t for t in mailing.templates() if t.조건들]
+    if not 쓰는것:
+        return {}
+    문맥 = _메일문맥(me)
+    return {t.id: len(_안보낸것(t, me, 문맥)) for t in 쓰는것}
+
+
 def _지원자자료(cid: str, CV첨부: bool, 지원자첨부: bool) -> tuple[list, str]:
     """그 지원자의 파일을 메일에 붙일 모양으로. (붙일것, 오류)
 
@@ -3792,7 +3944,8 @@ def _mail_template_page(tid: int, me: User, error: str = "", msg: str = "") -> b
         + ("받는 사람 주소는 보낼 때 작성창에서 적습니다. 이력은 지원자별로 남습니다."
            if tpl.내부 else "지원자 이메일 주소로 나갑니다.")
         + "</span></p>"
-        "<p class='bar'><b>함께 보낼 지원자 자료</b>"
+        + _발송조건칸(tpl)
+        + "<p class='bar'><b>함께 보낼 지원자 자료</b>"
         "<label class='rt-lbl'><input type='checkbox' name='cvattach' value='1'"
         f"{' checked' if tpl.CV첨부 else ''}> CV 원본</label>"
         "<label class='rt-lbl'><input type='checkbox' name='candattach' value='1'"
@@ -4448,11 +4601,92 @@ def _mail_test_page(tid: int, me: User, error: str = "", msg: str = "",
     )
 
 
-def _mail_log_page(me: User) -> bytes:
-    기록 = mailing.history(limit=500)
-    탈락배지 = " <span class='pill p-미분류'>탈락</span>"
+def _mail_log_page(me: User, tid: int = 0) -> bytes:
+    """발송 이력. 템플릿을 하나 고르면 **안 보낸 사람**까지 같이 보여준다.
+
+    예전에는 모든 템플릿의 기록이 한 덩어리로 쏟아져서 "이 안내를 누가 받았나"
+    를 볼 수가 없었다. 이제 위에 템플릿 단추를 두고, 고른 템플릿의 것만 본다.
+
+    그리고 **보냈어야 하는데 안 보낸 사람**을 위에 올린다. 기록을 보러 오는
+    까닭이 대개 "빠뜨린 게 없나" 이기 때문이다. 목록만 보여 주고 다시 인재
+    Pool 로 가서 그 사람을 찾게 하면 결국 안 쓰게 되므로, 체크해서 그 자리에서
+    작성창으로 넘어간다.
+    """
+    templates = mailing.templates()
+    tpl = next((t for t in templates if t.id == tid), None)
+    if tpl is None:
+        tid = 0
+    안보낸수 = _안보낸수(me)
     이름맵 = {r.지원자_ID: (r.한글_이름 or r.영문_이름 or r.지원자_ID)
              for r in store.list_all()}
+
+    # -- 템플릿 고르는 단추 줄 -------------------------------------------------
+    def 단추(라벨: str, 주소: str, 켜짐: bool, 안보낸: int = 0) -> str:
+        배지 = f" <span class='pill p-안본것'>{안보낸}</span>" if 안보낸 else ""
+        켬 = " style='border-color:var(--accent);color:var(--accent);font-weight:700'" if 켜짐 else ""
+        return f"<a class='btn sec' href='{주소}'{켬}>{html.escape(라벨)}{배지}</a> "
+
+    고르기 = 단추("전체", "/mail/log", tid == 0, sum(안보낸수.values()))
+    고르기 += "".join(
+        단추(t.이름, f"/mail/log?tpl={t.id}", t.id == tid, 안보낸수.get(t.id, 0))
+        for t in templates
+    )
+
+    # -- 안 보낸 사람 ----------------------------------------------------------
+    빠진것 = ""
+    if tpl is not None:
+        if not tpl.조건들:
+            빠진것 = (
+                "<div class='card'><h2>보내야 하는 때가 안 정해져 있습니다</h2>"
+                "<p class='muted'>이 템플릿을 <b>어떤 채용 상태일 때</b> 보내는지"
+                " 정해 두면, 그 상태가 된 사람 중에 아직 못 받은 사람을 여기서"
+                " 찾아 드립니다.</p>"
+                f"<p><a class='btn sec' href='/mail/template?id={tpl.id}'>"
+                "템플릿 편집으로</a></p></div>"
+            )
+        else:
+            남은것 = _안보낸것(tpl, me)
+            조건표시 = " · ".join(html.escape(c) for c in tpl.조건들)
+            if not 남은것:
+                빠진것 = (
+                    "<div class='card'><h2>빠진 사람 없습니다</h2>"
+                    f"<p class='muted'>보내야 하는 때: <b>{조건표시}</b> — "
+                    "여기 해당하는 사람은 모두 이 메일을 받았습니다.</p></div>"
+                )
+            else:
+                줄 = "".join(
+                    f"<tr><td><label><input type='checkbox' name='ids'"
+                    f" value='{html.escape(cid)}' checked> "
+                    f"{html.escape(이름맵.get(cid, cid))}</label></td>"
+                    f"<td>{html.escape(조건)}</td>"
+                    f"<td class='muted'>{html.escape(recruit.get(cid).채용시작일시[:10])}</td>"
+                    f"<td><a href='/candidate?id={html.escape(cid)}'>상세</a></td></tr>"
+                    for cid, 조건 in sorted(
+                        남은것.items(), key=lambda kv: 이름맵.get(kv[0], kv[0]))
+                )
+                빠진것 = (
+                    "<div class='card'>"
+                    f"<h2>안 보낸 사람 <span class='pill p-안본것'>{len(남은것)}</span></h2>"
+                    f"<p class='muted'>보내야 하는 때: <b>{조건표시}</b>. "
+                    "지금 이 상태인데 이 메일을 아직 못 받은 사람입니다. "
+                    "이미 받은 사람과 탈락 메일을 받은 사람은 빠져 있습니다.</p>"
+                    "<form method='post' action='/mail/compose'>"
+                    f"<input type='hidden' name='template' value='{tpl.id}'>"
+                    f"<input type='hidden' name='back' value='/mail/log?tpl={tpl.id}'>"
+                    "<div class='scroll'><table data-name='안 보낸 사람'>"
+                    "<tr><th>지원자</th><th>지금 상태</th><th>채용 시작</th><th></th></tr>"
+                    + 줄 + "</table></div>"
+                    + ("<p><button type='submit'>고른 사람에게 이 메일 쓰기</button>"
+                       "<span class='muted'> 한 통씩 작성창이 떠서 확인하고 보냅니다."
+                       " 여기서 바로 나가지 않습니다.</span></p>"
+                       if can(me, "메일_발송") else
+                       "<p class='muted'>메일 발송 권한이 있는 사람이 보낼 수 있습니다.</p>")
+                    + "</form></div>"
+                )
+
+    # -- 보낸 기록 -------------------------------------------------------------
+    기록 = mailing.history(limit=500, template_id=tid)
+    탈락배지 = " <span class='pill p-미분류'>탈락</span>"
     rows = "".join(
         f"<tr><td>{html.escape(r['보낸일시'])}</td>"
         f"<td>{html.escape(이름맵.get(r['지원자_ID'], r['지원자_ID']))}</td>"
@@ -4468,13 +4702,22 @@ def _mail_log_page(me: User) -> bytes:
         f"<td class='muted'>{html.escape(r['보낸이'])}</td></tr>"
         for r in 기록
     ) or "<tr><td colspan='8' class='muted'>보낸 메일이 없습니다.</td></tr>"
+
+    제목 = f"{tpl.이름} 발송 이력" if tpl else "메일 발송 이력"
     return _page(
-        "메일 발송 이력",
-        f"<div class='card'><h2>발송 이력 <span class='muted'>총 {mailing.count()}건</span></h2>"
-        "<p><a class='btn sec' href='/mail'>템플릿 목록</a></p>"
+        제목,
+        "<div class='card'><h2>템플릿</h2>"
+        f"<p style='display:flex;flex-wrap:wrap;gap:4px 0'>{고르기}</p>"
+        "<p class='muted'>숫자는 <b>보냈어야 하는데 안 보낸 사람 수</b>입니다."
+        " 템플릿 편집에서 &lt;보내야 하는 때&gt;를 정한 것만 셉니다.</p>"
+        "<p><a class='btn sec' href='/mail'>템플릿 목록</a></p></div>"
+        + 빠진것
+        + f"<div class='card'><h2>보낸 기록 <span class='muted'>총 "
+        f"{mailing.count(tid)}건</span></h2>"
         "<div class='scroll'><table data-name='메일 발송 이력'>"
         "<tr><th>보낸 일시</th><th>지원자</th><th>받는 주소</th><th>구분</th>"
-        "<th>템플릿</th><th>상태</th><th>메모</th><th>보낸 사람</th></tr>" + rows + "</table></div></div>",
+        "<th>템플릿</th><th>상태</th><th>메모</th><th>보낸 사람</th></tr>"
+        + rows + "</table></div></div>",
         me=me,
     )
 
@@ -6680,7 +6923,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/mail/log":
             if not can(me, "메일_템플릿"):
                 return self._deny()
-            return self._send(_mail_log_page(me))
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                로그tid = int((params.get("tpl") or ["0"])[0])
+            except ValueError:
+                로그tid = 0
+            return self._send(_mail_log_page(me, 로그tid))
         if path in ("/dash", "/dash/view", "/dash/edit"):
             if not can(me, "대시보드_조회"):
                 return self._deny("대시보드는 채용담당자 이상만 볼 수 있습니다.")
@@ -7112,6 +7360,7 @@ class Handler(BaseHTTPRequestHandler):
                     받는대상=(data.get("to") or [None])[0],
                     CV첨부=bool(data.get("cvattach")),
                     지원자첨부=bool(data.get("candattach")),
+                    발송조건=_고른조건(data.get("when") or []),
                 )
             except ValueError as exc:
                 return self._redirect(f"/mail/template?id={tid}&err="
@@ -7128,6 +7377,7 @@ class Handler(BaseHTTPRequestHandler):
                     ("CV 첨부", "Y" if 옛.CV첨부 else "", "Y" if 새것.CV첨부 else ""),
                     ("지원자 첨부", "Y" if 옛.지원자첨부 else "",
                      "Y" if 새것.지원자첨부 else ""),
+                    ("보내야 하는 때", ", ".join(옛.조건들), ", ".join(새것.조건들)),
                 )
                 if 옛값 != 새값
             ]

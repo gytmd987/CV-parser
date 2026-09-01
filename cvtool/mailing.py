@@ -128,6 +128,7 @@ CREATE TABLE IF NOT EXISTS templates (
     CV첨부       INTEGER DEFAULT 0,    -- 보낼 때 그 지원자의 CV 원본을 붙인다
     지원자첨부     INTEGER DEFAULT 0,    -- 그 지원자에게 붙어 있는 첨부파일을 붙인다
     참조         TEXT DEFAULT '',      -- CC. 이 템플릿으로 보내는 모든 메일에 붙는다
+    발송조건      TEXT DEFAULT '',      -- 이 메일을 보내야 하는 채용 상태 (줄바꿈으로 여러 개)
     본문형식      TEXT DEFAULT 'HTML',  -- HTML / TEXT
     만든이        TEXT DEFAULT '',
     만든일시      TEXT DEFAULT '',
@@ -201,6 +202,17 @@ class Template:
     받는대상: str = DEFAULT_RECIPIENT
     CV첨부: bool = False
     지원자첨부: bool = False
+    발송조건: str = ""
+
+    @property
+    def 조건들(self) -> list[str]:
+        """이 메일을 보내야 하는 채용 상태들.
+
+        `서류 검토 불합격` 같은 말이 줄바꿈으로 이어 담겨 있다. 여기 적힌 상태가
+        된 사람 중에 이 템플릿을 아직 못 받은 사람을 화면에서 찾아 준다.
+        빈 목록이면 **아무것도 찾지 않는다** — 안 정한 것이지 전부가 아니다.
+        """
+        return [c.strip() for c in (self.발송조건 or "").splitlines() if c.strip()]
 
     @property
     def 내부(self) -> bool:
@@ -267,7 +279,8 @@ class MailStore:
         for 표, 열들 in (
             ("templates", (("참조", "''"), ("본문형식", "'HTML'"),
                            ("그림방식", f"'{DEFAULT_IMAGE_MODE}'"),
-                           ("받는대상", f"'{DEFAULT_RECIPIENT}'"))),
+                           ("받는대상", f"'{DEFAULT_RECIPIENT}'"),
+                           ("발송조건", "''"))),
             ("sent", (("참조", "''"), ("첨부", "''"),
                       ("받는대상", f"'{DEFAULT_RECIPIENT}'"))),
         ):
@@ -315,7 +328,8 @@ class MailStore:
                      탈락메일: bool = False, 만든이: str = "",
                      참조: str = "", 본문형식: str = "HTML",
                      받는대상: str = DEFAULT_RECIPIENT,
-                     CV첨부: bool = False, 지원자첨부: bool = False) -> int:
+                     CV첨부: bool = False, 지원자첨부: bool = False,
+                     발송조건: str = "") -> int:
         이름 = (이름 or "").strip()
         if not 이름:
             raise ValueError("템플릿 이름을 입력하세요")
@@ -327,11 +341,12 @@ class MailStore:
         cur = self._conn.execute(
             "INSERT INTO templates"
             " (이름,제목,본문,탈락메일,참조,본문형식,만든이,만든일시,수정일시,"
-            "  받는대상,CV첨부,지원자첨부)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "  받는대상,CV첨부,지원자첨부,발송조건)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (이름, 제목 or "", 본문 or "", 1 if 탈락메일 else 0, 참조 or "",
              (본문형식 or "HTML").upper(), 만든이, now, now,
-             받는대상, 1 if CV첨부 else 0, 1 if 지원자첨부 else 0),
+             받는대상, 1 if CV첨부 else 0, 1 if 지원자첨부 else 0,
+             발송조건 or ""),
         )
         self._conn.commit()
         return cur.lastrowid
@@ -343,7 +358,8 @@ class MailStore:
                         그림방식: str | None = None,
                         받는대상: str | None = None,
                         CV첨부: bool | None = None,
-                        지원자첨부: bool | None = None) -> Template | None:
+                        지원자첨부: bool | None = None,
+                        발송조건: str | None = None) -> Template | None:
         옛 = self.template(tid)
         if 옛 is None:
             return None
@@ -360,7 +376,7 @@ class MailStore:
         self._conn.execute(
             "UPDATE templates SET 이름=?, 제목=?, 본문=?, 탈락메일=?, 참조=?,"
             " 본문형식=?, 그림방식=?, 받는대상=?, CV첨부=?, 지원자첨부=?,"
-            " 수정일시=? WHERE id=?",
+            " 발송조건=?, 수정일시=? WHERE id=?",
             (
                 새이름,
                 옛.제목 if 제목 is None else 제목,
@@ -373,6 +389,7 @@ class MailStore:
                 (1 if 옛.CV첨부 else 0) if CV첨부 is None else (1 if CV첨부 else 0),
                 (1 if 옛.지원자첨부 else 0) if 지원자첨부 is None
                 else (1 if 지원자첨부 else 0),
+                옛.발송조건 if 발송조건 is None else (발송조건 or ""),
                 now_kst().strftime("%Y-%m-%d %H:%M:%S"),
                 tid,
             ),
@@ -399,6 +416,7 @@ class MailStore:
         d["CV첨부"] = bool(d.get("CV첨부"))
         d["지원자첨부"] = bool(d.get("지원자첨부"))
         d["받는대상"] = d.get("받는대상") or DEFAULT_RECIPIENT
+        d["발송조건"] = d.get("발송조건") or ""
         return Template(**d)
 
     def template(self, tid: int) -> Template | None:
@@ -738,16 +756,26 @@ class MailStore:
             )
         return {cid: " | ".join(v) for cid, v in 보낸것.items()}
 
-    def history(self, 지원자_ID: str = "", limit: int = 300) -> list[dict]:
+    def history(self, 지원자_ID: str = "", limit: int = 300,
+                template_id: int = 0) -> list[dict]:
         sql = "SELECT * FROM sent"
-        args: tuple = ()
+        조건, args = [], []
         if 지원자_ID:
-            sql += " WHERE 지원자_ID=?"
-            args = (지원자_ID,)
+            조건.append("지원자_ID=?")
+            args.append(지원자_ID)
+        if template_id:
+            조건.append("template_id=?")
+            args.append(template_id)
+        if 조건:
+            sql += " WHERE " + " AND ".join(조건)
         sql += " ORDER BY id DESC LIMIT ?"
         return [dict(r) for r in self._conn.execute(sql, (*args, limit))]
 
-    def count(self) -> int:
+    def count(self, template_id: int = 0) -> int:
+        if template_id:
+            return self._conn.execute(
+                "SELECT COUNT(*) c FROM sent WHERE template_id=?", (template_id,)
+            ).fetchone()["c"]
         return self._conn.execute("SELECT COUNT(*) c FROM sent").fetchone()["c"]
 
     def close(self) -> None:

@@ -293,6 +293,38 @@ class RecruitStore:
         ).fetchall()
         return [r["상태"] for r in rows] if rows else list(STATUSES)
 
+    def 발송조건묶음(self) -> list[tuple[str, list[str]]]:
+        """메일을 보내야 하는 때 — 단계별로 묶어서.
+
+        따로 적어 두지 않고 :attr:`Progress.최종상태` 와 **같은 규칙으로 만들어
+        낸다.** 목록을 손으로 적어 두면 단계나 상태 이름을 바꿨을 때 조용히
+        어긋나서, 조건은 그대로인데 아무도 걸리지 않는 일이 생긴다.
+
+        그래서 여기서 나오는 말은 채용 현황 표에 뜨는 말과 늘 같다 —
+        `서류 검토 불합격` · `최종 합격` 처럼.
+        """
+        묶음: list[tuple[str, list[str]]] = [("시작", ["채용 시작"])]
+        for 단계 in STAGES:
+            것들 = []
+            for 상태 in self.statuses():
+                if not 상태:
+                    continue
+                if 상태 == "불합격":
+                    말 = f"{단계} 불합격"
+                elif 단계 == STAGES[-1] and 상태 == "합격":
+                    말 = "최종 합격"
+                else:
+                    말 = f"{단계} {상태}"
+                if 말 not in 것들:
+                    것들.append(말)
+            if 것들:
+                묶음.append((단계, 것들))
+        return 묶음
+
+    def 발송조건들(self) -> list[str]:
+        """메일을 보내야 하는 때로 고를 수 있는 상태 목록 (묶음을 편 것)."""
+        return [c for _묶음, 것들 in self.발송조건묶음() for c in 것들]
+
     @atomic
     def set_statuses(self, 목록: list[str]) -> list[str]:
         """상태 목록을 바꾸고 이전 목록을 돌려준다.
