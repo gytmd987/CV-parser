@@ -1339,10 +1339,46 @@ function cellText(td){
       var o = f.options[f.selectedIndex];
       return o ? o.text.replace(/\s+/g,' ').trim() : '';
     }
-    /* 여러 줄 칸의 줄바꿈을 그대로 내보내면 붙여넣은 TSV 의 줄이 깨진다 */
+    /* 거르기·정렬에 쓰는 값이라 한 줄로 접는다 (복사·엑셀은 cellRaw 를 쓴다) */
     return f.value.replace(/\s+/g,' ').trim();
   }
   return (td.textContent || '').replace(/\s+/g,' ').trim();
+}
+
+/* 복사·엑셀에 실을 값. **줄바꿈을 살린다.**
+   `cellText` 는 거르기·정렬용이라 한 줄로 접는데, 그걸 그대로 복사에 쓰면
+   여러 줄로 적어 둔 비고가 한 줄로 뭉개져 나간다.
+
+   여러 줄 칸은 화면에 `<br>` 로 그려져서 `textContent` 로는 줄이 안 잡힌다
+   ('가<br>나' → '가나'). 그래서 값을 담아 둔 자리를 순서대로 본다. */
+function cellRaw(td){
+  if(!td) return '';
+  var f = td.querySelector ? td.querySelector('input,select,textarea') : null;
+  var v;
+  if(f){
+    if(f.type === 'checkbox') return f.checked ? 'Y' : '';
+    if(f.tagName === 'SELECT'){
+      var o = f.options[f.selectedIndex];
+      return o ? o.text.replace(/\s+/g,' ').trim() : '';
+    }
+    v = f.value;
+  } else if(td.classList.contains('multi') && td.title){
+    v = td.title;                        /* 대시보드가 <br> 로 그린 여러 줄 */
+  } else if(td.dataset && td.dataset.raw){
+    v = td.dataset.raw;                  /* 인재 Pool 편집 칸의 저장된 값 */
+  } else {
+    v = td.textContent || '';
+  }
+  if(v.indexOf('\n') < 0) return v.replace(/\s+/g,' ').trim();
+  /* 줄 사이는 살리고 줄 안만 정리한다 (서버의 normalize.paragraph 와 같은 규칙) */
+  return v.split('\n').map(function(x){ return x.replace(/\s+/g,' ').trim(); })
+          .join('\n').replace(/^\n+|\n+$/g, '');
+}
+
+/* TSV 한 칸. 줄바꿈·탭·따옴표가 들었으면 따옴표로 감싼다 — 엑셀이 붙여넣을 때
+   알아듣는 규칙이라, 이렇게 해야 여러 줄이 한 칸 안에 그대로 들어간다. */
+function tsvField(v){
+  return /[\t\n"]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
 }
 function bodyRows(tb){ return tb.tBodies[0] ? Array.prototype.slice.call(tb.tBodies[0].rows) : []; }
 function headCells(tb){ return tb.tHead ? Array.prototype.slice.call(tb.tHead.rows[0].cells) : []; }
@@ -1360,7 +1396,9 @@ function tableTSV(tb){
   out.push(keep.map(function(i){ return headText(heads[i]); }).join('\t'));
   bodyRows(tb).forEach(function(tr){
     if(tr.classList.contains('hide')) return;
-    out.push(keep.map(function(i){ return cellText(tr.cells[i]); }).join('\t'));
+    out.push(keep.map(function(i){
+      return tsvField(cellRaw(tr.cells[i]));
+    }).join('\t'));
   });
   return out.join('\n');
 }
@@ -1550,7 +1588,7 @@ function openColMenu(tb, idx, th){
     else if(act === 'copycol'){
       var 줄 = [headText(th)];
       bodyRows(tb).forEach(function(tr){
-        if(!tr.classList.contains('hide')) 줄.push(cellText(tr.cells[idx]));
+        if(!tr.classList.contains('hide')) 줄.push(tsvField(cellRaw(tr.cells[idx])));
       });
       copyText(줄.join('\n'));
       toast('이 열을 복사했습니다. Ctrl+C 로 붙여넣으세요.');
@@ -1646,7 +1684,7 @@ function rangeSelect(tb){
       lines.push(cols.map(function(c){
         var td = tr.cells[c];
         if(td) td.classList.add('sel');
-        return cellText(td);
+        return tsvField(cellRaw(td));
       }).join('\t'));
     });
     return lines.join('\n');
@@ -1722,23 +1760,64 @@ document.addEventListener('DOMContentLoaded', enhanceTables);
 """
 
 
+def _tsv_줄들(tsv: str) -> list[list[str]]:
+    """TSV 를 줄·칸으로 가른다. **따옴표로 감싼 칸 안의 줄바꿈을 살린다.**
+
+    여러 줄로 적어 둔 비고 같은 값이 한 칸 안에 들어 있으면 화면이 그 칸을
+    `"가\n나"` 로 감싸 보낸다 (엑셀이 붙여넣을 때 쓰는 그 규칙). 그냥
+    `split("\n")` 하면 그 한 칸이 두 줄로 쪼개져 표가 통째로 어긋난다.
+    """
+    글 = (tsv or "").replace("\r\n", "\n").replace("\r", "\n")
+    줄들: list[list[str]] = []
+    칸들: list[str] = []
+    지금: list[str] = []
+    따옴표안 = False
+    i = 0
+    while i < len(글):
+        ch = 글[i]
+        if 따옴표안:
+            if ch == '"':
+                if i + 1 < len(글) and 글[i + 1] == '"':   # "" 는 따옴표 한 개
+                    지금.append('"')
+                    i += 2
+                    continue
+                따옴표안 = False
+            else:
+                지금.append(ch)
+        elif ch == '"' and not 지금:
+            따옴표안 = True                                # 칸 맨 앞의 따옴표만
+        elif ch == "\t":
+            칸들.append("".join(지금))
+            지금 = []
+        elif ch == "\n":
+            칸들.append("".join(지금))
+            줄들.append(칸들)
+            칸들, 지금 = [], []
+        else:
+            지금.append(ch)
+        i += 1
+    if 지금 or 칸들:
+        칸들.append("".join(지금))
+        줄들.append(칸들)
+    return [줄 for 줄 in 줄들 if any(c.strip() for c in 줄)]
+
+
 def _tsv_to_xlsx(tsv: str) -> bytes:
     """화면에 보이는 표를 그대로 엑셀로 만든다.
 
     표마다 서버 라우트를 만들지 않으려고, 화면에서 만든 TSV 를 받아
     같은 xlsx 작성기로 넘긴다. 머리글이 겹치면 뒤에 번호를 붙인다.
     """
-    lines = [ln for ln in (tsv or "").replace("\r\n", "\n").split("\n") if ln.strip()]
+    lines = _tsv_줄들(tsv)
     if not lines:
         return build_xlsx([], ["(내용 없음)"])
     header, seen = [], {}
-    for name in lines[0].split("\t"):
+    for name in lines[0]:
         name = name.strip() or "-"
         seen[name] = seen.get(name, 0) + 1
         header.append(name if seen[name] == 1 else f"{name}_{seen[name]}")
     rows = []
-    for line in lines[1:]:
-        cells = line.split("\t")
+    for cells in lines[1:]:
         rows.append({h: (cells[i] if i < len(cells) else "") for i, h in enumerate(header)})
     return build_xlsx(rows, header)
 
