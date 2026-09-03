@@ -587,7 +587,11 @@ def render_list(b: Block, rows, 아는열: set[str] | None = None) -> RenderedLi
 
     표행, 행색, 칸색 = [], [], []
     본오류 = set()
-    for _cid, 값들 in 골라낸:
+    # 줄 번호는 **여기서** 매긴다 — 거르고 정렬하고 자른 뒤라 화면에 보이는
+    # 차례와 늘 같다. 조건서식과 칸 수식이 같은 루프를 도므로 `=ROW()` 를
+    # 색칠 규칙에서도 쓸 수 있다.
+    for 번호, (_cid, 값들) in enumerate(골라낸, start=1):
+        값들[expr.줄번호_키] = 번호
         # 위에서부터 보다가 처음 맞는 것을 쓴다 (엑셀도 규칙에 순서가 있다).
         줄스타일 = ""
         칸스타일 = [""] * len(열들)
@@ -725,11 +729,14 @@ def render_profile(b: Block, rows, 값찾기, 아는열: set[str] | None = None
     except F.FormulaError as exc:
         return RenderedProfile(제목=b.제목, 오류=[f"{b.대상조건} → {exc}"])
 
+    from . import expr
+
     사람 = []
-    for cid in (ids if isinstance(ids, list) else []):
+    for 번호, cid in enumerate(ids if isinstance(ids, list) else [], start=1):
         값들 = 값찾기(cid)
         if not 값들:
             continue
+        값들 = {**값들, expr.줄번호_키: 번호}   # 몇 번째 사람인가 (`=ROW()`)
         머리 = P.render(b.머리틀, 값들) if b.머리틀 else ""
         줄들 = P.render_rows(b.줄틀, 값들)
         if 머리 or 줄들:

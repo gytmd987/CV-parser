@@ -1077,11 +1077,19 @@ def 대시보드_행() -> F.Rows:
     시작한사람 = recruit.started()
     상위매칭 = store.top_matches()
     끝낸검토 = store.review_done_map()
+    보낸것맵 = mailing.sent_summary()
+    # **쓸 수 있다고 알려 준 열은 모든 줄에 있어야 한다.** 추가한 열은
+    # `custom_map()` 이 값을 적은 사람만 돌려주므로, 안 적은 사람의 줄에는
+    # 그 열쇠가 아예 없었다. 그러면 수식이 "이 사람은 비어 있다" 를
+    # "그런 열은 없다" 로 말하게 되고 (`expr` 이 모르는 이름을 막는다),
+    # 화면에는 빈칸 대신 `?` 가 뜬다. 자동완성·저장 검사가 쓰는 그 목록으로
+    # 빈칸을 먼저 깔아 두면 목록과 줄이 어긋날 수가 없다.
+    빈칸 = {c: "" for c in 대시보드_열()}
 
     지원자행, 채용행 = [], []
     for rec in store.list_all():
         cid = rec.지원자_ID
-        행 = rec.to_row(registry)
+        행 = {**빈칸, **rec.to_row(registry)}
         행["지원자_ID"] = cid
         # 표·엑셀과 같은 규칙: 확인한 사유는 세지 않는다.
         행["검토_사유"] = review.display(rec.검토_사유, 끝낸검토.get(cid, set()))
@@ -1097,6 +1105,7 @@ def 대시보드_행() -> F.Rows:
         m = 상위매칭.get(cid)
         행["매칭_과제"] = (m or {}).get("과제명", "") if isinstance(m, dict) else ""
         행["매칭_점수"] = str((m or {}).get("점수", "")) if isinstance(m, dict) else ""
+        행[MAIL_COLUMN] = 보낸것맵.get(cid, "")
         지원자행.append(행)
         if cid in 시작한사람:
             채용행.append(행)
@@ -5740,7 +5749,10 @@ def _프로필값(cid: str) -> dict[str, str]:
     rec = store.get(cid)
     if rec is None:
         return {}
-    행 = {k: str(v or "") for k, v in rec.to_row(registry).items()}
+    # 목록 표와 **같은 목록**으로 빈칸을 깐다. 두 길이 다르면 미리보기와
+    # 실제 표가 어긋난다 (`대시보드_행()` 의 같은 주석을 보라).
+    행 = {c: "" for c in 대시보드_열()}
+    행.update({k: str(v or "") for k, v in rec.to_row(registry).items()})
     행["지원자_ID"] = cid
     행["검토_사유"] = review.display(rec.검토_사유, store.review_done(cid))
     행.update(store.meta_map().get(cid, {}))
@@ -5757,6 +5769,7 @@ def _프로필값(cid: str) -> dict[str, str]:
     m = store.top_matches().get(cid) or {}
     행["매칭_과제"] = m.get("과제명", "")
     행["매칭_점수"] = str(m.get("점수", "") or "")
+    행[MAIL_COLUMN] = mailing.sent_summary().get(cid, "")
     return 행
 
 
@@ -6212,6 +6225,7 @@ def _수식도움() -> str:
 
 #: 수식 도움말에 넣을 보기. (수식, 나오는 모양, 설명)
 _수식보기: list[tuple[str, str, str]] = [
+    ('=ROW()', "1", "<b>몇 번째 줄인지</b> — No. 열에 씁니다"),
     ('=박사_학교 & " " & 박사_전공', "서울대학교 기계공학", "& 로 잇습니다"),
     ('=TEXT(박사_졸업,"\'yy.m")', "'26.2", "m 은 한 자리 — <b>08 이 8 로</b>"),
     ('=TEXT(박사_졸업,"\'yy.mm")', "'26.02", "mm 은 두 자리"),
@@ -6253,6 +6267,7 @@ def _틀도움() -> str:
         ("판단", "IF IFS AND OR NOT IFERROR ISBLANK"),
         ("숫자", "VALUE ROUND INT ABS MIN MAX SUM"),
         ("날짜", "TEXT YEAR MONTH DAY TODAY DATEDIF"),
+        ("줄", "ROW"),
     ]
     목록 = "".join(
         f"<tr><td>{갈래}</td><td><code>{html.escape(이름들)}</code></td></tr>"
@@ -6269,7 +6284,11 @@ def _틀도움() -> str:
         "<p class='muted'><code>=</code> 로 시작하면 <b>엑셀 수식</b>입니다. "
         "함수 이름도 규칙도 엑셀 그대로라 새로 외울 게 없습니다. "
         "열 이름은 <b>표 항목</b> 탭에 있는 그 이름을 그대로 적습니다 "
-        "(띄어쓰기가 있으면 <code>[이름]</code> 처럼 대괄호로).</p>"
+        "(띄어쓰기가 있으면 <code>[이름]</code> 처럼 대괄호로 — "
+        "<code>=[서류 검토]</code>).</p>"
+        "<p class='muted'><code>=ROW()</code> 는 <b>몇 번째 줄인지</b>를 냅니다. "
+        "거르고 정렬하고 자른 <b>뒤</b>의 차례라 화면에 보이는 순서와 같습니다. "
+        "행 고르기·정렬 칸에서는 못 씁니다 — 그때는 아직 줄이 안 정해졌습니다.</p>"
         "<table><tr><th style='width:44%'>이렇게 쓰면</th><th>이렇게 나옵니다</th>"
         f"<th></th></tr>{보기}</table>"
         "<h3 style='font-size:13px;margin:14px 0 6px'>TEXT 서식 코드 "
