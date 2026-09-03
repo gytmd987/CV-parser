@@ -1588,9 +1588,10 @@ def test_the_dashboard_table_can_be_styled(web, cid):
         "테두리": "격자", "줄무늬": True, "촘촘히": True,
     })
     보기 = web.get(f"/dash/view?id={did}")
-    # 목록은 '내용에 맞춤' 이 기본이라 fit 이 함께 붙는다 (넘치면 가로 스크롤)
-    assert "class='dtbl b-grid zebra tight fit'" in 보기
-    assert "style='width:90px'" in 보기
+    # 목록은 '내용에 맞춤' 이 기본이라 fit 이 함께 붙는다 (넘치면 가로 스크롤).
+    # 열 너비를 전부 정했으므로 표 폭이 그 합으로 못박힌다 (fixed).
+    assert "class='dtbl b-grid zebra tight fit fixed'" in 보기
+    assert "width:90px" in 보기
     assert "table.dtbl.b-grid th,table.dtbl.b-grid td{border:1px solid #222}" in 보기
 
     편집 = web.get(f"/dash/edit?id={did}")

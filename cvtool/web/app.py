@@ -546,6 +546,14 @@ table.dtbl.fit{width:auto;min-width:100%}
 /* 한 칸이 통째로 화면을 잡아먹지 않게 상한만 둔다 (직접 정한 너비가 이긴다).
    상한이 있어도 열이 많으면 합이 화면을 넘어 가로 스크롤이 걸린다. */
 table.dtbl.fit th,table.dtbl.fit td{max-width:420px}
+/* 열 너비를 **전부** 정한 표. 폭은 그 합이고, 화면보다 넓으면 가로로 스크롤한다.
+   - table-layout:fixed 여야 정한 대로 선다. auto 면 브라우저가 내용 길이를
+     보고 제멋대로 다시 나눠서, 열을 넓혀도 옆 열이 그만큼 줄어들 뿐이다.
+   - min-width:100% 를 풀어야 카드 폭에 안 묶인다 (바로 이것이 «전체 너비가
+     고정» 으로 보이던 까닭이다).
+   - 상한(260/420px)도 푼다. 정한 너비가 상한에 걸려 잘리면 정한 뜻이 없다. */
+table.dtbl.fixed{table-layout:fixed;min-width:0}
+table.dtbl.fixed th,table.dtbl.fixed td{max-width:none}
 table.dtbl.zebra tr:nth-child(even) td{background:#fafbfc}
 /* 조건서식으로 칠한 칸은 얼룩말도 hover 도 덮지 않는다 — 일부러 칠한 것이다.
    (인라인 스타일이라 이 규칙들보다 우선하지만, 명시해 두어야 나중에 규칙을
@@ -5793,6 +5801,20 @@ def _수식검사(수식: str, 아는열: set[str]) -> str:
     return ""
 
 
+def _열너비설정(설정: dict, data: dict) -> None:
+    """열 너비 칸에서 온 값. {열 이름: px}
+
+    이름과 값을 **짝지어** 보내므로 열 개수가 바뀌어도 안 밀린다.
+    빈 칸·0·글자는 «안 정함» 으로 떨어뜨린다 (담아 두면 표가 사라진다).
+    """
+    if "colwname" not in data:
+        return                              # 이 폼이 열 너비를 안 담고 있었다
+    이름들 = data.get("colwname") or []
+    값들 = (data.get("colw") or []) + [""] * len(이름들)
+    설정["열너비"] = {이름: str(_px(값)) for 이름, 값 in zip(이름들, 값들)
+                   if _px(값)}
+
+
 def _표모양설정(설정: dict, data: dict) -> None:
     """표 모양 고르개에서 온 값. 안 보낸 칸은 건드리지 않는다."""
     테두리 = (data.get("border") or [""])[0]
@@ -5801,6 +5823,7 @@ def _표모양설정(설정: dict, data: dict) -> None:
     폭 = (data.get("tablewidth") or [""])[0]
     if 폭 in ("창에 맞춤", "내용에 맞춤"):
         설정["표너비"] = 폭
+    _열너비설정(설정, data)
     if "border" in data:            # 이 폼이 표 모양을 담고 있었다는 뜻
         설정["줄무늬"] = bool(data.get("zebra"))
         설정["촘촘히"] = bool(data.get("tight"))
@@ -6095,7 +6118,7 @@ def _블록그리기(b, rows, 축값, 아는열) -> str:
         return (
             f"<div class='card'><h2>{html.escape(b.제목)} "
             f"<span class='muted'>{센것}</span></h2>{경고}"
-            f"<div class='scroll'><table {_표모양(b)}"
+            f"<div class='scroll'><table {_표모양(b, 결과.폭)}"
             f" data-name='{html.escape(b.제목 or '목록')}'>"
             f"<tr>{머리}</tr>{몸}</table></div></div>"
         )
@@ -6103,10 +6126,11 @@ def _블록그리기(b, rows, 축값, 아는열) -> str:
     if b.종류 == "프로필":
         결과 = render_profile(b, rows, _프로필값, 아는열)
         경고 = "".join(f"<p class='flag'>{html.escape(x)}</p>" for x in 결과.오류)
+        라벨폭 = _px(b.열너비.get("", "")) or 80
         카드 = []
         for 머리, 줄들 in 결과.사람:
             줄 = "".join(
-                f"<tr><th style='width:80px'>{html.escape(라벨)}</th>"
+                f"<tr><th style='width:{라벨폭}px'>{html.escape(라벨)}</th>"
                 f"<td style='white-space:pre-wrap;max-width:none'>{html.escape(값)}</td></tr>"
                 for 라벨, 값 in 줄들
             )
@@ -6122,21 +6146,51 @@ def _블록그리기(b, rows, 축값, 아는열) -> str:
 
     결과 = render_table(b, rows, 축값, 아는열)
     경고 = "".join(f"<p class='flag'>{html.escape(x)}</p>" for x in 결과.오류)
-    머리 = "<th></th>" + "".join(f"<th>{html.escape(c)}</th>" for c in 결과.머리)
+    # 맨 왼쪽 줄 이름 칸은 이름이 없으므로 "" 을 열쇠로 쓴다.
+    폭맵 = b.열너비
+    이름들 = ["", *결과.머리]
+    너비들 = [폭맵.get(c, "") for c in 이름들]
+
+    def 폭(i: int) -> str:
+        n = _px(너비들[i]) if i < len(너비들) else 0
+        return f" style='width:{n}px'" if n else ""
+
+    머리 = f"<th{폭(0)}></th>" + "".join(
+        f"<th{폭(i + 1)}>{html.escape(c)}</th>" for i, c in enumerate(결과.머리))
     몸 = "".join(
-        f"<tr><th style='text-align:left'>{html.escape(r)}</th>"
-        + "".join(f"<td>{html.escape(v)}</td>" for v in 칸들) + "</tr>"
+        f"<tr><th style='text-align:left{';width:' + str(_px(너비들[0])) + 'px' if _px(너비들[0]) else ''}'>"
+        f"{html.escape(r)}</th>"
+        + "".join(f"<td{폭(i + 1)}>{html.escape(v)}</td>"
+                  for i, v in enumerate(칸들)) + "</tr>"
         for r, 칸들 in 결과.행
     ) or f"<tr><td colspan='{len(결과.머리) + 1}' class='muted'>줄이 없습니다.</td></tr>"
     return (
         f"<div class='card'><h2>{html.escape(b.제목)}</h2>{경고}"
-        f"<div class='scroll'><table {_표모양(b)}"
+        f"<div class='scroll'><table {_표모양(b, 너비들)}"
         f" data-name='{html.escape(b.제목 or '표')}'>"
         f"<tr>{머리}</tr>{몸}</table></div></div>"
     )
 
 
-def _표모양(b) -> str:
+def _px(값) -> int:
+    """열 너비로 쓸 수 있는 px 값. 아니면 0 (= 안 정함).
+
+    0·음수·글자를 그대로 담으면 표가 사라지거나 뒤집힌다.
+    """
+    try:
+        n = int(float(str(값 or "").strip()))
+    except (TypeError, ValueError):
+        return 0
+    return n if n > 0 else 0
+
+
+def _열너비합(너비들) -> int:
+    """열 너비의 합. **하나라도 안 정했으면 0** (= 합으로 안 세운다)."""
+    값들 = [_px(w) for w in 너비들]
+    return sum(값들) if 값들 and all(값들) else 0
+
+
+def _표모양(b, 너비들=()) -> str:
     """블록에 정한 모양을 표 태그의 class·style 로.
 
     기본은 가로줄만 있는 조용한 표다. 그런데 **줄이 길어지면 칸 구분이 안 된다**
@@ -6150,6 +6204,13 @@ def _표모양(b) -> str:
     if b.표너비 != "창에 맞춤":
         cls.append("fit")
     style = ""
+    # 열 너비를 **전부** 정했으면 표 폭은 그 합이다 (엑셀과 같다). 절반만 정해
+    # 놓고 합을 박으면 나머지 열이 갈 자리가 없어 글자가 뭉개지므로, 하나라도
+    # 비어 있으면 «남은 자리를 나눠 가진다» 는 지금 규칙을 그대로 둔다.
+    합 = _열너비합(너비들)
+    if 합:
+        cls.append("fixed")
+        style += f";width:{합}px"
     if b.머리배경:
         # 머리글 배경은 CSS 변수로 넘긴다 (인라인 스타일은 th 에 못 닿는다)
         style += f";--headbg:{b.머리배경}"
@@ -6434,6 +6495,49 @@ def _표모양편집(b) -> str:
     )
 
 
+def _축표열이름(b, 축값) -> list[str]:
+    """축표·자유표가 실제로 그릴 열 이름. **그리는 쪽과 같은 규칙**으로 뽑는다.
+
+    (`dashboards.render_table` 이 쓰는 것 그대로 — 두 곳이 갈라지면 편집
+    화면에 없는 열이 표에 나오거나 그 반대가 된다.)
+    """
+    if b.종류 == "축표":
+        열들 = 축값.get(b.열축, []) if b.열축 != "직접 입력" else b.열이름
+        return [str(c) for c in (열들 or [""])]
+    return [str(c) for c in b.열이름]
+
+
+def _열너비편집(b, 이름들: list[str], 줄이름칸: bool = True) -> str:
+    """열 너비를 숫자로 적는 자리. 옆에 **지금 합계**를 보여 준다.
+
+    합계를 안 보여 주면 숫자를 넣어 놓고도 표가 몇 px 인지 알 수가 없어서,
+    한 칸 고칠 때마다 저장하고 보러 가는 왕복이 생긴다.
+    """
+    폭맵 = b.열너비
+    칸들 = [("", "(줄 이름)")] if 줄이름칸 else []
+    칸들 += [(c, c) for c in 이름들]
+    if not 칸들:
+        return ""
+    줄 = "".join(
+        f"<label class='rt-lbl' style='gap:4px'>"
+        f"<span class='muted'>{html.escape(보일이름)}</span>"
+        f"<input type='hidden' name='colwname' value='{html.escape(키)}'>"
+        f"<input type='number' name='colw' value='{html.escape(폭맵.get(키, ''))}'"
+        " min='30' max='2000' step='10' style='width:72px' placeholder='자동'"
+        " oninput='wsum(this)'></label>"
+        for 키, 보일이름 in 칸들
+    )
+    return (
+        "<p class='bar' style='align-items:flex-start;flex-wrap:wrap'>"
+        "<b style='padding-top:5px'>열 너비</b>"
+        f"<span style='display:flex;flex-wrap:wrap;gap:2px 6px;flex:1'>{줄}</span>"
+        "<span class='wsum muted' style='padding-top:5px'></span></p>"
+        "<p class='muted' style='margin-top:-4px'>px 단위. <b>전부 채우면</b> 표"
+        " 폭이 그 합이 됩니다 — 화면보다 넓으면 가로로 스크롤합니다."
+        " 하나라도 비우면 남은 자리를 나눠 갖습니다.</p>"
+    )
+
+
 def _블록편집(b, 축값, 미리볼사람: str = "") -> str:
     """블록 하나의 설정 폼.
 
@@ -6518,6 +6622,7 @@ def _블록편집(b, 축값, 미리볼사람: str = "") -> str:
             "<span class='fxout muted'></span></p>"
             "<p class='muted'><code>{행}</code> <code>{열}</code> 이 축 값으로 바뀝니다. "
             "칸을 하나하나 안 적어도 되고, 부서가 늘면 표가 알아서 늘어납니다.</p>"
+            + _열너비편집(b, _축표열이름(b, 축값))
             + _표모양편집(b)
         )
     elif b.종류 == "목록":
@@ -6527,12 +6632,12 @@ def _블록편집(b, 축값, 미리볼사람: str = "") -> str:
             f"<tr><td><input type='text' name='colhead' value='{html.escape(머리)}'"
             " style='width:100%' placeholder='머리글'></td>"
             f"<td><input type='text' name='colformula' value='{html.escape(식)}'"
-            " style='width:100%' class='fx' oninput='fxPreview(this)'"
+            " style='width:100%' class='fx' oninput='fxPreview(this);wsum(this)'"
             f" data-cid='{html.escape(미리볼사람)}' placeholder='=한글_이름'>"
             "<span class='fxout muted'></span></td>"
             f"<td class='ctl'><input type='number' name='colwidth'"
-            f" value='{html.escape(폭)}' min='30' max='900' step='10'"
-            " style='width:72px' placeholder='자동'></td>"
+            f" value='{html.escape(폭)}' min='30' max='2000' step='10'"
+            " style='width:72px' placeholder='자동' oninput='wsum(this)'></td>"
             "<td class='ctl'><button type='button' class='sec tiny'"
             " onclick='rowMove(this,-1)' title='위로'>↑</button> "
             "<button type='button' class='sec tiny' onclick='rowMove(this,1)'"
@@ -6563,13 +6668,18 @@ def _블록편집(b, 축값, 미리볼사람: str = "") -> str:
             "<span class='fxout muted'></span></p>"
             "<div class='scroll'><table><tr><th style='width:150px'>머리글</th>"
             "<th>열 수식</th>"
-            "<th class='ctl' style='width:84px' title='칸 너비 (px). 비우면 알아서'>"
-            "너비</th>"
+            "<th class='ctl' style='width:110px'"
+            " title='칸 너비 (px). 비우면 알아서'>너비"
+            "<span class='wsum muted' style='display:block;font-weight:400'></span>"
+            "</th>"
             f"<th class='ctl' style='width:120px'></th></tr>"
             f"{열줄}</table></div>"
             "<p class='muted'>맨 아래 빈 줄에 적으면 열이 늘어납니다. "
             "머리글을 비우면 수식이 그대로 머리글이 됩니다. "
             "<b>수식 대신 그냥 글자</b>를 적으면 모든 줄에 그 글자가 들어갑니다.</p>"
+            "<p class='muted'>너비를 <b>전부 채우면</b> 표 폭이 그 합이 됩니다 — "
+            "화면보다 넓으면 가로로 스크롤합니다. 하나라도 비우면 남은 자리를 "
+            "나눠 갖습니다.</p>"
             + _표모양편집(b) + _조건서식편집(b, 미리볼사람)
         )
     elif b.종류 == "프로필":
@@ -6597,6 +6707,7 @@ def _블록편집(b, 축값, 미리볼사람: str = "") -> str:
             "<div class='scroll'><table><tr><th style='width:90px'>라벨</th>"
             f"<th>문장 틀</th></tr>{줄}</table></div>"
             "<p class='muted'>빈 줄은 저장할 때 없어집니다. 맨 아래 빈 칸에 적으면 줄이 늘어납니다.</p>"
+            + _열너비편집(b, [])
             + _표모양편집(b)
         )
     else:  # 자유 표
@@ -6619,6 +6730,7 @@ def _블록편집(b, 축값, 미리볼사람: str = "") -> str:
             "</select> <span class='muted'>행·열을 먼저 저장하면 아래 칸이 생깁니다.</span></p>"
             + (f"<div class='scroll'><table><tr>{머리칸}</tr>"
                + "".join(칸입력) + "</table></div>" if b.행이름 and b.열이름 else "")
+            + _열너비편집(b, _축표열이름(b, 축값))
             + _표모양편집(b)
         )
     return f"<div class='card'>{앞머리}{머리}{가운데}{꼬리}</div>"
@@ -6850,6 +6962,34 @@ _FXAC_JS = """
 
 _FX_JS = """
 <script>
+/* 열 너비 합계. 숫자로 맞추는 방식이라 **지금 표가 몇 px 인지** 보여야
+   한 칸 고칠 때마다 저장하고 보러 가는 왕복이 안 생긴다.
+   전부 채워야 표 폭이 그 합이 되므로, 빈 칸이 남았으면 그것도 알려 준다. */
+function wsum(el){
+  var 카드 = el.closest ? el.closest('.card') : null;
+  if(!카드) return;
+  var 칸들 = 카드.querySelectorAll("input[name='colw'],input[name='colwidth']");
+  var 합 = 0, 빈것 = 0, 센것 = 0;
+  칸들.forEach(function(c){
+    /* 목록 편집 표의 맨 아래 줄은 '열 추가' 자리다. 수식이 비어 있으면 아직
+       열이 아니므로 세지 않는다 — 안 그러면 늘 "1칸 비어 있음" 이 뜬다. */
+    var 줄 = c.closest ? c.closest('tr') : null;
+    var 식 = 줄 ? 줄.querySelector("input[name='colformula']") : null;
+    if(식 && !식.value.trim()) return;
+    센것++;
+    var v = parseInt(c.value, 10);
+    if(v > 0) 합 += v; else 빈것++;
+  });
+  var 글 = !센것 ? ''
+         : 빈것 ? '합계 ' + 합 + 'px · ' + 빈것 + '칸 비어 있음'
+         : '표 폭 ' + 합 + 'px';
+  카드.querySelectorAll('.wsum').forEach(function(s){ s.textContent = 글; });
+}
+document.addEventListener('DOMContentLoaded', function(){
+  document.querySelectorAll("input[name='colw'],input[name='colwidth']")
+    .forEach(function(c){ wsum(c); });
+});
+
 function fxWhoChanged(sel){
   document.querySelectorAll('.fx').forEach(function(el){
     el.dataset.cid = sel.value;
