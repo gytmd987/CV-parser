@@ -551,14 +551,117 @@ def test_old_records_without_titles_still_work():
 
 
 # --- 지도교수 · IF · 구글 스칼라 -----------------------------------------------------
-def test_the_supervisor_prompt_asks_for_korean_then_the_original():
-    """`Prof. Gil-Ho Lee` 만 적혀 있으면 누구인지 알아보기 어렵다."""
+def test_the_supervisor_prompt_splits_the_name_into_separate_boxes():
+    """한 칸에 `한글(원문)` 을 적으라고 하면 둘 중 하나로 무너진다.
+
+    지원자 이름은 `한글_이름`·`영문_이름` 으로 칸이 나뉘어 있어 잘 나오는데
+    지도교수만 한 칸에 복합 형식이었다. 같은 모양으로 맞춘다.
+    """
     from cvtool.extract import _BASIC_HINT, _EDU_HINT
 
     for hint in (_BASIC_HINT, _EDU_HINT):
-        assert "한글명(원문명)" in hint
-        assert "이길호(Gil-Ho Lee)" in hint
-        assert "지어내지 마라" in hint          # 유추 못 하면 원문만
+        assert "칸을 나눠서" in hint
+        assert "`_한글`" in hint and "`_원문`" in hint and "`_출처`" in hint
+        assert "Gil-Ho Lee` -> `이길호" in hint    # 유추 방향을 예시로
+        assert "지어내지 마라" in hint             # 못 하면 비워 둔다
+
+
+def test_the_supervisor_schema_forces_an_answer_about_where_the_korean_came_from():
+    """`출처` 를 필수로 두면 모델이 «한글을 못 찾았다» 를 그냥 못 지나친다.
+
+    한글_이름_출처를 필수로 만든 뒤 지원자 이름 유추가 좋아졌다. 지도교수 칸에는
+    그 장치가 없어서 빈칸으로 넘어가고 있었다.
+    """
+    from cvtool.schemas import SECTION_BASIC, SECTION_EDUCATION, 출처_ENUM
+
+    assert SECTION_BASIC["properties"]["현재_지도교수_출처"]["enum"] == 출처_ENUM
+    assert "현재_지도교수_출처" in SECTION_BASIC["required"]
+    for 앞 in ("박사", "석사"):
+        칸 = SECTION_EDUCATION["properties"][f"{앞}_지도교수_출처"]
+        assert 칸["enum"] == 출처_ENUM
+        assert f"{앞}_지도교수_출처" in SECTION_EDUCATION["required"]
+        # 한글·원문 칸은 필수가 아니다 — 없으면 비우는 게 맞다.
+        assert f"{앞}_지도교수_한글" in SECTION_EDUCATION["properties"]
+        assert f"{앞}_지도교수_한글" not in SECTION_EDUCATION["required"]
+
+
+def test_titles_are_stripped_from_the_supervisor_name():
+    """`Prof.` 이 이름의 일부가 되면 명칭 대조도 검색도 안 된다."""
+    from cvtool.extract import _직함떼기
+
+    assert _직함떼기("Prof. Gil-Ho Lee") == "Gil-Ho Lee"
+    assert _직함떼기("Dr. Kim") == "Kim"
+    assert _직함떼기("이길호 교수") == "이길호"
+    assert _직함떼기("지도교수 이길호 교수님") == "이길호"
+    assert _직함떼기("  김철수  ") == "김철수"
+    assert _직함떼기("") == ""
+    # 이름 자체가 직함 하나뿐이면 지우지 않는다 — 지우면 아무것도 안 남는다.
+    assert _직함떼기("교수") == "교수"
+
+
+def test_the_two_supervisor_boxes_become_one_table_value():
+    """표에 보이는 모양은 예전 그대로여야 한다 — 모델에게만 칸을 나눠 물었다."""
+    from cvtool.extract import _지도교수
+
+    assert _지도교수({"현재_지도교수_한글": "이길호",
+                  "현재_지도교수_원문": "Gil-Ho Lee",
+                  "현재_지도교수_출처": "추정"}, "현재_지도교수") == (
+        "이길호(Gil-Ho Lee)", True)
+    # 이력서에 한글로 적혀 있었으면 유추가 아니다 — 검토 사유로 올리지 않는다.
+    assert _지도교수({"현재_지도교수_한글": "이길호",
+                  "현재_지도교수_원문": "이길호",
+                  "현재_지도교수_출처": "원문"}, "현재_지도교수") == ("이길호", False)
+    # 한글을 못 채웠으면 원문만. 지어낸 것이 아니므로 검토 사유도 아니다.
+    assert _지도교수({"현재_지도교수_한글": "",
+                  "현재_지도교수_원문": "Prof. Gil-Ho Lee",
+                  "현재_지도교수_출처": "없음"}, "현재_지도교수") == ("Gil-Ho Lee", False)
+    # 칸을 나누기 전에 쓰던 키도 그대로 받는다.
+    assert _지도교수({"현재_지도교수": "김철수"}, "현재_지도교수") == ("김철수", False)
+    assert _지도교수({}, "현재_지도교수") == ("", False)
+
+
+def test_a_guessed_supervisor_name_lands_in_the_review_reasons():
+    """로마자에서 한글은 하나로 안 정해진다 (`Lee` 가 이/리). 사람이 봐야 한다."""
+    from cvtool.extract import _assemble
+
+    사유: list[str] = []
+    rec = _assemble(
+        {"basic": {"한글_이름": "홍길동", "현재_신분": "박사과정",
+                   "현재_지도교수_한글": "이길호",
+                   "현재_지도교수_원문": "Gil-Ho Lee",
+                   "현재_지도교수_출처": "추정"},
+         "education": {"박사_지도교수_한글": "이길호",
+                       "박사_지도교수_원문": "Gil-Ho Lee",
+                       "박사_지도교수_출처": "추정",
+                       "석사_지도교수_한글": "김철수",
+                       "석사_지도교수_원문": "김철수",
+                       "석사_지도교수_출처": "원문"}},
+        사유, 지원자_ID="X", 원본_파일명="x.pdf")
+
+    assert rec.현재_지도교수 == "이길호(Gil-Ho Lee)"
+    assert rec.석사_지도교수 == "김철수"
+    말 = [s for s in 사유 if "지도교수" in s]
+    assert len(말) == 1
+    assert "이길호(Gil-Ho Lee)" in 말[0] and "원문 대조" in 말[0]
+    # 현재와 박사가 같은 사람이면 두 번 적지 않는다.
+    assert 말[0].count("이길호") == 2          # 「현재 …」 「박사 …」
+    assert "김철수" not in 말[0]              # 원문 그대로였으니 사유가 아니다
+
+
+def test_a_supervisor_read_from_the_document_is_not_a_review_reason():
+    """이력서에 한글로 적혀 있던 것까지 검토로 올리면 사유가 늘 켜져 있게 된다."""
+    from cvtool.extract import _assemble
+
+    사유: list[str] = []
+    rec = _assemble(
+        {"basic": {"한글_이름": "홍길동", "현재_신분": "박사과정",
+                   "현재_지도교수_한글": "이길호",
+                   "현재_지도교수_원문": "Gil-Ho Lee",
+                   "현재_지도교수_출처": "원문"}},
+        사유, 지원자_ID="X", 원본_파일명="x.pdf")
+
+    assert rec.현재_지도교수 == "이길호(Gil-Ho Lee)"
+    assert not [s for s in 사유 if "지도교수" in s]
 
 
 def test_the_scholar_link_uses_the_original_name_and_affiliation():
