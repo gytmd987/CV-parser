@@ -100,11 +100,27 @@ NAME_COLUMNS: dict[str, str] = {
 #: 등급별 논문 수 열의 접두사
 TIER_COLUMN_PREFIX = "1저자_해외논문_"
 
+#: 등급별 **제출처 목록** 열의 이름 규칙. `1저자_최우수_제출처` 처럼 된다.
+#: 개수만 세는 위 열과 달리 어디에 냈는지를 그대로 적는다 — 숫자만 보고는
+#: 그 사람이 어디에 냈는지 알 수가 없어서 결국 상세를 열어 봐야 했다.
+def tier_venue_column(등급: str) -> str:
+    return f"1저자_{등급}_제출처"
+
+
+def is_tier_venue(col: str) -> bool:
+    """등급별 제출처 열인가. **계산 결과라 사람이 못 고친다.**
+
+    `1저자_해외논문_제출처`(옛 열)는 이미 `TIER_COLUMN_PREFIX` 로 걸리므로
+    여기서는 뺀다 — 두 군데서 잡으면 어느 쪽이 참인지 헷갈린다.
+    """
+    return (col.startswith("1저자_") and col.endswith("_제출처")
+            and not col.startswith(TIER_COLUMN_PREFIX))
+
 
 def columns(registry=None) -> list[str]:
     """표에 나갈 열 목록.
 
-    등급별 논문 수 열은 담당자가 켠 등급만 나온다(기본 최우수·우수).
+    등급별 논문 수·제출처 열은 담당자가 켠 등급만 나온다(기본 최우수·우수).
     registry 가 없으면 기본 열만 돌려준다.
     """
     if registry is None:
@@ -115,6 +131,7 @@ def columns(registry=None) -> list[str]:
         out.append(col)
         if col == "1저자_해외논문_제출처":
             out.extend(f"{TIER_COLUMN_PREFIX}{t}" for t in tiers)
+            out.extend(tier_venue_column(t) for t in tiers)
     return out
 
 
@@ -468,6 +485,40 @@ class CVRecord(BaseModel):
             return ""
         return str(int(높은것)) if 높은것 == int(높은것) else f"{높은것:g}"
 
+    def 등급별_제출처(self, registry=None) -> dict[str, str]:
+        """등급마다 **1저자 논문을 어디에 냈는지** 한 줄로.
+
+            최우수 → CVPR ('24) 1저자, Nano Energy ('23, IF 17.9) 1저자
+
+        가장 최근 것부터 적는다. 저널은 IF 를 같이 적는다 — 개수 열만 보고는
+        어디에 냈는지 알 수가 없어서 결국 상세 화면을 열어 봐야 했다.
+
+        이름·등급·IF 는 **볼 때마다 사전에서 다시 읽는다.** 명칭 관리에서
+        등급이나 IF 를 고치면 이미 등록된 지원자 표에도 곧바로 반영된다.
+        """
+        if registry is None:
+            return {}
+        모음: dict[str, list[tuple[str, str]]] = {}
+        for v in self.papers_view(registry):
+            등급 = v.get("등급") or ""
+            if not 등급 or not v["주저자"]:
+                continue
+            연도 = str(v.get("연도") or "").strip()
+            안 = f"'{연도[-2:]}" if len(연도) >= 2 else ""
+            if v.get("유형") == "저널":
+                found = registry.lookup("저널", v.get("원문") or v["표시명"])
+                IF = (found.IF or "").strip() if found else ""
+                if IF:
+                    안 = f"{안}, IF {IF}" if 안 else f"IF {IF}"
+            묶음 = f"{v['표시명']} ({안}) 1저자" if 안 else f"{v['표시명']} 1저자"
+            모음.setdefault(등급, []).append((연도, 묶음))
+        # 가장 최근부터. 연도가 없는 것은 맨 뒤로 (0 으로 보면 그렇게 된다).
+        return {
+            등급: ", ".join(글 for _연도, 글 in
+                          sorted(것들, key=lambda x: x[0] or "", reverse=True))
+            for 등급, 것들 in 모음.items()
+        }
+
     def 등급별_해외논문_수(self, registry=None) -> dict[str, int]:
         counts: dict[str, int] = {}
         for v in self.papers_view(registry):
@@ -500,8 +551,10 @@ class CVRecord(BaseModel):
                 data[col] = MULTI_SEP.join(parts)
 
             counts = self.등급별_해외논문_수(registry)
+            제출처 = self.등급별_제출처(registry)
             for tier in registry.column_tiers():
                 data[f"{TIER_COLUMN_PREFIX}{tier}"] = counts.get(tier, 0) or ""
+                data[tier_venue_column(tier)] = 제출처.get(tier, "")
 
         cols = columns(registry)
         return {col: str(data.get(col, "") or "") for col in cols}

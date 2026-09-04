@@ -69,7 +69,7 @@ from ..extract import extract_cv_from_text
 from ..ingestion.parsers import UnsupportedFormat, extract_text
 from .. import normalize as N
 from ..normalize import MULTI_SEP
-from ..schemas import NAME_COLUMNS, TIER_COLUMN_PREFIX, CVRecord
+from ..schemas import NAME_COLUMNS, TIER_COLUMN_PREFIX, CVRecord, is_tier_venue
 from ..schemas import columns as table_columns
 from ..store import (
     CUSTOM_SCOPES,
@@ -1053,7 +1053,7 @@ def _긴글가능(col: str, 추가열: dict | None, 구분: str = "") -> bool:
         return False
     if col in REGISTRY_FIELDS or col in READONLY_FIELDS:
         return False
-    if col.startswith(TIER_COLUMN_PREFIX):
+    if col.startswith(TIER_COLUMN_PREFIX) or is_tier_venue(col):
         return False
     return field_spec(col).입력 == MULTILINE_OK
 
@@ -1068,6 +1068,7 @@ def _editable(col: str) -> bool:
         col not in READONLY_FIELDS
         and col not in REGISTRY_FIELDS
         and not col.startswith(TIER_COLUMN_PREFIX)
+        and not is_tier_venue(col)
     )
 
 
@@ -1922,6 +1923,8 @@ def 열폭(col: str) -> str:
         return "w-lg"
     if col in _짧은열:
         return "w-sm"
+    if is_tier_venue(col):
+        return "w-xl"
     if col.endswith("_수") or col.startswith(TIER_COLUMN_PREFIX):
         return "w-xs"
     if col.endswith(("_시작", "_졸업", "_종료")):
@@ -3138,7 +3141,7 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
         # 검토_사유는 위 검토 카드가 관리한다. 여기서 글을 고치면 '확인함'
         # 표시와 짝이 안 맞는다.
         if (not 수정가능 or c in READONLY_FIELDS or c == "검토_사유"
-                or c.startswith("1저자_해외논문_")):
+                or c.startswith("1저자_해외논문_") or is_tier_venue(c)):
             항목행.append(
                 f"<tr{줄표시}><th style='width:180px'>{html.escape(이름표[c])}"
                 f"{검토배지(c)}</th>"
@@ -3635,7 +3638,11 @@ def _names_page(종류: str, me: User | None = None,
             "<form method='post' action='/names/tiers'>"
             f"<input type='hidden' name='kind' value='{html.escape(종류)}'>"
             f"{체크}<button type='submit'>저장</button></form>"
-            "<p class='muted'>켠 등급마다 <code>1저자_해외논문_(등급)</code> 열이 표에 생깁니다.</p>"
+            "<p class='muted'>켠 등급마다 표에 열이 둘 생깁니다 — "
+            "<code>1저자_해외논문_(등급)</code> 은 <b>몇 편</b>인지, "
+            "<code>1저자_(등급)_제출처</code> 는 <b>어디에 냈는지</b>를 "
+            "최근 것부터 적습니다 "
+            "(<code>CVPR ('24) 1저자, Nano Energy ('23, IF 17.9) 1저자</code>).</p>"
             "</div>"
         )
 
@@ -5682,6 +5689,9 @@ def _fields_page(me: User, error: str = "", msg: str = "") -> bytes:
             return "명칭 사전 " + html.escape(NAME_COLUMNS[col])
         if col.startswith(TIER_COLUMN_PREFIX):
             return "<span class='muted'>계산 결과 (논문 목록에서 셈)</span>"
+        if is_tier_venue(col):
+            return ("<span class='muted'>계산 결과 (그 등급의 1저자 논문을"
+                    " 최근 것부터. 이름·등급·IF 는 명칭 관리에서 정한 값)</span>")
         spec = field_spec(col)
         return html.escape(spec.도움말 or "텍스트")
 
