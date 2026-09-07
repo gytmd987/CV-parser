@@ -568,26 +568,40 @@ class NameRegistry:
 
 
 def observe_record(rec, registry: NameRegistry) -> list[str]:
-    """지원자 레코드에 나온 이름들을 사전에 등록만 한다.
+    """지원자 레코드에 나온 이름들을 사전에 등록하고, 검토 사유를 돌려준다.
 
     ⚠️ 레코드의 값은 **고치지 않는다.** 예전 방식은 등급·국내해외를 레코드에
     써넣어서, 나중에 관리화면에서 분류를 바꿔도 이미 등록된 표에 반영되지
     않았다. 이제 표시할 때마다 사전을 다시 읽는다(CVRecord.to_row).
 
     Returns:
-        아직 분류되지 않은 학회/저널 이름 목록 (검토 필요 표시용)
+        검토 사유 조각 목록. 부르는 쪽은 이어 붙이기만 하면 된다 —
+        예전에는 부르는 자리마다 같은 문장을 각자 만들고 있었다.
     """
     from .normalize import MULTI_SEP
     from .schemas import NAME_COLUMNS
 
+    # 사전이 **처음 보는** 소속·전공 표기. 사람이 이름을 붙여 줘야 그다음부터
+    # 같은 곳으로 묶인다. 안 붙이면 표에 CV 에 적힌 그대로 남는다.
+    #
+    # 「아직 사람이 안 본 줄」로 잡지 않는 이유: 같은 학교에서 온 열 번째
+    # 지원자까지 계속 켜진다. 늘 켜진 신호는 아무도 안 본다.
+    처음본것: list[str] = []
     for col, 종류 in NAME_COLUMNS.items():
         raw = str(getattr(rec, col, "") or "")
         for part in raw.split(MULTI_SEP):
-            if part.strip():
-                try:
-                    registry.observe(종류, part)
-                except ValueError:
-                    pass
+            if not part.strip():
+                continue
+            # observe 보다 **먼저** 본다. 등록하고 나면 전부 '있는 것'이 된다.
+            # lookup 은 정규화키까지 보므로 대소문자·괄호가 달라도 찾아낸다
+            # ('Materials and Engineering' -> 'materials and engineering').
+            처음 = registry.lookup(종류, part) is None
+            try:
+                registry.observe(종류, part)
+            except ValueError:
+                continue
+            if 처음:
+                처음본것.append(f"{col}: {part.strip()}")
 
     미분류: list[str] = []
     for paper in rec.논문:
@@ -600,4 +614,14 @@ def observe_record(rec, registry: NameRegistry) -> list[str]:
             continue
         if found.등급 == "미분류":
             미분류.append(found.표시명)
-    return sorted(set(미분류))
+
+    사유: list[str] = []
+    if 미분류:
+        # 문구를 바꾸지 않는다. 이미 저장된 지원자의 검토 사유와 '확인함'
+        # 기록이 이 글자에 걸려 있다.
+        사유.append("미분류 학회/저널: " + ", ".join(sorted(set(미분류))))
+    if 처음본것:
+        # **열 이름을 넣어서** 만든다. review.columns_for 가 문장 안의 열
+        # 이름을 그대로 찾으므로, 상세 화면에서 그 칸을 짚어 준다.
+        사유.append("사전에 없는 표기 — " + ", ".join(dict.fromkeys(처음본것)))
+    return 사유

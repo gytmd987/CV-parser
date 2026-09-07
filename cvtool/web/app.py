@@ -264,11 +264,10 @@ def _worker() -> None:
                 continue
             rec = extract_cv_from_text(text, 원본_파일명=filename, 지원자_ID=지원자_ID)
 
-            # 이름들을 사전에 등록만 한다. 레코드 값은 건드리지 않는다.
-            미분류 = observe_record(rec, registry)
-            if 미분류:
-                사유 = "미분류 학회/저널: " + ", ".join(미분류)
-                rec.검토_사유 = f"{rec.검토_사유} / {사유}" if rec.검토_사유 else 사유
+            # 이름들을 사전에 등록하고 검토 사유를 받는다. 레코드 값은 건드리지 않는다.
+            사전사유 = observe_record(rec, registry)
+            if 사전사유:
+                rec.검토_사유 = review.join([rec.검토_사유, *사전사유])
                 rec.검토_필요 = "Y"
 
             # 중복 검토
@@ -2932,9 +2931,7 @@ def _엑셀등록(data: bytes, me: User) -> tuple[list[str], list[str], list[str
 
         # 사람이 손으로 적은 값이라 **무조건** 검토를 거친다.
         사유 = [bulk.등록사유]
-        미분류 = observe_record(rec, registry)
-        if 미분류:
-            사유.append("미분류 학회/저널: " + ", ".join(미분류))
+        사유.extend(observe_record(rec, registry))
         # 지문(CV 원문)이 없어도 이메일·전화·이름+생년월일 일치는 잡힌다.
         후보 = find_duplicates(rec, [], store.fingerprints())
         메모 = " / ".join(str(m) for m in 후보)

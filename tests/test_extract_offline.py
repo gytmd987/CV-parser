@@ -730,3 +730,50 @@ def test_the_dictionary_decides_domestic_or_overseas_not_the_llm():
 
     reg.classify(n.id, 국내해외="국내")             # 담당자가 국내로 고치면
     assert rec.최고_임팩트팩터(reg) == ""            # IF 도 같이 빠진다
+
+
+# --- 기관·전공 이름은 옮기지 않는다 ---------------------------------------------
+def test_the_prompt_forbids_translating_school_and_major_names():
+    """명칭 사전은 **CV 에 적힌 표기**로 묶는다. 모델이 옮겨 놓으면 못 알아본다.
+
+    `materials and engineering` 을 `재료공학` 으로 저장해 뒀는데 표에
+    `신소재공학` 이 나온 일이 있었다. 저장된 원표기가 모델이 옮긴 한글이라
+    사전 조회가 아예 안 됐다. 논문 제출처가 예전부터 이 규칙을 쓰고 있다.
+    """
+    from cvtool.extract import _BASIC_HINT, _EDU_HINT, _READ_PROMPT
+
+    # 1단계에서 이미 옮겨 버리면 2단계는 원문을 볼 기회가 없다.
+    assert "번역하지 마라" in _READ_PROMPT
+    assert "적힌 표기를 그대로" in _READ_PROMPT
+
+    for hint in (_BASIC_HINT, _EDU_HINT):
+        assert "번역하지 마라" in hint
+        assert "명칭 사전" in hint          # 왜 그래야 하는지까지 일러둔다
+    assert "신소재공학" in _EDU_HINT         # 하지 말라는 예시
+    assert "서울대학교" in _BASIC_HINT
+
+
+def test_the_major_suffix_rule_survives():
+    """'전기공학전공' -> '전기공학' 은 **같은 말 안에서** 군더더기를 떼는 것이라
+    번역 금지와 부딪히지 않는다. 코드에서도 N.major 가 같은 일을 한다."""
+    from cvtool.extract import _EDU_HINT
+    from cvtool.normalize import major
+
+    assert "'전기공학전공' -> '전기공학'" in _EDU_HINT
+    assert major("전기공학전공") == "전기공학"
+    assert major("Materials and Engineering") == "Materials and Engineering"
+
+
+def test_the_record_keeps_what_the_cv_said():
+    """추출이 원문 표기를 다듬어 버리면 사전이 묶을 것이 없다."""
+    from cvtool.extract import _assemble
+
+    rec = _assemble(
+        {"basic": {"현재_소속": "Seoul National University"},
+         "education": {"박사_학교": "KAIST",
+                       "박사_전공": "Materials and Engineering"}},
+        [], 지원자_ID="X", 원본_파일명="x.pdf")
+
+    assert rec.현재_소속 == "Seoul National University"
+    assert rec.박사_학교 == "KAIST"
+    assert rec.박사_전공 == "Materials and Engineering"

@@ -271,3 +271,77 @@ def test_old_two_layer_db_migrates_to_one_row_per_spelling(tmp_path):
     assert 표기들["ICML"].등급 == "최우수"                  # 분류는 이름에 붙어 유지
     assert 표기들["국제기계학습학회"].등급 == "최우수"
     assert reg.display("학회", "국제기계학습학회") == "ICML"
+
+
+# --- 사전에 없는 소속·전공 -----------------------------------------------------
+def test_a_major_written_in_english_finds_the_name_the_recruiter_gave_it(reg):
+    """신고받은 상황 그대로.
+
+    `materials and engineering` 을 `재료공학` 이라고 저장해 뒀는데 표에
+    `신소재공학` 이 나왔다. 원인은 LLM 이 옮겨 놓은 표기가 저장돼서 사전이
+    그것을 못 알아본 것이었다. 이력서에 적힌 표기가 그대로 오면 사전이 잡는다.
+    """
+    첫번째 = reg.observe("전공", "materials and engineering")
+    reg.classify(첫번째.id, 표시명="재료공학")
+
+    # 다음 이력서는 대문자로 적어 왔다 — 정규화키가 같으니 같은 이름을 쓴다.
+    rec = CVRecord(지원자_ID="T", 박사_전공="Materials and Engineering")
+    observe_record(rec, reg)
+    assert rec.to_row(reg)["박사_전공"] == "재료공학"
+    assert rec.박사_전공 == "Materials and Engineering"      # 저장값은 그대로
+
+
+def test_a_spelling_the_dictionary_already_knows_is_not_a_review_reason(reg):
+    """이미 아는 표기까지 검토로 올리면 사유가 늘 켜져 있게 된다."""
+    reg.classify(reg.observe("전공", "materials and engineering").id, 표시명="재료공학")
+    rec = CVRecord(지원자_ID="T", 박사_전공="Materials and Engineering")
+    assert [s for s in observe_record(rec, reg) if "사전에 없는" in s] == []
+
+
+def test_a_spelling_new_to_the_dictionary_becomes_a_review_reason(reg):
+    """사전에 없는 소속·전공은 조용히 지나가면 안 된다.
+
+    예전에는 미분류 학회·저널만 검토로 올라와서, 학과가 엉뚱하게 들어와도
+    사람이 눈으로 볼 때까지 몰랐다.
+    """
+    rec = CVRecord(지원자_ID="T", 박사_학교="한국대학교", 박사_전공="재료공학")
+    사유 = [s for s in observe_record(rec, reg) if "사전에 없는" in s]
+    assert len(사유) == 1
+    assert "박사_학교: 한국대학교" in 사유[0]
+    assert "박사_전공: 재료공학" in 사유[0]
+
+
+def test_the_second_applicant_from_the_same_school_is_not_flagged_again(reg):
+    """늘 켜진 신호는 아무도 안 본다. 처음 한 번만 올린다."""
+    observe_record(CVRecord(지원자_ID="A", 박사_학교="한국대학교"), reg)
+    둘째 = observe_record(CVRecord(지원자_ID="B", 박사_학교="한국대학교"), reg)
+    assert [s for s in 둘째 if "사전에 없는" in s] == []
+
+
+def test_the_reason_points_at_the_column_it_is_about(reg):
+    """상세 화면에서 그 사유를 누르면 해당 칸으로 가야 한다.
+
+    그래서 문장에 열 이름을 넣는다 — review 가 우리 문장에서 그것을 찾는다.
+    """
+    from cvtool import review
+
+    rec = CVRecord(지원자_ID="T", 박사_전공="Materials and Engineering")
+    사유 = [s for s in observe_record(rec, reg) if "사전에 없는" in s][0]
+    assert review.columns_for(사유) == ["박사_전공"]
+
+
+def test_blank_columns_make_no_reason(reg):
+    """안 적힌 학력까지 «사전에 없다» 고 하면 사유가 쓰레기가 된다."""
+    rec = CVRecord(지원자_ID="T", 박사_학교="한국대학교")   # 석사·학사는 빈칸
+    사유 = [s for s in observe_record(rec, reg) if "사전에 없는" in s][0]
+    assert "석사" not in 사유 and "학사" not in 사유
+
+
+def test_the_unclassified_venue_wording_did_not_change(reg):
+    """이미 저장된 지원자의 검토 사유와 «확인함» 기록이 이 글자에 걸려 있다."""
+    rec = _rec()
+    사유 = observe_record(rec, reg)
+    미분류 = [s for s in 사유 if s.startswith("미분류 학회/저널: ")]
+    assert len(미분류) == 1
+    assert "International Conference on Machine Learning" in 미분류[0]
+    assert "NeurIPS" in 미분류[0]
