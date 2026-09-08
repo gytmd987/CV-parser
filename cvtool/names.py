@@ -165,6 +165,9 @@ _CLASS_COLS = ("등급", "국내해외", "유형", "IF")
 
 
 class NameRegistry:
+    #: 한 번만 도는 이관 표시 (`PRAGMA user_version`).
+    SCHEMA_VERSION = 1
+
     def __init__(self, db_path: str | Path) -> None:
         self.path = Path(db_path)
         secure_dir(self.path.parent)
@@ -527,6 +530,37 @@ class NameRegistry:
             "SELECT COUNT(*) FROM names WHERE 확인일시=''"
         ).fetchone()[0]
 
+    @atomic
+    def backfill_careers(self, 레코드_주기) -> int:
+        """이미 등록된 지원자의 `경력_회사` 를 소속 사전에 넣는다. **한 번만.**
+
+        `경력_회사` 가 사전 열이 되면서 상세 화면이 그 칸을 드롭다운으로 그린다.
+        목록은 사전에 있는 이름으로만 만들어지므로(app.py `입력칸`), 옛 레코드의
+        회사가 사전에 없으면 **고를 항목이 없어 빈칸이 선택되고, 상세를 저장하는
+        순간 회사 이름이 지워진다.** 그래서 이건 선택이 아니라 필수다.
+
+        Args:
+            레코드_주기: 레코드 목록을 돌려주는 함수. 이관이 이미 끝났으면
+                **부르지 않는다** — 서버가 뜰 때마다 전체를 읽지 않기 위해서다.
+        Returns:
+            새로 넣은 표기 수.
+        """
+        판 = self._conn.execute("PRAGMA user_version").fetchone()[0]
+        if 판 >= self.SCHEMA_VERSION:
+            return 0
+        넣은것 = 0
+        for rec in 레코드_주기():
+            회사 = str(getattr(rec, "경력_회사", "") or "").strip()
+            if not 회사 or self.lookup("소속", 회사) is not None:
+                continue
+            try:
+                self.observe("소속", 회사)
+            except ValueError:
+                continue
+            넣은것 += 1
+        self._conn.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
+        return 넣은것
+
     def forget(self, name_id: int) -> str:
         """표기 한 줄을 지운다 (오타로 들어온 것 정리용)."""
         나 = self.get(name_id)
@@ -602,6 +636,16 @@ def observe_record(rec, registry: NameRegistry) -> list[str]:
                 continue
             if 처음:
                 처음본것.append(f"{col}: {part.strip()}")
+
+    # 경력 목록의 회사도 전부 넣는다. 열로 뽑히는 것은 대표 경력 하나뿐인데,
+    # `경력_요약` 에는 나머지도 다 나오므로 그것들도 이름을 붙일 수 있어야 한다.
+    # **검토 사유로는 올리지 않는다** — 사람마다 서너 줄씩 붙어 사유가 못 읽힌다.
+    for c in getattr(rec, "경력", []) or []:
+        if (c.회사 or "").strip():
+            try:
+                registry.observe("소속", c.회사)
+            except ValueError:
+                pass
 
     미분류: list[str] = []
     for paper in rec.논문:

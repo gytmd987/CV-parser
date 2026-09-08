@@ -324,27 +324,43 @@ def months_between(시작: str, 종료: str, 오늘: str) -> int | None:
     return (y2 - y1) * 12 + (m2 - m1)
 
 
-def degree_status(status: str, 졸업: str, 오늘: str) -> tuple[str, str]:
-    """학위상태를 졸업일과 대조해 바로잡는다.
+def _졸업일_지남(졸업: str, 오늘: str) -> bool | None:
+    """졸업일이 지났나. 날짜를 못 읽으면 None."""
+    if not 졸업 or len(졸업) != 6 or not 졸업.isdigit():
+        return None
+    return 졸업 <= 오늘  # YYYYMM 문자열은 그대로 비교해도 순서가 맞다
 
-    졸업일이 이미 지났는데 '재학' 으로 나오는 오류가 있었다.
-    지난 날짜면 졸업으로 보고, 무엇을 바꿨는지 함께 돌려준다.
+
+def degree_status(status: str, 졸업: str, 오늘: str) -> str:
+    """표에 낼 학위상태. 졸업일이 지났으면 졸업이다.
+
+    **볼 때마다 부른다.** 예전에는 추출할 때 한 번 계산해 저장했는데, 그러면
+    등록한 뒤에 졸업일이 지나도 표에 '재학' 이 그대로 남았다. 재분석하기
+    전에는 아무도 모른다. 이제 저장은 이력서에 적힌 그대로 하고, 날짜와
+    대조하는 일은 화면이 그릴 때마다 한다 (명칭 사전과 같은 구조다).
+
+    올리는 것은 '재학'·'예정'·빈칸뿐이다. **'수료'·'졸업' 은 안 건드린다** —
+    담당자가 '수료' 를 골라 두면 그대로 남아야 한다.
 
     Args:
-        status: 모델이 낸 학위상태
+        status: 저장된 학위상태
         졸업:   YYYYMM (빈 문자열이면 판단 불가)
         오늘:   YYYYMM (KST 기준)
-    Returns:
-        (보정된 상태, 보정 사유 — 없으면 빈 문자열)
     """
     현재 = (status or "").strip()
-    if not 졸업 or len(졸업) != 6 or not 졸업.isdigit():
-        return 현재, ""
+    if _졸업일_지남(졸업, 오늘) and 현재 in ("재학", "예정", ""):
+        return "졸업"
+    return 현재
 
-    지남 = 졸업 <= 오늘  # YYYYMM 문자열은 그대로 비교해도 순서가 맞다
-    if 지남 and 현재 in ("재학", "예정", ""):
-        원래 = 현재 or "(빈칸)"
-        return "졸업", f"졸업일({졸업})이 지나 학위상태를 {원래}->졸업 으로 보정"
-    if not 지남 and 현재 == "졸업":
-        return 현재, f"졸업일({졸업})이 아직 오지 않았는데 상태가 졸업 (확인 필요)"
-    return 현재, ""
+
+def degree_status_warning(status: str, 졸업: str, 오늘: str) -> str:
+    """CV 자체가 앞뒤가 안 맞을 때만 한마디. 없으면 빈 문자열.
+
+    졸업일이 **아직 안 왔는데** '졸업' 이라 적힌 경우다. 이건 시간이 지나면
+    저절로 맞는 말이 되는 게 아니라 이력서를 봐야 하는 일이라, `degree_status`
+    와 달리 **추출할 때 한 번만** 본다.
+    """
+    현재 = (status or "").strip()
+    if _졸업일_지남(졸업, 오늘) is False and 현재 == "졸업":
+        return f"졸업일({졸업})이 아직 오지 않았는데 상태가 졸업 (확인 필요)"
+    return ""

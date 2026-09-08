@@ -23,6 +23,7 @@ from . import normalize as N
 from .config import settings
 from .ingestion.parsers import extract_text
 from .schemas import (
+    경력_요약_만들기,
     학위상태_ENUM,
     현재_신분_ENUM,
     SECTION_ALL,
@@ -556,9 +557,7 @@ def _assemble(
 
     경력_목록 = career.get("경력", []) or []
     경력들 = [Career.model_validate(c) for c in 경력_목록]
-    경력_요약 = " | ".join(
-        f"{c.회사}/{c.직무}({c.시작}-{c.종료})" for c in 경력들
-    )
+    경력_요약 = 경력_요약_만들기(경력들)
     대표경력, 경력메모 = _대표_경력(경력들)
     사유.extend(경력메모)
 
@@ -624,12 +623,15 @@ def _assemble(
         )
     }
 
-    # 졸업일이 이미 지났는데 '재학' 으로 나오는 모순을 바로잡는다
-    학위상태, 학위보정 = N.degree_status(
+    # 학위상태는 **고치지 않고 이력서에 적힌 그대로** 담는다. 졸업일이 지났는지는
+    # 표를 그릴 때마다 다시 본다(`CVRecord.학위상태_보기`) — 여기서 한 번 계산해
+    # 저장해 두면 등록한 뒤에 졸업일이 지나도 '재학' 이 그대로 남는다.
+    # 여기서 볼 것은 시간이 지나도 안 풀리는 모순뿐이다.
+    학위경고 = N.degree_status_warning(
         학위상태, 날짜["박사_졸업"], now_kst().strftime("%Y%m")
     )
-    if 학위보정:
-        사유.append(학위보정)
+    if 학위경고:
+        사유.append(학위경고)
 
     if 형식오류:
         사유.append("형식 보정: " + ", ".join(형식오류))
@@ -675,6 +677,7 @@ def _assemble(
              or N.text(edu.get("석사_학교", ""))
              or N.text(edu.get("학사_학교", ""))),
         ),
+        경력=경력들,
         경력_요약=N.text(경력_요약),
         경력_회사=N.text(대표경력.회사),
         직책=N.text(대표경력.직무),

@@ -56,9 +56,9 @@ from ..edit import (
     MULTILINE_OK,
     custom_field_spec,
     field_spec,
-    registry_display,
     validate,
     validate_custom,
+    보이는값,
 )
 from .. import bulk
 from ..xlsx_read import XlsxError
@@ -137,6 +137,10 @@ if _old_venues.is_file() and not _names_db.is_file():
 
     shutil.copy2(_old_venues, _names_db)
 registry = NameRegistry(_names_db)
+# `경력_회사` 가 사전 열이 되기 전에 등록된 사람들의 회사를 사전에 넣는다.
+# 안 넣으면 상세 화면의 드롭다운에 그 회사가 없어, 상세를 저장하는 순간
+# 회사 이름이 빈칸으로 지워진다. 이관이 끝나 있으면 레코드를 읽지도 않는다.
+registry.backfill_careers(store.list_all)
 auth = AuthStore(DATA_DIR / "admin.db")
 recruit = RecruitStore(DATA_DIR / "recruit.db")
 audit = AuditLog(DATA_DIR / "audit.db")
@@ -1021,8 +1025,11 @@ def _cell(cid: str, col: str, 표시: str, 원본: str, spec, *,
           scope: str = "기본", cls: str = "") -> str:
     """표 안의 편집 가능한 칸 하나.
 
-    보이는 값(표시)과 저장된 값(원본)이 다를 수 있다 — 학교·학회는 명칭 사전을
-    거쳐 대표명으로 보이기 때문이다. 편집은 언제나 원본을 고친다.
+    `표시` 는 칸에 그리는 글자, `원본` 은 편집칸이 시작하는 값이자 저장할 때
+    보내는 «이전 값» 이다. 둘 다 **화면에 뜨는 값**이어야 한다 — 레코드가 든
+    날값을 이전 값으로 보내면(졸업일과 대조하기 전의 학위상태 같은 것) 손도
+    안 댄 칸이 저장할 때마다 "다른 사람이 방금 바꿨습니다" 로 튕긴다.
+    (`edit.보이는값` 이 그 값을 뽑는다. 부르는 쪽이 그것을 넘긴다.)
     """
     opts = json.dumps(list(spec.선택지), ensure_ascii=False) if spec.입력 == "select" else "[]"
     # 속성 안의 줄바꿈을 브라우저가 어떻게 다루는지에 기대지 않는다. 값이
@@ -1237,7 +1244,7 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
             표시 = str(row.get(c, "") or "")
             cls = " flag" if c == "검토_필요" and 표시 == "Y" else ""
             if 수정가능 and _editable(c):
-                cells.append(_cell(cid, c, 표시, str(getattr(rec, c, "") or ""),
+                cells.append(_cell(cid, c, 표시, 보이는값(rec, c, registry),
                                    field_spec(c, c in 긴글열), cls=cls + " " + 폭))
             else:
                 v = html.escape(표시)
@@ -3087,9 +3094,9 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
         """한 칸. 이름은 값_{i} 처럼 번호를 달아 **한 폼에** 담는다."""
         if 항목 in REGISTRY_FIELDS:
             종류 = NAME_COLUMNS[항목]
-            # 숨은 «이전 값» 칸과 **같은 함수**로 뽑는다. 둘이 갈라지면 손도 안
-            # 댄 칸이 바뀐 것으로 잡힌다.
-            현재 = registry_display(항목, 값, registry) if 값 else ""
+            # 들어오는 값이 이미 **화면에 뜨는 값**이다 (숨은 «이전 값» 칸과
+            # 똑같은 것). 여기서 한 번 더 뽑으면 둘이 갈라질 자리가 생긴다.
+            현재 = 값
             보기 = [""] + [n.표시명 for n in registry.list_all(종류)]
             opts = "".join(
                 f"<option value='{html.escape(o)}'{' selected' if o == 현재 else ''}>"
@@ -3146,12 +3153,10 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
             )
             continue
         번호 += 1
-        원본값 = str(getattr(rec, c, "") or "")
-        # 명칭 사전 열은 **화면에 뜬 이름**을 이전 값으로 보낸다. 칸이 표시명을
-        # 고르는 <select> 인데 이전 값에 원표기를 담으면, 손도 안 댄 칸이 매번
-        # 바뀐 것으로 잡혀 «바뀐 것» 목록·알림·검사에 끼어든다.
-        이전값 = (registry_display(c, 원본값, registry)
-               if c in REGISTRY_FIELDS else 원본값)
+        # 칸에 넣는 값도, 숨은 «이전 값» 도 **화면에 뜨는 값**이다. 레코드가 든
+        # 날값을 넣으면 표와 상세가 서로 다른 말을 하고(사전 이름·졸업 판정),
+        # 손도 안 댄 칸이 바뀐 것으로 잡혀 «바뀐 것» 목록·알림·검사에 끼어든다.
+        이전값 = 보이는값(rec, c, registry)
         숨은칸.append(
             f"<input type='hidden' form='saveform' name='항목_{번호}'"
             f" value='{html.escape(c)}'>"
@@ -3162,7 +3167,7 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
             f"<tr{줄표시}><th style='width:180px'>{html.escape(이름표[c])}"
             f"{검토배지(c)}</th>"
             f"<td style='white-space:normal;max-width:none'>"
-            f"{입력칸(c, 원본값, f'값_{번호}')}</td></tr>"
+            f"{입력칸(c, 이전값, f'값_{번호}')}</td></tr>"
         )
 
     사용자열 = store.fields()

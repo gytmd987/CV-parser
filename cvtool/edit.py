@@ -193,6 +193,31 @@ def registry_display(항목: str, 값: str, registry) -> str:
     return found.표시명 if found else (값 or "").strip()
 
 
+#: 레코드에 든 날값과 **화면에 뜨는 값이 다른** 열.
+#:
+#: 저장은 이력서에 적힌 그대로 하고, 보여줄 때마다 다시 계산한다 — 명칭 사전
+#: 열과 같은 구조다. 다른 점은 다시 읽는 것이 사전이 아니라는 것뿐이다.
+#:   박사_학위상태 — **오늘 날짜**. 졸업일이 지났으면 졸업이다.
+#:   경력_요약    — **사전**. 경력 목록의 회사 이름을 사전 이름으로 다시 만든다.
+CALCULATED_FIELDS = ("박사_학위상태", "경력_요약")
+
+
+def 보이는값(rec, 항목: str, registry=None) -> str:
+    """이 칸이 화면에 뜨는 값. 레코드가 든 날값과 다를 수 있다.
+
+    화면을 그리는 쪽과 고친 값을 받는 쪽이 **같은 함수**를 봐야 한다. 갈라지면
+    손도 안 댄 칸이 매번 "다른 사람이 방금 바꿨습니다" 가 된다.
+    """
+    현재값 = str(getattr(rec, 항목, "") or "")
+    if 항목 in REGISTRY_FIELDS and registry is not None:
+        return registry_display(항목, 현재값, registry)
+    if 항목 == "박사_학위상태":
+        return rec.학위상태_보기()
+    if 항목 == "경력_요약":
+        return rec.경력_요약_보기(registry)
+    return 현재값
+
+
 def validate_registry(항목: str, 값: str, registry, 현재값: str = "") -> str:
     """소속·전공처럼 명칭 사전이 관리하는 항목의 값을 검사한다.
 
@@ -243,11 +268,9 @@ def apply_edit(rec, 항목: str, 새값: str, 기대_이전값: str | None = Non
         raise ValidationError(f"없는 항목입니다: {항목}")
 
     현재값 = str(getattr(rec, 항목) or "")
-    사전열 = 항목 in REGISTRY_FIELDS and registry is not None
-    # 명칭 사전 열은 **보이는 이름끼리** 견준다. 화면은 표시명을 들고 있고
-    # 레코드는 원표기를 들고 있어서, 날값끼리 견주면 손도 안 댄 칸이 매번
-    # "다른 사람이 방금 바꿨습니다" 가 된다.
-    비교값 = registry_display(항목, 현재값, registry) if 사전열 else 현재값
+    # 화면에 **보이던 값끼리** 견준다. 날값끼리 견주면 계산 열과 사전 열은
+    # 손도 안 댄 칸이 매번 "다른 사람이 방금 바꿨습니다" 가 된다.
+    비교값 = 보이는값(rec, 항목, registry)
     # 줄 끝은 맞춰 놓고 견준다 — 브라우저가 폼을 보낼 때 줄바꿈을 CRLF 로
     # 바꿔 놓아서, 안 그러면 여러 줄 칸이 저장할 때마다 충돌로 잡힌다.
     if 기대_이전값 is not None and N.lines(비교값) != N.lines(기대_이전값):
@@ -260,6 +283,12 @@ def apply_edit(rec, 항목: str, 새값: str, 기대_이전값: str | None = Non
                 f"명칭 사전에 있는 이름 중 골라 주세요."
             )
         저장값 = validate_registry(항목, 새값, registry, 현재값=현재값)
+    elif 항목 in CALCULATED_FIELDS and N.lines(새값) == N.lines(비교값):
+        # 화면이 **보이던 값을 그대로 되돌려 보냈다.** 안 고친 것이므로 날값을
+        # 건드리지 않는다. 계산 결과를 저장해 버리면 거기서 얼어붙는다 —
+        # 졸업으로 보이던 것을 저장하면 졸업일을 고쳐도 안 따라오고, 사전
+        # 이름으로 만든 요약을 저장하면 «사람이 고친 요약» 으로 오해받는다.
+        저장값 = 현재값
     else:
         저장값 = validate(항목, 새값, 긴글=긴글)
     setattr(rec, 항목, 저장값)

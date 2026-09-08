@@ -22,30 +22,41 @@ from cvtool.extract import _assemble
     ],
 )
 def test_degree_status_matches_graduation_date(상태, 졸업, 기대):
-    새상태, _ = N.degree_status(상태, 졸업, "202608")
-    assert 새상태 == 기대
+    assert N.degree_status(상태, 졸업, "202608") == 기대
 
 
-def test_correction_is_recorded():
-    """조용히 고치면 안 된다. 무엇을 바꿨는지 남겨야 한다."""
-    _, 사유 = N.degree_status("재학", "202602", "202608")
-    assert "재학->졸업" in 사유
+def test_the_status_is_recomputed_as_the_date_passes():
+    """같은 값이라도 **오늘이 언제냐**에 따라 답이 달라져야 한다.
+
+    예전에는 추출할 때 한 번 계산해 저장했다. 그래서 등록한 뒤에 졸업일이
+    지나도 표에 '재학' 이 그대로 남았다.
+    """
+    assert N.degree_status("재학", "202602", "202601") == "재학"
+    assert N.degree_status("재학", "202602", "202602") == "졸업"
 
 
 def test_future_graduation_with_graduated_status_is_flagged():
-    상태, 사유 = N.degree_status("졸업", "202712", "202608")
-    assert 상태 == "졸업"       # 값은 건드리지 않고
-    assert "확인 필요" in 사유   # 사람이 보게만 한다
+    """시간이 지나도 안 풀리는 모순이라 사람이 봐야 한다."""
+    assert "확인 필요" in N.degree_status_warning("졸업", "202712", "202608")
+    assert N.degree_status("졸업", "202712", "202608") == "졸업"  # 값은 안 건드린다
 
 
-def test_assemble_applies_degree_correction():
+def test_a_date_that_has_passed_is_not_a_warning():
+    """저절로, 늘 맞게 되는 것은 사람에게 알릴 일이 아니다."""
+    assert N.degree_status_warning("재학", "202602", "202608") == ""
+    assert N.degree_status_warning("재학", "", "202608") == ""
+
+
+def test_assemble_stores_what_the_cv_said():
+    """추출은 고치지 않는다. 졸업일과 대조하는 일은 볼 때마다 한다."""
     rec = _assemble(
         {"education": {"박사_졸업": "202002", "박사_학위상태": "재학"}},
         [], 지원자_ID="T", 원본_파일명="a.pdf",
     )
-    assert rec.박사_학위상태 == "졸업"
-    assert "졸업" in rec.검토_사유
-    assert rec.검토_필요 == "Y"
+    assert rec.박사_학위상태 == "재학"          # 저장은 이력서 그대로
+    assert rec.to_row()["박사_학위상태"] == "졸업"   # 표에는 졸업
+    # 저절로 맞는 것을 검토로 올리지 않는다 (예전의 «보정» 사유)
+    assert "보정" not in rec.검토_사유
 
 
 # --- 전공명 -----------------------------------------------------------------

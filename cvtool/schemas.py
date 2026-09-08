@@ -95,6 +95,9 @@ NAME_COLUMNS: dict[str, str] = {
     "박사_전공": "전공",
     "석사_전공": "전공",
     "학사_전공": "전공",
+    # 「소속」사전은 학교와 회사를 함께 담는다 (names.py 맨 앞). 경력 회사도
+    # 같은 곳이라 같은 사전을 쓴다 — 포닥 자리는 학교이기도 하다.
+    "경력_회사": "소속",
 }
 
 #: 등급별 논문 수 열의 접두사
@@ -348,6 +351,19 @@ class Career(BaseModel):
     인턴여부: bool = False
 
 
+def 경력_요약_만들기(경력들: list[Career], registry=None) -> str:
+    """`회사/직무(시작-종료) | …`.
+
+    `registry` 를 주면 회사 이름을 사전 이름으로 바꿔서 만든다. 추출과 표시가
+    **같은 함수**를 쓰는 것이 핵심이다 — 둘이 갈라지면 「사람이 고친 요약인가」
+    를 가릴 수가 없어진다 (`CVRecord.경력_요약_보기` 가 그 비교를 한다).
+    """
+    def 회사(c: Career) -> str:
+        return registry.display("소속", c.회사) if registry is not None else c.회사
+
+    return " | ".join(f"{회사(c)}/{c.직무}({c.시작}-{c.종료})" for c in 경력들)
+
+
 class CVRecord(BaseModel):
     """엑셀 한 줄에 대응하는 지원자 레코드."""
 
@@ -385,6 +401,10 @@ class CVRecord(BaseModel):
     논문: list[Paper] = Field(default_factory=list)
     특허: list[Patent] = Field(default_factory=list)
     연구분야_키워드: str = ""
+    #: 경력 **전부**. 요약 글자만 들고 있으면 어디부터 어디까지가 회사 이름인지
+    #: 알 수 없어 명칭 사전을 먹일 수가 없다 (논문·특허와 같은 이유로 목록이다).
+    #: 옛 레코드에는 없다 — 그때는 빈 목록으로 읽히고 저장된 요약을 그대로 쓴다.
+    경력: list[Career] = Field(default_factory=list)
     경력_요약: str = ""
     # 가장 최근 경력 하나를 열로도 뽑아 둔다 (6개월 미만·인턴 제외)
     경력_회사: str = ""
@@ -544,15 +564,48 @@ class CVRecord(BaseModel):
                 counts[v["등급"]] = counts.get(v["등급"], 0) + 1
         return counts
 
+    def 학위상태_보기(self) -> str:
+        """표에 낼 박사 학위상태. 졸업일이 지났으면 졸업이다.
+
+        저장값이 아니라 **볼 때마다** 계산한다. 저장해 두면 등록한 뒤에
+        졸업일이 지나도 표에 '재학' 이 그대로 남고, 재분석하기 전에는 아무도
+        모른다. 명칭 사전이 이름을 볼 때마다 다시 읽는 것과 같은 이유다 —
+        여기서 다시 읽는 것이 사전이 아니라 오늘 날짜일 뿐이다.
+        """
+        from .normalize import degree_status
+        from .timeutil import now_kst
+
+        return degree_status(self.박사_학위상태, self.박사_졸업,
+                             now_kst().strftime("%Y%m"))
+
+    def 경력_요약_보기(self, registry=None) -> str:
+        """표에 낼 경력 요약. 회사 이름이 사전 이름으로 바뀐다.
+
+        **사람이 고쳐 놓은 요약은 안 건드린다.** 저장된 글자가 우리가 원표기로
+        만든 것과 똑같을 때만 다시 만든다 — 다르면 누군가 손으로 쓴 것이다.
+
+        글자 안에서 회사 이름을 찾아 바꿔치기하지 않는 까닭: 한 회사 이름이
+        다른 회사 이름의 일부이면(`삼성` / `삼성전자`) 엉뚱한 데가 바뀐다.
+        목록에서 통째로 다시 만들면 그럴 일이 없다.
+        """
+        if not self.경력:
+            return self.경력_요약          # 경력 목록이 없던 시절의 레코드
+        if (self.경력_요약 or "").strip() != 경력_요약_만들기(self.경력).strip():
+            return self.경력_요약          # 사람이 고쳤다
+        return 경력_요약_만들기(self.경력, registry)
+
     def to_row(self, registry=None) -> dict[str, str]:
         """표 한 줄(dict)로 변환.
 
-        registry 를 주면 학교·전공·학회 이름이 대표명으로 바뀌고
+        registry 를 주면 학교·전공·학회·회사 이름이 대표명으로 바뀌고
         등급별 논문 수 열이 붙는다.
         """
         data = self.model_dump()
         data["1저자_해외논문_제출처"] = self.해외논문_제출처(registry)
         data["임팩트_팩터"] = self.최고_임팩트팩터(registry)
+        # 사전이 없어도 날짜는 똑같이 흘러가므로 registry 블록 밖이다.
+        data["박사_학위상태"] = self.학위상태_보기()
+        data["경력_요약"] = self.경력_요약_보기(registry)
         # 세어 나오는 값. 0 은 빈칸으로 둔다 — 표가 0 으로 도배되면 안 읽힌다.
         for 열, 값 in {**self.논문_수(registry), **self.특허_수()}.items():
             data[열] = 값 or ""

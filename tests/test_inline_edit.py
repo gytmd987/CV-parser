@@ -1901,3 +1901,47 @@ def test_the_function_list_is_not_copied_by_hand(web):
     page = web.get(f"/dash/edit?id={did}")
     자료 = _json.loads(page.split("window.수식목록 = ", 1)[1].split(";</script>", 1)[0])
     assert set(자료["행함수"]) == set(expr.FUNC_NAMES)
+
+
+# --- 계산 열: 화면에 뜨는 값이 날값과 다르다 -----------------------------------
+def _칸(쪽: str, cid: str, col: str) -> dict:
+    """그 지원자 줄의 그 칸이 들고 있는 것들 (data-raw · title).
+
+    지원자 ID 까지 함께 짚는다 — 이 파일은 서버 하나를 여럿이 나눠 써서
+    열 이름만으로 찾으면 남의 줄이 걸린다.
+    """
+    m = re.search(r"<td class='edit[^>]*data-id='" + re.escape(cid)
+                  + r"'[^>]*data-col='" + re.escape(col) + r"'[^>]*>", 쪽)
+    assert m, f"{cid} 의 {col} 칸을 못 찾음"
+    태그 = m.group(0)
+    뽑기 = lambda 이름: (re.search(이름 + r"='([^']*)'", 태그) or [None, ""])[1]
+    return {"raw": html.unescape(뽑기("data-raw")),
+            "title": html.unescape(뽑기("title"))}
+
+
+def test_계산_열은_화면에_뜨는_값을_이전값으로_보낸다(web, cid):
+    """졸업일이 지나면 저장값은 «재학» 인데 화면은 «졸업» 이다.
+
+    날값을 이전 값으로 보내면 손도 안 댄 칸이 저장할 때마다 409 로 튕긴다.
+    (브라우저로 눌러 보고서야 나온 버그라 여기 못을 박아 둔다.)
+    """
+    # 학위상태를 먼저 넣는다. 졸업일을 먼저 넣으면 **빈 칸이 이미 «졸업» 으로
+    # 보여서**(빈칸도 올려주는 값이다) 이전값이 안 맞는다.
+    web.post("/api/cell", id=cid, 항목="박사_학위상태", 새값="재학", 이전값="")
+    web.post("/api/cell", id=cid, 항목="박사_졸업", 새값="200002", 이전값="")
+
+    칸 = _칸(web.get("/"), cid, "박사_학위상태")
+    assert 칸["title"] == "졸업"          # 보이는 글자
+    assert 칸["raw"] == "졸업"            # 저장할 때 되보낼 값
+    assert web.module.store.get(cid).박사_학위상태 == "재학"   # 저장값은 그대로
+
+
+def test_화면에_뜨는_값으로_저장하면_충돌이_안_난다(web, cid):
+    web.post("/api/cell", id=cid, 항목="박사_학위상태", 새값="재학", 이전값="")
+    web.post("/api/cell", id=cid, 항목="박사_졸업", 새값="200002", 이전값="")
+
+    보이던값 = _칸(web.get("/"), cid, "박사_학위상태")["raw"]
+    code, 답 = web.cell(id=cid, 항목="박사_학위상태", 새값="수료", 이전값=보이던값)
+    assert code == 200, 답
+    assert 답["표시"] == "수료"
+    assert web.module.store.get(cid).박사_학위상태 == "수료"
