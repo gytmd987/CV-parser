@@ -123,9 +123,10 @@ def validate(항목: str, 값: str, 긴글: bool = False) -> str:
     if 항목 in READONLY_FIELDS:
         raise ValidationError(f"'{항목}' 은 수정할 수 없습니다.")
     if 항목 in REGISTRY_FIELDS:
+        # 여기까지 오면 안 된다 — `apply_edit` 이 사전 갈래에서 먼저 처리한다.
+        # 사전 없이 부른 자리를 막는 그물이다.
         raise ValidationError(
-            f"'{항목}' 은 여기서 고치지 않습니다. 표기가 잘못됐으면 "
-            f"'명칭 관리' 에서 대표명을 고치세요 (표에 바로 반영됩니다)."
+            f"'{항목}' 은 명칭 사전이 함께 있어야 고칠 수 있습니다."
         )
 
     원본 = N.paragraph(값) if 긴글 else (값 or "").strip()
@@ -209,6 +210,9 @@ def 보이는값(rec, 항목: str, registry=None) -> str:
     손도 안 댄 칸이 매번 "다른 사람이 방금 바꿨습니다" 가 된다.
     """
     현재값 = str(getattr(rec, 항목, "") or "")
+    if 항목 in getattr(rec, "직접입력", {}):
+        # 사람이 정한 값이다. 사전이 어떻게 바뀌든 안 움직인다.
+        return rec.직접입력[항목]
     if 항목 in REGISTRY_FIELDS and registry is not None:
         return registry_display(항목, 현재값, registry)
     if 항목 == "박사_학위상태":
@@ -219,10 +223,13 @@ def 보이는값(rec, 항목: str, registry=None) -> str:
 
 
 def validate_registry(항목: str, 값: str, registry, 현재값: str = "") -> str:
-    """소속·전공처럼 명칭 사전이 관리하는 항목의 값을 검사한다.
+    """사전에 있는 이름을 고른 것을 **원표기**로 바꾼다.
 
-    **자유 입력을 받지 않는다.** 사전에 이미 있는 것 중에서만 고를 수 있다.
-    다만 «있다» 의 뜻이 둘이다 — CV 에 적힌 **원표기**로 있을 수도 있고,
+    사전에 없는 값은 받지 않는다(ValidationError). 사람이 손으로 적은 값은
+    여기로 오지 않는다 — `_사전열_고치기` 가 먼저 갈라서 `직접입력` 으로
+    보낸다. 여기는 «사전에서 골랐다» 는 뜻이 확실한 값만 온다.
+
+    «있다» 의 뜻이 둘이다 — CV 에 적힌 **원표기**로 있을 수도 있고,
     사람이 정한 **표시명**으로 있을 수도 있다. 화면은 표시명으로 고르게 하므로
     표시명도 받아야 한다. (표시명을 안 받던 동안에는 `서울대학교` 의 이름을
     `서울대` 로 바꿔 두면 그 목록에서 고른 값이 "명칭 사전에 없습니다" 로
@@ -252,6 +259,61 @@ def validate_registry(항목: str, 값: str, registry, 현재값: str = "") -> s
     return found.원표기
 
 
+def _사전에서_고른것(항목: str, 값: str, registry):
+    """적은 글자가 **사전에 있는 이름 그대로**인가. 아니면 None.
+
+    `registry.lookup` 은 정규화키로도 찾아서 `서울대학교(본교)` 가
+    `서울대학교` 로 걸린다. 그 느슨함은 CV 표기를 묶을 때는 맞지만 여기서는
+    아니다 — 고정하려고 적은 값이 조용히 풀려 버린다. **똑같을 때만** 본다.
+    """
+    found = registry_entry(항목, 값, registry)
+    if found is None:
+        return None
+    글 = (값 or "").strip()
+    return found if (found.원표기 == 글 or found.표시명 == 글) else None
+
+
+def _사전열_고치기(rec, 항목: str, 새값: str, registry, 현재값: str) -> str:
+    """소속·학교·전공 칸에 적은 값을 받는다. 돌려주는 것은 **원표기**다.
+
+    사전에 있는 이름을 그대로 적었으면 «그것을 고른» 것이므로 사전을 따라가고,
+    아니면 **이 지원자만의 값**으로 고정한다. 고정해도 원표기는 안 덮는다 —
+    되돌리기가 그 칸을 지우는 것만으로 끝나야 하기 때문이다.
+    """
+    적은값 = (새값 or "").strip()
+    if not 적은값:
+        # 비운 것은 «빈칸» 이지 «이 사람은 예외» 가 아니다.
+        rec.직접입력.pop(항목, None)
+        return ""
+    if _사전에서_고른것(항목, 적은값, registry) is not None:
+        rec.직접입력.pop(항목, None)
+        return validate_registry(항목, 적은값, registry, 현재값=현재값)
+    rec.직접입력[항목] = 적은값
+    return 현재값
+
+
+def edit_field(rec, 항목: str, 새값: str, *, 기대_이전값: str | None = None,
+               registry=None, 긴글: bool = False) -> tuple[str, str]:
+    """한 칸 고치기. 돌려주는 것은 **화면에 뜨던 값과 뜨게 될 값**이다.
+
+    `apply_edit` 은 «저장된 날값» 을 돌려주는데, 그것만으로는 바뀌었는지 알 수
+    없는 경우가 있다 — 사전 열을 고정하거나 풀면 원표기는 그대로이고 `직접입력`
+    만 바뀐다. 화면 기준으로 견주면 그 경우까지 잡힌다. 변경 이력에 남길 값도
+    사람이 화면에서 본 것이어야 읽힌다.
+    """
+    전 = 보이는값(rec, 항목, registry)
+    apply_edit(rec, 항목, 새값, 기대_이전값=기대_이전값,
+               registry=registry, 긴글=긴글)
+    return 전, 보이는값(rec, 항목, registry)
+
+
+def 사전_따라가기(rec, 항목: str, registry=None) -> tuple[str, str]:
+    """손으로 정해 둔 값을 버리고 다시 사전을 따라가게 한다. (전, 후)"""
+    전 = 보이는값(rec, 항목, registry)
+    rec.직접입력.pop(항목, None)
+    return 전, 보이는값(rec, 항목, registry)
+
+
 def apply_edit(rec, 항목: str, 새값: str, 기대_이전값: str | None = None,
                registry=None, 긴글: bool = False) -> tuple[str, str]:
     """레코드의 한 항목만 고친다.
@@ -278,11 +340,12 @@ def apply_edit(rec, 항목: str, 새값: str, 기대_이전값: str | None = Non
 
     if 항목 in REGISTRY_FIELDS:
         if registry is None:
+            # 부르는 쪽이 사전을 안 넘긴 자리. 사전에 있는 이름인지 가릴 수가
+            # 없어 고정인지 아닌지도 정할 수 없다.
             raise ValidationError(
-                f"'{항목}' 은 표에서 직접 고칠 수 없습니다. 지원자 상세 화면에서 "
-                f"명칭 사전에 있는 이름 중 골라 주세요."
+                f"'{항목}' 은 명칭 사전이 함께 있어야 고칠 수 있습니다."
             )
-        저장값 = validate_registry(항목, 새값, registry, 현재값=현재값)
+        저장값 = _사전열_고치기(rec, 항목, 새값, registry, 현재값)
     elif 항목 in CALCULATED_FIELDS and N.lines(새값) == N.lines(비교값):
         # 화면이 **보이던 값을 그대로 되돌려 보냈다.** 안 고친 것이므로 날값을
         # 건드리지 않는다. 계산 결과를 저장해 버리면 거기서 얼어붙는다 —

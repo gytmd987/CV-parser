@@ -268,7 +268,7 @@ def test_edit_returns_old_and_new():
 
 
 def test_registry_managed_field_needs_the_dictionary(tmp_path):
-    """소속·전공은 자유 입력으로 못 고친다. 사전과 어긋나기 때문."""
+    """사전 없이는 못 고친다 — 적은 값이 사전에 있는 이름인지 가릴 수가 없다."""
     from cvtool.names import NameRegistry
 
     rec = CVRecord(지원자_ID="T")
@@ -276,9 +276,6 @@ def test_registry_managed_field_needs_the_dictionary(tmp_path):
         apply_edit(rec, "박사_학교", "서울대학교")          # registry 없이
 
     reg = NameRegistry(tmp_path / "n.db")
-    with pytest.raises(ValidationError):
-        apply_edit(rec, "박사_학교", "서울대학교", registry=reg)   # 사전에 없는 이름
-
     reg.observe("소속", "서울대학교")
     assert apply_edit(rec, "박사_학교", "서울대학교", registry=reg)[1] == "서울대학교"
 
@@ -337,14 +334,26 @@ def test_registry_conflict_is_judged_by_the_visible_name(tmp_path):
                       registry=reg)[1] == "연세대학교"
 
 
-def test_registry_field_still_rejects_a_name_that_is_not_there(tmp_path):
+def test_a_name_that_is_not_there_becomes_that_applicants_own_value(tmp_path):
+    """예전에는 거부했다. 이제는 **그 사람만의 값**으로 고정한다.
+
+    원표기는 안 덮는다 — 되돌리기가 그 칸을 지우는 것만으로 끝나야 한다.
+    """
     from cvtool.names import NameRegistry
 
     reg = NameRegistry(tmp_path / "n.db")
-    reg.observe("소속", "서울대학교")
-    rec = CVRecord(지원자_ID="T")
-    with pytest.raises(ValidationError):
-        apply_edit(rec, "박사_학교", "듣도보도못한대", registry=reg)
+    나 = reg.observe("소속", "서울대학교")
+    reg.classify(나.id, 표시명="서울대")
+    rec = CVRecord(지원자_ID="T", 박사_학교="서울대학교")
+
+    apply_edit(rec, "박사_학교", "서울대 시흥캠퍼스", registry=reg)
+    assert rec.직접입력["박사_학교"] == "서울대 시흥캠퍼스"
+    assert rec.박사_학교 == "서울대학교"                       # 원표기 그대로
+    assert rec.to_row(reg)["박사_학교"] == "서울대 시흥캠퍼스"
+
+    # 사전에서 이름을 바꿔도 이 사람은 안 움직인다
+    reg.classify(나.id, 표시명="SNU")
+    assert rec.to_row(reg)["박사_학교"] == "서울대 시흥캠퍼스"
 
 
 def test_by_display_picks_the_most_seen_spelling(tmp_path):

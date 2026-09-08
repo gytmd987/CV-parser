@@ -857,6 +857,9 @@ class CandidateStore:
                         r.한글_이름, r.영문_이름, r.이메일, r.전화번호,
                         r.현재_소속, r.박사_학교, r.석사_학교, r.학사_학교,
                         r.원본_파일명, r.지원자_ID,
+                        # 손으로 정해 둔 소속·학교·전공. 안 넣으면 방금 적어
+                        # 넣은 값으로 그 사람을 못 찾는다.
+                        *r.직접입력.values(),
                     ]
                 ).lower()
                 return term in haystack

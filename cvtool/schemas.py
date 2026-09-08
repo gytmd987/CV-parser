@@ -415,6 +415,14 @@ class CVRecord(BaseModel):
     #: 구글 스칼라 검색 링크. 추출할 때 만들어 두고 **사람이 고칠 수 있다** —
     #: 동명이인이 많은 이름은 검색어를 손봐야 쓸모가 있다.
     구글_스칼라_링크: str = ""
+    #: 사람이 손으로 정한 값 {열 이름: 적은 값}. 여기 있는 열은 **사전을 안
+    #: 따라간다.** 같은 학교라도 이 지원자만 다르게 적어야 할 때가 있다.
+    #:
+    #: 열 자체(원표기)는 안 덮는다 — 이력서에 적힌 표기는 그대로 남는다.
+    #: 그래야 «사전 따라가기» 가 이 칸을 지우는 것만으로 끝나고, names.py 맨
+    #: 앞의 약속("원문 표기는 절대 바꾸지 않는다")도 안 깨진다.
+    #: 옛 레코드에는 없다 — 빈 dict 로 읽힌다.
+    직접입력: dict[str, str] = Field(default_factory=dict)
     검토_필요: str = ""
     검토_사유: str = ""
 
@@ -614,6 +622,10 @@ class CVRecord(BaseModel):
             from .normalize import MULTI_SEP
 
             for col, 종류 in NAME_COLUMNS.items():
+                if col in self.직접입력:
+                    # 사람이 정한 값이다. 사전이 어떻게 바뀌든 안 움직인다.
+                    data[col] = self.직접입력[col]
+                    continue
                 raw = str(data.get(col, "") or "")
                 if not raw:
                     continue

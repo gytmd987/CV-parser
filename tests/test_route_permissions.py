@@ -84,6 +84,7 @@ POST_정책 = {
     "/candidate/delete": 거부,
     "/candidate/edit": 거부,
     "/candidate/save": 거부,
+    "/candidate/unpin": 거부,
     "/candidate/review/done": 거부,
     "/candidate/review/undo": 거부,
     "/candidate/new": 거부,

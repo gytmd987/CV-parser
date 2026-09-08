@@ -53,6 +53,8 @@ from ..edit import (
     ConflictError,
     ValidationError,
     apply_edit,
+    edit_field,
+    사전_따라가기,
     MULTILINE_OK,
     custom_field_spec,
     field_spec,
@@ -1067,12 +1069,13 @@ def _긴글가능(col: str, 추가열: dict | None, 구분: str = "") -> bool:
 def _editable(col: str) -> bool:
     """표에서 직접 고칠 수 있는 열인가.
 
-    명칭 사전이 관리하는 열(소속·학교·전공)은 제외한다. 표에 보이는 값은
-    사전을 거친 대표명이라, 그 값을 그대로 저장하면 원문 표기가 사라진다.
+    명칭 사전이 관리하는 열(소속·학교·전공)도 **고칠 수 있다.** 사전에 있는
+    이름을 적으면 그것을 고른 것이 되고, 아닌 값을 적으면 그 사람만 사전을 안
+    따라간다(`edit._사전열_고치기`). 원표기는 그대로 남으므로 «사전 따라가기»
+    로 언제든 되돌아온다.
     """
     return (
         col not in READONLY_FIELDS
-        and col not in REGISTRY_FIELDS
         and not col.startswith(TIER_COLUMN_PREFIX)
         and not is_tier_venue(col)
     )
@@ -3094,17 +3097,24 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
         """한 칸. 이름은 값_{i} 처럼 번호를 달아 **한 폼에** 담는다."""
         if 항목 in REGISTRY_FIELDS:
             종류 = NAME_COLUMNS[항목]
-            # 들어오는 값이 이미 **화면에 뜨는 값**이다 (숨은 «이전 값» 칸과
-            # 똑같은 것). 여기서 한 번 더 뽑으면 둘이 갈라질 자리가 생긴다.
-            현재 = 값
-            보기 = [""] + [n.표시명 for n in registry.list_all(종류)]
-            opts = "".join(
-                f"<option value='{html.escape(o)}'{' selected' if o == 현재 else ''}>"
-                f"{html.escape(o) or '(빈칸)'}</option>"
-                for o in dict.fromkeys(보기)
-            )
-            return (f"<select form='saveform' name='{이름}' onchange='markDirty(this)'"
-                    f" data-orig='{html.escape(현재)}'>{opts}</select>")
+            # <select> 가 아니라 목록이 딸린 입력칸이다. 사전에 있는 이름을
+            # 고르는 것도, **이 사람만의 값을 적는 것도** 한 칸에서 된다.
+            # (드롭다운이던 동안에는 한 사람만의 예외를 적을 자리가 없었다.)
+            목록 = f"dl_{이름}"
+            opts = "".join(f"<option value='{html.escape(n)}'>"
+                           for n in registry.display_names(종류))
+            고정 = 항목 in rec.직접입력
+            표딱지 = (" <span class='pill p-검토필요'>직접 입력</span>"
+                    f"<button class='sec' form='unpinform' name='col'"
+                    f" value='{html.escape(항목)}'"
+                    f" title='이 칸을 다시 명칭 관리에 맡깁니다'>사전 따라가기</button>"
+                    if 고정 else "")
+            return (f"<input type='text' form='saveform' name='{이름}'"
+                    f" list='{목록}' value='{html.escape(값)}'"
+                    f" style='width:100%;max-width:420px'"
+                    f" data-orig='{html.escape(값)}' oninput='markDirty(this)'"
+                    f" placeholder='목록에서 고르거나 직접 적으세요'>"
+                    f"<datalist id='{목록}'>{opts}</datalist>{표딱지}")
         spec = field_spec(항목, 항목 in 긴글열)
         if spec.입력 == "select":
             opts = "".join(
@@ -3336,8 +3346,13 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
     else:
         년도폼 = html.escape(년도)
 
+    되돌리기폼 = (
+        "<form method='post' action='/candidate/unpin' id='unpinform'>"
+        f"<input type='hidden' name='id' value='{html.escape(지원자_ID)}'></form>"
+    )
     저장바 = (
-        "<form method='post' action='/candidate/save' id='saveform' class='mergebar'>"
+        되돌리기폼
+        + "<form method='post' action='/candidate/save' id='saveform' class='mergebar'>"
         f"<input type='hidden' name='id' value='{html.escape(지원자_ID)}'>"
         f"<input type='hidden' name='끝' value='{번호}'>"
         + "".join(숨은칸)
@@ -5688,7 +5703,10 @@ def _fields_page(me: User, error: str = "", msg: str = "") -> bytes:
             return ("선택 · " + html.escape(", ".join(v or "(빈칸)" for v in CHOICE_FIELDS[col]))
                     + "<br><span class='muted'>추출 스키마에 걸려 있어 못 바꿉니다</span>")
         if col in REGISTRY_FIELDS:
-            return "명칭 사전 " + html.escape(NAME_COLUMNS[col])
+            return ("명칭 사전 " + html.escape(NAME_COLUMNS[col])
+                    + "<br><span class='muted'>사전에 없는 값을 적으면 "
+                    "<b>그 지원자만</b> 사전을 안 따라갑니다 "
+                    "(상세에서 «사전 따라가기» 로 되돌립니다)</span>")
         if col.startswith(TIER_COLUMN_PREFIX):
             return "<span class='muted'>계산 결과 (논문 목록에서 셈)</span>"
         if is_tier_venue(col):
@@ -8672,18 +8690,19 @@ class Handler(BaseHTTPRequestHandler):
             if rec is None:
                 return self._json({"ok": False, "error": "지원자를 찾을 수 없습니다."}, code=404)
             try:
-                옛값, 저장값 = apply_edit(rec, 항목, 새값, 기대_이전값=이전값,
-                                       긴글=항목 in store.긴글열())
+                전, 후 = edit_field(rec, 항목, 새값, 기대_이전값=이전값,
+                                  registry=registry,
+                                  긴글=항목 in store.긴글열())
             except ConflictError as exc:
                 return self._json({"ok": False, "error": str(exc)}, code=409)
             except ValidationError as exc:
                 return self._json({"ok": False, "error": str(exc)}, code=400)
-            if 옛값 != 저장값:
+            if 전 != 후:
                 store.save(rec)
                 audit.record(me.아이디, "지원자", cid, 항목=항목,
-                             이전값=옛값, 새값=저장값, 비고="표에서 수정")
-            표시 = str(rec.to_row(registry).get(항목, "") or "")
-            return self._json({"ok": True, "raw": 저장값, "표시": 표시})
+                             이전값=전, 새값=후, 비고="표에서 수정")
+            # 칸이 다음에 되보낼 «이전 값» 이므로 화면에 뜨는 값이어야 한다.
+            return self._json({"ok": True, "raw": 후, "표시": 후})
 
         if path == "/candidate/save":
             # 상세 화면 한 폼 전체. 줄마다 저장 단추가 있으면 하나 고치고
@@ -8746,17 +8765,17 @@ class Handler(BaseHTTPRequestHandler):
                                      이전값=옛값, 새값=저장값)
                     continue
                 try:
-                    옛값, 저장값 = apply_edit(rec, 항목, 새값, 기대_이전값=이전값,
-                                            registry=registry,
-                                            긴글=항목 in 긴글열)
+                    전, 후 = edit_field(rec, 항목, 새값, 기대_이전값=이전값,
+                                      registry=registry,
+                                      긴글=항목 in 긴글열)
                 except (ValidationError, ConflictError) as exc:
                     문제.append(str(exc))
                     continue
-                if 옛값 != 저장값:
+                if 전 != 후:
                     레코드바뀜 = True
                     바뀐것.append(항목)
                     audit.record(me.아이디, "지원자", cid, 항목=항목,
-                                 이전값=옛값, 새값=저장값)
+                                 이전값=전, 새값=후)
             if 레코드바뀜:
                 store.save(rec)
 
@@ -8812,14 +8831,32 @@ class Handler(BaseHTTPRequestHandler):
             if rec is None:
                 return self._redirect(뒤로)
             try:
-                옛값, 저장값 = apply_edit(rec, 항목, 새값, 기대_이전값=이전값,
-                                        registry=registry)
+                전, 후 = edit_field(rec, 항목, 새값, 기대_이전값=이전값,
+                                  registry=registry)
             except (ValidationError, ConflictError) as exc:
                 return self._redirect(f"{뒤로}&err={urllib.parse.quote(str(exc))}")
-            if 옛값 != 저장값:
+            if 전 != 후:
                 store.save(rec)
-                audit.record(me.아이디, "지원자", cid, 항목=항목, 이전값=옛값, 새값=저장값)
+                audit.record(me.아이디, "지원자", cid, 항목=항목, 이전값=전, 새값=후)
             return self._redirect(뒤로)
+
+        if path == "/candidate/unpin":
+            # 손으로 정해 둔 값을 버리고 다시 명칭 관리를 따라가게 한다.
+            if not can(me, "지원자_수정"):
+                return self._deny()
+            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+            cid = (data.get("id") or [""])[0]
+            항목 = (data.get("col") or [""])[0]
+            뒤로 = f"/candidate?id={urllib.parse.quote(cid)}"
+            rec = store.get(cid)
+            if rec is None or 항목 not in REGISTRY_FIELDS:
+                return self._redirect(뒤로)
+            전, 후 = 사전_따라가기(rec, 항목, registry)
+            if 전 != 후:
+                store.save(rec)
+                audit.record(me.아이디, "지원자", cid, 항목=항목,
+                             이전값=전, 새값=후, 비고="사전 따라가기")
+            return self._redirect(뒤로 + "#추출결과")
 
         if path == "/candidate/year":
             if not can(me, "지원자_수정"):

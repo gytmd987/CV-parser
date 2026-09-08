@@ -151,12 +151,26 @@ def test_edit_cell_unknown_candidate(web):
     assert code == 404 and res["ok"] is False
 
 
-def test_registry_columns_are_not_editable_in_the_table(web, cid):
-    """소속·전공을 표에서 고치면 대표명이 원문 자리에 들어가 사전과 꼬인다."""
+def test_registry_columns_are_editable_in_the_table(web, cid):
+    """소속·전공도 표에서 바로 적을 수 있다.
+
+    사전에 있는 이름을 적으면 그것을 고른 것이 된다 (저장은 원표기로).
+    """
+    web.module.registry.observe("소속", "서울대학교")
     code, res = web.cell(id=cid, 항목="박사_학교", 새값="서울대학교", 이전값="")
-    assert code == 400 and res["ok"] is False
-    assert "명칭" in res["error"] or "표에서 직접" in res["error"]
-    assert web.module.store.get(cid).박사_학교 == ""
+    assert code == 200, res
+    assert web.module.store.get(cid).박사_학교 == "서울대학교"
+    assert "박사_학교" not in web.module.store.get(cid).직접입력
+
+
+def test_a_value_outside_the_dictionary_pins_that_one_applicant(web, cid):
+    """사전에 없는 값을 적으면 **그 사람만** 사전을 안 따라간다."""
+    code, res = web.cell(id=cid, 항목="박사_학교", 새값="서울대 시흥캠퍼스", 이전값="")
+    assert code == 200, res
+    rec = web.module.store.get(cid)
+    assert rec.직접입력["박사_학교"] == "서울대 시흥캠퍼스"
+    assert rec.박사_학교 == ""                    # 원표기는 안 덮는다
+    assert rec.to_row(web.module.registry)["박사_학교"] == "서울대 시흥캠퍼스"
 
 
 def test_registry_column_editable_from_detail_with_dictionary(web, cid):
@@ -166,9 +180,25 @@ def test_registry_column_editable_from_detail_with_dictionary(web, cid):
     assert web.module.store.get(cid).석사_학교 == "한국과학기술원"
 
 
-def test_detail_edit_rejects_name_outside_dictionary(web, cid):
+def test_detail_edit_of_an_unknown_name_pins_it(web, cid):
+    """예전에는 거부했다. 이제는 그 사람만의 값으로 받아 둔다."""
     web.post("/candidate/edit", id=cid, 항목="학사_학교", 새값="없는대학교", 이전값="")
-    assert web.module.store.get(cid).학사_학교 == ""
+    rec = web.module.store.get(cid)
+    assert rec.직접입력["학사_학교"] == "없는대학교"
+    assert rec.학사_학교 == ""
+
+
+def test_the_unpin_button_puts_the_column_back_on_the_dictionary(web, cid):
+    나 = web.module.registry.observe("소속", "포항공과대학교")
+    web.module.registry.classify(나.id, 표시명="POSTECH")
+    web.post("/candidate/edit", id=cid, 항목="박사_학교", 새값="포항공과대학교", 이전값="")
+    web.post("/api/cell", id=cid, 항목="박사_학교", 새값="포스텍 본교", 이전값="POSTECH")
+    assert web.module.store.get(cid).직접입력["박사_학교"] == "포스텍 본교"
+
+    web.post("/candidate/unpin", id=cid, col="박사_학교")
+    rec = web.module.store.get(cid)
+    assert "박사_학교" not in rec.직접입력
+    assert rec.to_row(web.module.registry)["박사_학교"] == "POSTECH"
 
 
 # --- 사용자 정의 열 ----------------------------------------------------------
