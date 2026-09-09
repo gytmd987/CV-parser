@@ -1975,3 +1975,78 @@ def test_화면에_뜨는_값으로_저장하면_충돌이_안_난다(web, cid):
     assert code == 200, 답
     assert 답["표시"] == "수료"
     assert web.module.store.get(cid).박사_학위상태 == "수료"
+
+
+# --- 논문 목록 손질 (/candidate/papers) ---------------------------------------
+def _논문넣기(web, cid, *논문들):
+    rec = web.module.store.get(cid)
+    rec.논문 = list(논문들)
+    web.module.store.save(rec)
+
+
+def test_논문_한_줄을_고친다(web, cid):
+    from cvtool.schemas import Paper
+
+    _논문넣기(web, cid, Paper(제출처="CVPR", 연도="2024", 유형="학회",
+                          국내해외="해외", 저자구분="공저자"))
+    web.post("/candidate/papers", id=cid, 끝="2",
+             제목_1="", 제출처_1="CVPR", 연도_1="2024", 유형_1="학회",
+             국내해외_1="해외", 저자구분_1="주저자", 게재상태_1="게재",
+             제출처_2="")                      # 추가용 빈 줄
+    논문 = web.module.store.get(cid).논문
+    assert len(논문) == 1
+    assert 논문[0].저자구분 == "주저자"
+
+
+def test_논문_줄을_더한다(web, cid):
+    web.post("/candidate/papers", id=cid, 끝="1",
+             제목_1="새 논문", 제출처_1="새학회2026", 연도_1="2026",
+             유형_1="학회", 국내해외_1="해외", 저자구분_1="주저자",
+             게재상태_1="심사중")
+    논문 = web.module.store.get(cid).논문
+    assert [p.제출처 for p in 논문] == ["새학회2026"]
+    assert 논문[0].게재상태 == "심사중"
+    # 새로 적어 넣은 제출처가 명칭 사전에 올라와야 등급을 매길 수 있다
+    assert web.module.registry.lookup("학회", "새학회2026") is not None
+
+
+def test_논문_줄을_지운다(web, cid):
+    from cvtool.schemas import Paper
+
+    _논문넣기(web, cid, Paper(제출처="AAAI", 연도="2023"),
+             Paper(제출처="ICML", 연도="2024"))
+    web.post("/candidate/papers", id=cid, 끝="3",
+             제출처_1="AAAI", 연도_1="2023", del_1="1",
+             제출처_2="ICML", 연도_2="2024",
+             제출처_3="")
+    assert [p.제출처 for p in web.module.store.get(cid).논문] == ["ICML"]
+
+
+def test_제출처가_빈_줄은_저장되지_않는다(web, cid):
+    """저장할 때마다 빈 논문이 하나씩 쌓이면 안 된다."""
+    web.post("/candidate/papers", id=cid, 끝="1", 제출처_1="", 연도_1="2024")
+    assert web.module.store.get(cid).논문 == []
+
+
+def test_잘못된_값은_저장을_막는다(web, cid):
+    from cvtool.schemas import Paper
+
+    _논문넣기(web, cid, Paper(제출처="CVPR", 연도="2024"))
+    web.post("/candidate/papers", id=cid, 끝="1",
+             제출처_1="CVPR", 연도_1="24")
+    assert web.module.store.get(cid).논문[0].연도 == "2024"   # 안 바뀌었다
+
+
+def test_논문_손질은_변경_이력에_한_줄만_남는다(web, cid):
+    from cvtool.schemas import Paper
+
+    _논문넣기(web, cid, Paper(제출처="AAAI", 연도="2023"))
+    전 = len(web.module.audit.for_candidate(cid))
+    web.post("/candidate/papers", id=cid, 끝="2",
+             제출처_1="AAAI", 연도_1="2023", 저자구분_1="공저자",
+             제목_2="둘째", 제출처_2="ICML", 연도_2="2024")
+    남은것 = web.module.audit.for_candidate(cid)
+    assert len(남은것) == 전 + 1
+    assert 남은것[0].항목 == "논문"
+    assert "추가" in 남은것[0].비고 and "고침" in 남은것[0].비고
+    assert (남은것[0].이전값, 남은것[0].새값) == ("1편", "2편")

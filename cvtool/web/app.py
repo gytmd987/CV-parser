@@ -43,6 +43,7 @@ from ..dashboards import (
     render_table,
 )
 from .. import dash_draft
+from .. import edit
 from .. import expr
 from .. import formula as F
 from .. import profile_form as P
@@ -71,7 +72,8 @@ from ..extract import extract_cv_from_text
 from ..ingestion.parsers import UnsupportedFormat, extract_text
 from .. import normalize as N
 from ..normalize import MULTI_SEP
-from ..schemas import NAME_COLUMNS, TIER_COLUMN_PREFIX, CVRecord, is_tier_venue
+from ..schemas import (NAME_COLUMNS, TIER_COLUMN_PREFIX, 게재상태_ENUM,
+                       저자구분_ENUM, CVRecord, Paper, is_tier_venue)
 from ..schemas import columns as table_columns
 from ..store import (
     CUSTOM_SCOPES,
@@ -3283,21 +3285,80 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
 
 
     # 논문·특허 목록 — 표의 '수' 열이 무엇을 세었는지 눈으로 볼 수 있어야 한다.
+    # **심사중까지 전부 보여준다.** 세는 것과 보여주는 것은 다른 일이다.
     논문보기 = rec.papers_view(registry)
     주저자배지 = "<span class='pill p-완료'>주저자</span>"
     공저자배지 = "<span class='muted'>공저자</span>"
-    논문행 = "".join(
-        f"<tr><td>{주저자배지 if v['주저자'] else 공저자배지}</td>"
-        f"<td>{html.escape(v['유형'])}</td>"
-        f"<td title='{html.escape(v.get('제목') or v['표시명'])}'>"
-        f"{html.escape(v.get('제목') or '')}"
-        + (f"<br><span class='muted'>{html.escape(v['표시명'])}</span>"
-           if v.get('제목') else html.escape(v['표시명']))
-        + f"</td><td>{html.escape(v['연도'])}</td>"
-        f"<td>{html.escape(v['국내해외'])}</td>"
-        f"<td>{html.escape(v['등급'])}</td></tr>"
-        for v in 논문보기
-    )
+    심사중배지 = "<span class='pill p-안본것'>심사중</span>"
+
+    def _고르기(이름: str, 값: str, 고를것: list[str], 빈칸: str = "") -> str:
+        opts = "".join(
+            f"<option value='{html.escape(o)}'{' selected' if o == 값 else ''}>"
+            f"{html.escape(o) or 빈칸}</option>" for o in 고를것)
+        return (f"<select form='paperform' name='{이름}'"
+                f" onchange='markDirty(this)'>{opts}</select>")
+
+    def _논문칸(이름: str, 값: str, 폭: str = "100%", 안내: str = "") -> str:
+        # 안내(placeholder)를 반드시 단다. 제목과 제출처가 한 칸에 위아래로
+        # 놓이는데, 빈 칸이면 어느 쪽이 무엇인지 알 수가 없다.
+        도움 = f" placeholder='{html.escape(안내)}'" if 안내 else ""
+        return (f"<input type='text' form='paperform' name='{이름}'"
+                f" value='{html.escape(값)}' style='width:{폭}'"
+                f" oninput='markDirty(this)'{도움}>")
+
+    def _논문줄(n: int, p_: Paper | None, v: dict | None) -> str:
+        """한 줄. `p_` 가 None 이면 맨 아래 **추가용 빈 줄**이다."""
+        제목 = p_.제목 if p_ else ""
+        제출처 = p_.제출처 if p_ else ""       # 원표기다 — 사전이 이걸로 찾는다
+        연도 = p_.연도 if p_ else ""
+        유형 = p_.유형 if p_ else ""
+        국내해외 = p_.국내해외 if p_ else "불명"
+        저자 = p_.저자구분 if p_ else "주저자"
+        상태 = p_.게재상태 if p_ else "게재"
+        등급 = (v or {}).get("등급") or "-"
+        보이는이름 = (v or {}).get("표시명") or ""
+        딴이름 = (f"<br><span class='muted'>표에는 {html.escape(보이는이름)}</span>"
+                if 보이는이름 and 보이는이름 != 제출처 else "")
+        지우기 = ("" if p_ is None else
+                f"<label><input type='checkbox' form='paperform'"
+                f" name='del_{n}' value='1' onchange='markDirty(this)'> 삭제</label>")
+        return (
+            f"<tr><td>{_고르기(f'저자구분_{n}', 저자, list(저자구분_ENUM))}</td>"
+            f"<td>{_고르기(f'유형_{n}', 유형, ['', '학회', '저널', '기타'], '(빈칸)')}</td>"
+            # 제목과 제출처를 **위아래로** 쌓는다. 그냥 나란히 두면 앞의 칸이
+            # 자리를 다 먹고 제출처가 실오라기만큼 남는다 — 사전이 찾는 값이라
+            # 가장 잘 보여야 하는 칸인데 안 보였다.
+            f"<td><div style='display:flex;flex-direction:column;gap:4px'>"
+            f"{_논문칸(f'제목_{n}', 제목, '100%', '논문 제목')}"
+            f"{_논문칸(f'제출처_{n}', 제출처, '100%', '제출처 (학회·저널 이름)')}"
+            f"</div>{딴이름}</td>"
+            f"<td>{_논문칸(f'연도_{n}', 연도, '70px', 'YYYY')}</td>"
+            f"<td>{_고르기(f'국내해외_{n}', 국내해외, ['불명', '국내', '해외'])}</td>"
+            f"<td>{_고르기(f'게재상태_{n}', 상태, list(게재상태_ENUM))}</td>"
+            f"<td class='muted'>{html.escape(등급)}</td>"
+            f"<td>{지우기}</td></tr>"
+        )
+
+    if 수정가능:
+        줄들 = [_논문줄(i, p_, v)
+              for i, (p_, v) in enumerate(zip(rec.논문, 논문보기), start=1)]
+        줄들.append(_논문줄(len(rec.논문) + 1, None, None))   # 추가용 빈 줄
+        논문행 = "".join(줄들)
+    else:
+        논문행 = "".join(
+            f"<tr><td>{주저자배지 if v['주저자'] else 공저자배지}</td>"
+            f"<td>{html.escape(v['유형'])}</td>"
+            f"<td title='{html.escape(v.get('제목') or v['표시명'])}'>"
+            f"{html.escape(v.get('제목') or '')}"
+            + (f"<br><span class='muted'>{html.escape(v['표시명'])}</span>"
+               if v.get('제목') else html.escape(v['표시명']))
+            + f"</td><td>{html.escape(v['연도'])}</td>"
+            f"<td>{html.escape(v['국내해외'])}</td>"
+            + (f"<td>{심사중배지}</td>" if v['게재상태'] == "심사중"
+               else "<td class='muted'>게재</td>")
+            + f"<td>{html.escape(v['등급'])}</td></tr>"
+            for v in 논문보기
+        )
     특허행 = "".join(
         f"<tr><td>{html.escape(pt.상태)}</td>"
         f"<td title='{html.escape(pt.제목)}'>{html.escape(pt.제목) or '-'}</td>"
@@ -3305,25 +3366,45 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
         for pt in rec.특허
     )
     센것 = {**rec.논문_수(registry), **rec.특허_수()}
+    심사중수 = sum(1 for v in 논문보기 if v["게재상태"] == "심사중")
     실적카드 = ""
-    if 논문보기 or rec.특허:
+    if 논문보기 or rec.특허 or 수정가능:
+        논문머리 = ("<tr><th style='width:90px'>저자</th><th style='width:80px'>유형</th>"
+                 "<th>제목 / 제출처</th><th style='width:80px'>연도</th>"
+                 "<th style='width:80px'>국내해외</th>"
+                 "<th style='width:90px'>게재상태</th><th style='width:70px'>등급</th>"
+                 + ("<th style='width:60px'></th>" if 수정가능 else "") + "</tr>")
+        논문표 = ("<div class='scroll'><table data-name='논문'>"
+               + 논문머리 + 논문행 + "</table></div>")
+        논문폼 = ""
+        if 수정가능:
+            # 논문은 **줄이 여럿인 목록**이라 지원자 정보 폼(saveform)과 따로
+            # 받는다. 한 폼에 담으면 줄 번호와 항목 번호가 섞인다.
+            논문폼 = (
+                "<form method='post' action='/candidate/papers' id='paperform'"
+                " class='mergebar'>"
+                f"<input type='hidden' name='id' value='{html.escape(지원자_ID)}'>"
+                f"<input type='hidden' name='끝' value='{len(rec.논문) + 1}'>"
+                "<button type='submit'>논문 목록 저장</button>"
+                "<span class='muted'>맨 아랫줄에 적으면 <b>새 논문</b>이 됩니다. "
+                "제출처를 비우면 그 줄은 저장되지 않습니다.</span></form>"
+            )
         실적카드 = (
             "<div class='card'><h2>연구 실적 <span class='muted'>"
             f"저널 {센것['저널_수']}편(주저자 {센것['저널_주저자_수']}) · "
             f"학회 {센것['학회_수']}편(주저자 {센것['학회_주저자_수']}) · "
             f"특허 등록 {센것['특허_등록_수']} / 출원 {센것['특허_출원_수']}"
-            "</span></h2>"
-            + ("<div class='scroll'><table data-name='논문'>"
-               "<tr><th style='width:80px'>저자</th><th style='width:60px'>유형</th>"
-               "<th>제목 / 제출처</th><th style='width:60px'>연도</th>"
-               "<th style='width:70px'>국내해외</th><th style='width:80px'>등급</th></tr>"
-               + 논문행 + "</table></div>" if 논문보기 else "")
+            + (f" · <b>심사중 {심사중수}편은 빼고 셈</b>" if 심사중수 else "")
+            + "</span></h2>"
+            + 논문폼
+            + (논문표 if (논문보기 or 수정가능) else "")
             + ("<h2 style='margin-top:14px'>특허</h2><div class='scroll'>"
                "<table data-name='특허'><tr><th style='width:70px'>상태</th><th>제목</th>"
                "<th style='width:60px'>연도</th><th>번호</th></tr>"
                + 특허행 + "</table></div>" if rec.특허 else "")
             + "<p class='muted'>표의 <b>저널_수 · 학회_수 · 특허_등록_수</b> 열은 "
-              "여기 있는 것을 셉니다. 학회·저널 구분과 등급은 "
+              "여기 있는 것을 셉니다 — <b>심사중 논문은 빼고</b> 셉니다. "
+              "학회·저널 구분과 등급은 "
               "<a href='/names?kind=" + urllib.parse.quote("학회·저널")
             + "'>명칭 관리</a>에서 판별한 값을 씁니다.</p></div>"
         )
@@ -8839,6 +8920,68 @@ class Handler(BaseHTTPRequestHandler):
                 store.save(rec)
                 audit.record(me.아이디, "지원자", cid, 항목=항목, 이전값=전, 새값=후)
             return self._redirect(뒤로)
+
+        if path == "/candidate/papers":
+            # 논문 목록 통째로 받기. LLM 이 틀린 것을 고치는 유일한 길이라
+            # 재분석 없이 여기서 끝나야 한다.
+            if not can(me, "지원자_수정"):
+                return self._deny()
+            data = urllib.parse.parse_qs(
+                self._read_body().decode("utf-8", "replace"), keep_blank_values=True
+            )
+            cid = (data.get("id") or [""])[0]
+            뒤로 = f"/candidate?id={urllib.parse.quote(cid)}"
+            rec = store.get(cid)
+            if rec is None:
+                return self._redirect("/")
+            try:
+                끝 = int((data.get("끝") or ["0"])[0])
+            except ValueError:
+                끝 = 0
+
+            옛것 = list(rec.논문)
+            새목록: list[Paper] = []
+            고침 = 지움 = 더함 = 0
+            for i in range(1, 끝 + 1):
+                if (data.get(f"del_{i}") or [""])[0]:
+                    지움 += 1
+                    continue
+                한줄 = {칸: (data.get(f"{칸}_{i}") or [""])[0]
+                      for 칸 in ("제목", "제출처", "연도", "유형",
+                                "국내해외", "저자구분", "게재상태")}
+                try:
+                    논문 = edit.validate_paper(한줄)
+                except ValidationError as exc:
+                    return self._redirect(
+                        f"{뒤로}&err={urllib.parse.quote(f'{i}번째 줄 — {exc}')}#실적")
+                if 논문 is None:          # 제출처가 빈 줄 (추가용 빈 줄 포함)
+                    continue
+                옛줄 = 옛것[i - 1] if i <= len(옛것) else None
+                if 옛줄 is None:
+                    더함 += 1
+                elif 논문.model_dump() != 옛줄.model_dump():
+                    고침 += 1
+                새목록.append(논문)
+
+            if 고침 or 지움 or 더함:
+                rec.논문 = 새목록
+                # 새로 적어 넣은 제출처를 사전에 등록한다. 안 부르면 방금 넣은
+                # 학회가 미분류로도 안 잡혀 등급을 매길 수가 없다.
+                observe_record(rec, registry)
+                store.save(rec)
+                요약 = " · ".join(
+                    x for x in (f"{고침}줄 고침" if 고침 else "",
+                                f"{더함}줄 추가" if 더함 else "",
+                                f"{지움}줄 삭제" if 지움 else "") if x)
+                # 한 번 저장에 한 줄만 남긴다. 줄마다 남기면 변경 이력이
+                # 논문 목록으로 뒤덮인다.
+                audit.record(me.아이디, "지원자", cid, 항목="논문",
+                             이전값=f"{len(옛것)}편", 새값=f"{len(새목록)}편",
+                             비고=요약)
+                return self._redirect(
+                    f"{뒤로}&msg={urllib.parse.quote('논문 목록: ' + 요약)}#실적")
+            return self._redirect(
+                f"{뒤로}&msg={urllib.parse.quote('바뀐 내용이 없습니다.')}#실적")
 
         if path == "/candidate/unpin":
             # 손으로 정해 둔 값을 버리고 다시 명칭 관리를 따라가게 한다.

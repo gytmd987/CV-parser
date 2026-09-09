@@ -21,10 +21,21 @@ from . import normalize as N
 from .schemas import (
     COUNT_COLUMNS,
     NAME_COLUMNS,
+    게재상태_ENUM,
     석박통합_ENUM,
+    저자구분_ENUM,
     학위상태_ENUM,
     현재_신분_ENUM,
+    Paper,
 )
+
+#: 논문 한 줄에서 목록 안의 값만 받는 칸들 (칸 이름 -> 고를 수 있는 값)
+PAPER_CHOICES: dict[str, list[str]] = {
+    "유형": ["학회", "저널", "기타"],
+    "국내해외": ["국내", "해외", "불명"],
+    "저자구분": list(저자구분_ENUM),
+    "게재상태": list(게재상태_ENUM),
+}
 
 #: 수정할 수 없는 항목 (시스템이 관리한다)
 #: 검토_사유는 상세 화면의 **검토 카드**가 관리한다. 그 카드는 사유 글자를
@@ -356,6 +367,37 @@ def apply_edit(rec, 항목: str, 새값: str, 기대_이전값: str | None = Non
         저장값 = validate(항목, 새값, 긴글=긴글)
     setattr(rec, 항목, 저장값)
     return 현재값, 저장값
+
+
+def validate_paper(값들: dict) -> Paper | None:
+    """논문 한 줄을 검사해 `Paper` 로. 제출처가 비었으면 None.
+
+    제출처가 빈 줄을 버리는 까닭: 화면 맨 아래에 **추가용 빈 줄**이 늘 하나
+    있다. 그것을 그대로 저장하면 저장할 때마다 빈 논문이 하나씩 쌓인다.
+    제출처는 논문을 가리키는 최소 정보라(명칭 사전도 이걸로 찾는다) 이 칸을
+    기준으로 삼는다.
+    """
+    제출처 = (값들.get("제출처") or "").strip()
+    if not 제출처:
+        return None
+
+    연도 = (값들.get("연도") or "").strip()
+    if 연도 and not (len(연도) == 4 and 연도.isdigit()):
+        raise ValidationError(f"논문 연도는 4자리여야 합니다: {연도!r}")
+
+    고른것 = {}
+    for 칸, 고를수있는것 in PAPER_CHOICES.items():
+        값 = (값들.get(칸) or "").strip()
+        if 값 and 값 not in 고를수있는것:
+            raise ValidationError(
+                f"논문 '{칸}' 은 다음 중 하나여야 합니다: {', '.join(고를수있는것)}")
+        # 빈 값은 넘기지 않는다 — Paper 의 기본값이 서야 한다
+        # (게재상태 기본이 «게재» 인 것이 여기 걸린다).
+        if 값:
+            고른것[칸] = 값
+
+    return Paper(제목=(값들.get("제목") or "").strip(), 제출처=제출처,
+                 연도=연도, **고른것)
 
 
 # ---------------------------------------------------------------------------

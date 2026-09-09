@@ -169,6 +169,12 @@ TEXT_COLUMNS: set[str] = {
 저자구분_ENUM = ["주저자", "공저자"]
 #: 특허 진행 상태
 특허상태_ENUM = ["등록", "출원", "불명"]
+#: 논문이 실제로 실렸나. **기본은 «게재» 다.**
+#:
+#: 이력서 대부분은 그냥 `CVPR 2024` 라고만 적고 상태를 안 밝힌다. 기본이
+#: 심사중이면 그 논문들이 전부 개수에서 사라진다. 이 칸이 없던 시절의 옛
+#: 레코드도 같은 이유로 «게재» 로 읽혀야 숫자가 안 흔들린다.
+게재상태_ENUM = ["게재", "심사중"]
 
 #: 계산해서 나오는 열 (사람이 표에서 직접 못 고친다)
 COUNT_COLUMNS: tuple[str, ...] = (
@@ -251,7 +257,10 @@ SECTION_RESEARCH: dict = {
                     "유형": {"type": "string", "enum": ["학회", "저널", "기타"]},
                     "국내해외": {"type": "string", "enum": ["국내", "해외", "불명"]},
                     "저자구분": {"type": "string", "enum": 저자구분_ENUM},
+                    "게재상태": {"type": "string", "enum": 게재상태_ENUM},
                 },
+                # 게재상태는 **필수가 아니다.** 안 채우면 모델 기본값 «게재» 로
+                # 떨어지는데, 그게 맞다 — 이력서는 보통 상태를 안 밝힌다.
                 "required": ["제출처", "저자구분"],
             },
         },
@@ -330,10 +339,17 @@ class Paper(BaseModel):
     #: 예전 레코드에는 제1저자 논문만 들어 있었다. 그래서 기본이 주저자다 —
     #: 값을 안 채우고 저장된 옛 데이터가 갑자기 공저자로 바뀌면 안 된다.
     저자구분: str = "주저자"
+    #: 아직 안 실린 논문(under review)은 실적으로 세지 않는다. 같은 까닭으로
+    #: 기본이 «게재» 다 — 옛 레코드가 갑자기 심사중이 되면 개수가 무너진다.
+    게재상태: str = "게재"
 
     @property
     def 주저자(self) -> bool:
         return self.저자구분 != "공저자"
+
+    @property
+    def 실렸나(self) -> bool:
+        return self.게재상태 != "심사중"
 
 
 class Patent(BaseModel):
@@ -462,11 +478,24 @@ class CVRecord(BaseModel):
             out.append(
                 {"제목": p.제목, "표시명": 표시명, "연도": p.연도, "등급": 등급,
                  "국내해외": 국내해외, "유형": 종류, "주저자": p.주저자,
+                 "게재상태": p.게재상태,
                  # 사전을 다시 찾을 때 쓴다 (표시명이 아니라 CV 에 적힌 그대로여야
                  # 사전이 찾는다)
                  "원문": p.제출처}
             )
         return out
+
+    def 실적논문(self, registry=None) -> list[dict]:
+        """개수·IF·제출처 열이 **세는** 논문. 심사중은 빠진다.
+
+        `papers_view` 와 갈라 두는 까닭: 상세 화면의 논문 목록은 심사중까지
+        **보여줘야** 한다 (그 사람이 무엇을 냈는지가 정보다). 보여주는 것과
+        세는 것은 다른 일이다.
+
+        세는 자리가 다섯이라 여기 한 군데서 정한다 — 나중에 «심사중도 세자» 로
+        바뀌어도 고칠 데가 하나다.
+        """
+        return [v for v in self.papers_view(registry) if v["게재상태"] != "심사중"]
 
     def 논문_수(self, registry=None) -> dict[str, int]:
         """저널·학회를 전체와 주저자로 나눠 센다.
@@ -475,7 +504,7 @@ class CVRecord(BaseModel):
         논문만 들어 있어 전부 주저자로 잡힌다 — 그게 맞다.
         """
         센것 = {"저널_수": 0, "저널_주저자_수": 0, "학회_수": 0, "학회_주저자_수": 0}
-        for v in self.papers_view(registry):
+        for v in self.실적논문(registry):
             머리 = "저널" if v["유형"] == "저널" else "학회"
             센것[f"{머리}_수"] += 1
             if v["주저자"]:
@@ -498,7 +527,7 @@ class CVRecord(BaseModel):
 
         items = [
             f"{v['표시명']} {v['연도']}".strip()
-            for v in self.papers_view(registry)
+            for v in self.실적논문(registry)
             if v["국내해외"] == "해외" and v["주저자"]
         ]
         return MULTI_SEP.join(items)
@@ -513,7 +542,7 @@ class CVRecord(BaseModel):
         if registry is None:
             return ""
         높은것 = None
-        for v in self.papers_view(registry):
+        for v in self.실적논문(registry):
             if not (v["국내해외"] == "해외" and v["주저자"]):
                 continue
             if v.get("유형") != "저널":
@@ -545,7 +574,7 @@ class CVRecord(BaseModel):
         if registry is None:
             return {}
         모음: dict[str, list[tuple[str, str]]] = {}
-        for v in self.papers_view(registry):
+        for v in self.실적논문(registry):
             등급 = v.get("등급") or ""
             if not 등급 or not v["주저자"]:
                 continue
@@ -567,7 +596,7 @@ class CVRecord(BaseModel):
 
     def 등급별_해외논문_수(self, registry=None) -> dict[str, int]:
         counts: dict[str, int] = {}
-        for v in self.papers_view(registry):
+        for v in self.실적논문(registry):
             if v["국내해외"] == "해외" and v["주저자"] and v["등급"]:
                 counts[v["등급"]] = counts.get(v["등급"], 0) + 1
         return counts
