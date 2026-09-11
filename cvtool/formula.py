@@ -41,6 +41,21 @@ TARGETS = ("지원자", "채용")
 #: 값을 세는 함수 (숫자 열 하나를 더 받는다)
 _NUMERIC = ("AVG", "SUM", "MIN", "MAX")
 
+#: 엑셀에서 쓰던 이름 -> 여기 이름.
+#:
+#: 계산이 새로 생기는 게 아니다. `COUNT(지원자, 부서="A", 최종상태="합격")` 이
+#: 이미 여러 조건을 AND 로 받는다 — 그게 바로 COUNTIFS 다. 같은 일을 익숙한
+#: 이름으로도 부를 수 있게만 한다.
+ALIASES = {
+    "COUNTIF": "COUNT", "COUNTIFS": "COUNT",
+    "SUMIF": "SUM", "SUMIFS": "SUM",
+    "AVERAGE": "AVG", "AVERAGEIF": "AVG", "AVERAGEIFS": "AVG",
+}
+
+#: 수식에 **적을 수 있는** 이름 전부 (자동완성이 이걸 보여준다).
+#: `FUNCTIONS` 는 계산이 있는 이름이고 이쪽은 부를 수 있는 이름이다.
+CALLABLE = tuple(sorted(set(FUNCTIONS) | set(ALIASES)))
+
 _CALL_RE = re.compile(r"^\s*=\s*([A-Za-z]+)\s*\((.*)\)\s*$", re.DOTALL)
 #: 조건 한 개: 열이름 연산자 값
 _COND_RE = re.compile(r"""^\s*([^=!~<>]+?)\s*(>=|<=|!=|!~|~|=|>|<)\s*(.+?)\s*$""")
@@ -146,10 +161,10 @@ def parse(수식: str) -> Formula:
             "수식은 =함수(대상, 조건...) 모양이어야 합니다. "
             '예: =COUNT(채용, 최종상태="최종 합격")'
         )
-    함수 = m.group(1).upper()
+    함수 = ALIASES.get(m.group(1).upper(), m.group(1).upper())
     if 함수 not in FUNCTIONS:
         raise FormulaError(
-            f"모르는 함수입니다: {m.group(1)} (쓸 수 있는 것: {', '.join(FUNCTIONS)})"
+            f"모르는 함수입니다: {m.group(1)} (쓸 수 있는 것: {', '.join(CALLABLE)})"
         )
     인자 = _split_args(m.group(2))
     if not 인자:

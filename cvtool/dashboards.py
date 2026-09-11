@@ -736,7 +736,9 @@ def render_table(b: Block, rows, 축값: dict[str, list[str]],
     수식이 아닌 칸(그냥 글자)은 그대로 나간다. 틀린 수식은 칸에 `?` 를 두고
     무엇이 틀렸는지 위에 모아 적는다 — 조용히 0 을 띄우면 안 된다.
     """
+    from . import expr as E
     from . import formula as F
+    from .sheet import SheetError, 계산
 
     형식 = b.설정.get("형식") or "그대로"
     오류: list[str] = []
@@ -745,11 +747,13 @@ def render_table(b: Block, rows, 축값: dict[str, list[str]],
         수식 = (수식 or "").strip()
         if not 수식:
             return ""
-        if not F.is_formula(수식):
+        if not E.is_formula(수식):
             return 수식
         try:
-            글, 값 = F.run(수식, rows, 아는열)
-        except F.FormulaError as exc:
+            # 시트와 **같은 계산기**다. 예전에는 여기만 `F.run` 이라
+            # `=COUNT(지원자)/2` 가 안 됐다.
+            글, 값 = 계산(수식, rows, 아는열)
+        except (F.FormulaError, E.ExprError, SheetError, ValueError) as exc:
             메시지 = f"{수식} → {exc}"
             if 메시지 not in 오류:
                 오류.append(메시지)

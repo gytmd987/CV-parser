@@ -117,7 +117,11 @@ def 집계먼저(글: str, rows, 아는열=None) -> str:
     똑같이 있다. 첫 인자가 대상(`지원자`·`채용`)일 때만 집계로 본다 —
     `SUM(A1,A2)` 는 칸을 더하는 것이지 지원자를 세는 것이 아니다.
     """
-    함수RE = re.compile(r"(" + "|".join(F.FUNCTIONS) + r")\s*\(")
+    # **부를 수 있는 이름 전부**를 본다 (COUNTIFS·AVERAGE 같은 별칭 포함).
+    # `FUNCTIONS`(계산이 있는 이름)만 보면 별칭이 섞인 식에서 안 잡힌다.
+    # 긴 이름을 먼저 봐야 `COUNTIFS` 가 `COUNT` 로 잘리지 않는다.
+    함수RE = re.compile(r"(" + "|".join(sorted(F.CALLABLE, key=len, reverse=True))
+                      + r")\s*\(")
     나온것: list[str] = []
     i = 0
     while i < len(글):
@@ -182,6 +186,50 @@ def 참조들(글: str) -> list[str]:
     return 본
 
 
+def 계산(수식: str, rows, 아는열=None, 값찾기=None) -> tuple[str, object]:
+    """수식 하나를 끝까지. (보일 글, 값) — `formula.run` 과 **같은 모양**이다.
+
+    대시보드의 네 자리(숫자·축표·자유표·시트)가 전부 이것을 쓴다. 예전에는
+    앞의 셋이 `formula.run` 만 불러서 `=함수(대상, 조건...)` 을 **통째로 한 줄**
+    로만 받았다 — `=COUNT(지원자)/2` 가 안 됐다. 시트에서는 되는데 숫자
+    블록에서는 안 되니 문법이 두 가지처럼 보였다.
+
+    `값찾기(주소)` 를 주면 칸 참조까지 푼다 (시트). 함수로 받는 까닭은 참조가
+    **필요할 때 하나씩** 풀려야 하기 때문이다 — 미리 다 계산하면 순환 참조를
+    못 잡고, 안 쓰는 칸까지 계산한다.
+
+    **통째로 집계 호출 하나면 `formula.run` 을 그대로 부른다.** 이 빠른 길이
+    중요하다 — `PCT` 는 `("50.0%", 50.0)`, `LIST` 는 `("가, 나", [...])` 처럼
+    글과 값이 다른 것을 돌려주는데, expr 을 거치면 그 모양이 무너진다. 이미
+    저장된 수식은 전부 이 길로 가므로 보이는 것이 안 바뀐다.
+    """
+    글 = (수식 or "").strip()
+    if not E.is_formula(글):
+        return 글, None
+    집계오류 = None
+    try:
+        F.parse(글)                          # 통째로 집계 호출 하나인가
+    except F.FormulaError as exc:
+        # 집계로 안 읽혔다. 그래도 **모양이 집계 호출이었으면** 까닭을 들고
+        # 간다 — 섞인 길에서도 터지면 이쪽 말이 훨씬 친절하다.
+        # `=COUNT(없는대상)` 을 "모르는 열입니다" 라고 하면 대상을 잘못 쓴 줄
+        # 모른다. 반대로 `=COUNT(지원자)/0` 은 모양부터 집계가 아니므로
+        # "=함수(대상, 조건...) 모양이어야 합니다" 가 엉뚱한 말이 된다.
+        if F._CALL_RE.match(글):
+            집계오류 = exc
+    else:
+        return F.run(글, rows, 아는열)
+    try:
+        식 = 집계먼저(범위펼치기(글), rows, 아는열)
+        묶음 = ({a: 값찾기(a) for a in 참조들(식)} if 값찾기 is not None else {})
+        값 = E.evaluate(식, 묶음)
+    except (E.ExprError, SheetError, ValueError):
+        if 집계오류 is not None:
+            raise 집계오류
+        raise
+    return 값, 값
+
+
 def 값들(칸들: dict, rows, 아는열=None) -> tuple[dict[str, str], list[str]]:
     """모든 칸을 계산한다. ({주소: 보일 값}, 오류 목록)
 
@@ -199,7 +247,7 @@ def 값들(칸들: dict, rows, 아는열=None) -> tuple[dict[str, str], list[str
     #: 해서, 진짜 까닭이 어디 있는지 알 수가 없다.
     실패: dict[str, str] = {}
 
-    def 계산(주소글: str) -> str:
+    def 한칸(주소글: str) -> str:
         if 주소글 in 실패:
             raise SheetError(f"{주소글} 칸을 계산하지 못했습니다")
         if 주소글 in 결과:
@@ -213,9 +261,9 @@ def 값들(칸들: dict, rows, 아는열=None) -> tuple[dict[str, str], list[str
             return 원글
         도는중.append(주소글)
         try:
-            식 = 집계먼저(범위펼치기(원글), rows, 아는열)
-            묶음 = {a: 계산(a) for a in 참조들(식)}
-            값 = E.evaluate(식, 묶음)
+            # 칸 하나도 다른 자리와 **같은 계산기**를 쓴다. 그래야 시트에 적은
+            # `=PCT(지원자, …)` 가 숫자 블록에 적은 것과 똑같이 보인다.
+            값, _ = 계산(원글, rows, 아는열, 값찾기=한칸)
         except (SheetError, E.ExprError, F.FormulaError, ValueError) as exc:
             실패[주소글] = str(exc)
             raise
@@ -226,7 +274,7 @@ def 값들(칸들: dict, rows, 아는열=None) -> tuple[dict[str, str], list[str
 
     for 주소글 in 칸들:
         try:
-            계산(주소글)
+            한칸(주소글)
         except (SheetError, E.ExprError, F.FormulaError, ValueError) as exc:
             결과[주소글] = "?"
             메시지 = f"{주소글}: {실패.get(주소글) or exc}"

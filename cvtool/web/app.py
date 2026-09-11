@@ -78,6 +78,8 @@ from ..normalize import MULTI_SEP
 from ..schemas import (NAME_COLUMNS, TIER_COLUMN_PREFIX, 게재상태_ENUM,
                        저자구분_ENUM, CVRecord, Paper, is_tier_venue)
 from ..export import build_sheet_xlsx, col_letter
+from ..sheet import SheetError
+from ..sheet import 계산 as 수식계산
 from ..schemas import columns as table_columns
 from ..store import (
     CUSTOM_SCOPES,
@@ -6011,11 +6013,13 @@ def _수식검사(수식: str, 아는열: set[str]) -> str:
     그냥 0 이 뜨고 아무도 틀린 줄 모른다.
     """
     수식 = (수식 or "").strip()
-    if not 수식 or not F.is_formula(수식):
+    if not 수식 or not expr.is_formula(수식):
         return ""
     try:
-        F.validate(수식, 아는열)
-    except F.FormulaError as exc:
+        # 그리는 것과 **같은 길**로 본다. 안 그러면 `=COUNT(지원자)/2` 가
+        # 화면에서는 도는데 저장에서 막힌다.
+        수식계산(수식, 대시보드_행(), 아는열)
+    except (F.FormulaError, expr.ExprError, SheetError, ValueError) as exc:
         return f"{수식} → {exc}"
     return ""
 
@@ -6493,10 +6497,10 @@ def _블록그리기(b, rows, 축값, 아는열) -> str:
 
     if b.종류 == "숫자":
         try:
-            글, 값 = F.run(b.수식, rows, 아는열)
+            글, 값 = 수식계산(b.수식, rows, 아는열)
             보임 = format_cell(글, 값, b.설정.get("형식") or "그대로")
             아래 = f"<div class='muted'>{html.escape(b.수식)}</div>"
-        except F.FormulaError as exc:
+        except (F.FormulaError, expr.ExprError, SheetError, ValueError) as exc:
             보임, 아래 = "?", f"<div class='flag'>{html.escape(str(exc))}</div>"
         return (
             f"<div class='card'><h2>{html.escape(b.제목)}</h2>"
@@ -6716,6 +6720,23 @@ def _수식도움() -> str:
         "부서를 안 가리고 전부 셉니다. 별표 그 글자를 찾을 때는 "
         "<code>~*</code> 로 적습니다.</p>"
         "<p class='muted'><code>=</code> 로 시작하지 않으면 그냥 글자로 들어갑니다.</p>"
+        "<div class='warn' style='background:#eef5ff;border-color:#c9dcf5'>"
+        "<b>집계와 계산을 섞어 쓸 수 있습니다.</b> 숫자·축표·자유표·시트 어디서나 "
+        "같습니다.<br>"
+        "<code>=COUNT(지원자, 부서=\"소재분석\") / COUNT(지원자) * 100</code> · "
+        "<code>=ROUND(AVG(지원자, 저널_수), 1)</code> · "
+        "<code>=\"합계 \"&COUNT(지원자)&\"명\"</code></div>"
+        "<p class='muted'><b>엑셀에서 쓰던 이름</b>도 됩니다 — "
+        "<code>COUNTIF</code> <code>COUNTIFS</code> <code>SUMIF</code> "
+        "<code>SUMIFS</code> <code>AVERAGE</code> <code>AVERAGEIFS</code>. "
+        "<code>=COUNTIFS(지원자, 부서=\"A\", 최종상태=\"합격\")</code> 는 "
+        "<code>=COUNT(지원자, 부서=\"A\", 최종상태=\"합격\")</code> 와 같습니다 — "
+        "원래부터 조건을 여러 개 받았습니다.</p>"
+        "<p class='muted'><b>한 사람의 한 칸 값</b>을 가져오려면 LIST 의 마지막에 "
+        "<b>열 이름</b>을 적습니다.<br>"
+        "<code>=LIST(지원자, 한글_이름=\"홍길동\", 박사_학교)</code> → "
+        "<code>서울대학교</code>. 표 항목에서 <b>직접 만드신 열</b>도 그대로 "
+        "쓸 수 있습니다.</p>"
         "<div class='warn'><b>패턴 하나만 조심하세요.</b> "
         '<code>최종상태~"*합격"</code> 은 <b>불합격도 맞습니다</b> '
         "(글자 그대로 '합격' 으로 끝나니까요). 합격만 세려면 "
@@ -7043,10 +7064,12 @@ def _시트편집(b) -> str:
         f"<input type='text' name='title' value='{html.escape(b.제목)}'"
         " placeholder='블록 제목' style='width:280px'></p>"
         + 도구막대
-        # `fx` 클래스를 안 붙인다. 그 자동완성은 **행 문맥 열 이름**을 위한
-        # 것이라, `=COUNT(` 까지 쳤을 때 목록이 열려 Enter 를 가로챈다 —
-        # 실제로 그 칸만 저장이 안 됐다. 시트 수식은 문법이 달라 안 맞는다.
-        + "<p><input type='text' class='sheetfx' placeholder='칸을 고르고 여기에"
+        # 시트는 집계·행함수·열 이름을 **다 쓴다**(`data-kind='sheet'`).
+        # 예전에 이걸 뗐던 까닭은 `=COUNT(` 까지 쳤을 때 목록이 열려 Enter 를
+        # 가로채 그 칸만 저장이 안 돼서인데, 이제 **한 글자는 있어야** 목록이
+        # 뜨므로 괄호 뒤에서는 안 열린다.
+        + "<p><input type='text' class='sheetfx fx' data-kind='sheet'"
+          " placeholder='칸을 고르고 여기에"
           " 글이나 수식을 적으세요 (예: =COUNT(지원자, 부서=\"소재분석\") 또는"
           " =B2/B3*100)' disabled></p>"
         + 경고 + 표
@@ -7062,7 +7085,7 @@ def _시트편집(b) -> str:
         " onsubmit=\"return confirm('이 블록을 지웁니다.')\">"
         f"<input type='hidden' name='id' value='{b.id}'>"
         "<button class='danger'>블록 삭제</button></form></p>"
-        + _수식도움() + "</div>"
+        + _수식도움() + _열목록도움() + "</div>"
     )
 
 
@@ -7344,7 +7367,9 @@ def _수식목록() -> str:
     자료 = {
         "열": sorted(대시보드_열()),
         "행함수": list(expr.FUNC_NAMES),
-        "집계함수": list(F.FUNCTIONS),
+        # 별칭까지 보여준다 (COUNTIFS·AVERAGE…). 목록을 두 군데 적지 않으려고
+        # `formula.CALLABLE` 이 «부를 수 있는 이름 전부» 를 들고 있다.
+        "집계함수": list(F.CALLABLE),
         "대상": list(F.TARGETS),
     }
     return ("<script>window.수식목록 = "
@@ -7386,7 +7411,11 @@ _FXAC_JS = """
     return m ? m[0] : '';
   }
   function 살것(el){
-    var 집계 = (el.dataset.kind || 'row') === 'agg';
+    var 갈 = el.dataset.kind || 'row';
+    /* 시트 칸은 **둘 다** 쓴다 — 집계로 사람을 세고, 행함수로 그 값을 다듬고,
+       칸 주소로 옆 칸을 가져온다. 한쪽만 보여주면 반쪽짜리가 된다. */
+    var 집계 = (갈 === 'agg' || 갈 === 'sheet');
+    var 행 = (갈 === 'row' || 갈 === 'sheet');
     var 것 = [], 본것 = {};
     function 담기(n, 갈래, 함수){
       /* `채용` 은 열이면서 대상이다. 두 번 뜨면 잘못 만든 것처럼 보인다 —
@@ -7397,15 +7426,16 @@ _FXAC_JS = """
     }
     if(집계) 목록.대상.forEach(function(n){ 담기(n, '대상'); });
     목록.열.forEach(function(n){ 담기(n, '열'); });
-    (집계 ? 목록.집계함수 : 목록.행함수).forEach(function(n){ 담기(n, '함수', 1); });
+    if(집계) 목록.집계함수.forEach(function(n){ 담기(n, '함수', 1); });
+    if(행) 목록.행함수.forEach(function(n){ 담기(n, '함수', 1); });
     return 것;
   }
   function 고르기(el, 말){
+    /* **한 글자는 있어야 뜬다.** 빈 칸에 목록이 통째로 뜨면 칸을 누르기만 해도
+       화면을 가리고, `=COUNT(` 처럼 괄호 뒤에서도 떠서 Enter 를 가로챈다.
+       무엇을 쓸 수 있는지는 «쓸 수 있는 열 이름 전부» 를 펼쳐 보면 된다. */
+    if(!말) return [];
     var 전부 = 살것(el);
-    if(!말){
-      return 전부.filter(function(x){ return x.갈래.indexOf('함수') < 0; })
-                 .slice(0, 40);
-    }
     var 낮 = 말.toLowerCase(), 앞 = [], 안 = [];
     전부.forEach(function(x){
       var t = x.글.toLowerCase();
@@ -7429,8 +7459,7 @@ _FXAC_JS = """
     }
     지금칸 = el;
     고른것 = 0;
-    var 안 = 말 ? '' : "<div class='head'>쓸 수 있는 열 — 이름 일부를 치면 좁혀집니다</div>";
-    상자.innerHTML = 안 + 후보.map(function(x, i){
+    상자.innerHTML = 후보.map(function(x, i){
       return "<div class='it" + (i === 0 ? ' on' : '') + "' data-i='" + i + "'>"
            + '<b>' + x.글 + '</b><i>' + x.갈래 + '</i></div>';
     }).join('');
@@ -7468,9 +7497,6 @@ _FXAC_JS = """
   }
 
   document.addEventListener('input', function(e){
-    if(e.target.classList && e.target.classList.contains('fx')) 그리기(e.target);
-  });
-  document.addEventListener('focusin', function(e){
     if(e.target.classList && e.target.classList.contains('fx')) 그리기(e.target);
   });
   document.addEventListener('focusout', function(e){

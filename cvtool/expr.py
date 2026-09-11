@@ -405,6 +405,119 @@ def _f_round(a: list):
     return round(_수(a[0], "ROUND"), 자리)
 
 
+def _숫자만(a: list, 어디: str) -> list[float]:
+    """인자 중 **숫자로 읽히는 것만**. 빈 칸·글자는 조용히 건너뛴다.
+
+    시트에서 `A1:A10` 을 펼쳐 넘기면 아직 안 적은 칸이 섞여 온다. 그걸 0 으로
+    치면 평균이 내려앉고, 터뜨리면 범위를 못 쓴다 — 엑셀도 건너뛴다.
+    """
+    나온것 = []
+    for x in a:
+        글 = _글(x).strip()
+        if not 글:
+            continue
+        try:
+            나온것.append(float(글))
+        except ValueError:
+            continue
+    if not 나온것:
+        raise ExprError(f"{어디} 에 셀 숫자가 없습니다")
+    return 나온것
+
+
+def _f_average(a: list):
+    수 = _숫자만(a, "AVERAGE")
+    return sum(수) / len(수)
+
+
+def _f_median(a: list):
+    수 = sorted(_숫자만(a, "MEDIAN"))
+    가운데 = len(수) // 2
+    return 수[가운데] if len(수) % 2 else (수[가운데 - 1] + 수[가운데]) / 2
+
+
+def _f_count(a: list):
+    """숫자로 읽히는 칸의 개수. 집계 COUNT 와 이름이 같지만 **첫 인자로 갈린다**
+    (`sheet.집계먼저` 가 대상일 때만 집계로 본다)."""
+    return float(sum(1 for x in a if _글(x).strip()
+                     and _글(x).strip().replace(".", "", 1).lstrip("-").isdigit()))
+
+
+def _f_counta(a: list):
+    """빈 칸이 아닌 것의 개수. 글자도 센다."""
+    return float(sum(1 for x in a if _글(x).strip()))
+
+
+def _f_올림(a: list, 위로: bool):
+    import math
+
+    자리 = int(_수(a[1], "자릿수")) if len(a) > 1 else 0
+    배 = 10 ** 자리
+    n = _수(a[0], "ROUNDUP" if 위로 else "ROUNDDOWN") * 배
+    return (math.ceil(n) if 위로 else math.floor(n)) / 배
+
+
+def _f_mod(a: list):
+    b = _수(a[1], "MOD")
+    if b == 0:
+        raise ExprError("MOD 의 나누는 수가 0 입니다")
+    return _수(a[0], "MOD") % b
+
+
+def _f_sqrt(a: list):
+    n = _수(a[0], "SQRT")
+    if n < 0:
+        raise ExprError("SQRT 에 음수를 넣을 수 없습니다")
+    return n ** 0.5
+
+
+def _f_find(a: list, 대소문자: bool):
+    """FIND 는 대소문자를 가리고 SEARCH 는 안 가린다 (엑셀과 같다).
+
+    못 찾으면 **0** 이다. 엑셀은 오류를 내지만, 여기서는 오류가 칸 하나를
+    통째로 `?` 로 만들어 버려서 `IF(FIND(...)>0, ...)` 을 쓸 수가 없다.
+    """
+    찾을것, 안에서 = _글(a[0]), _글(a[1])
+    시작 = int(_수(a[2], "FIND 시작")) - 1 if len(a) > 2 else 0
+    if not 대소문자:
+        찾을것, 안에서 = 찾을것.lower(), 안에서.lower()
+    자리 = 안에서.find(찾을것, max(0, 시작))
+    return float(자리 + 1)
+
+
+def _f_replace(a: list):
+    """REPLACE(글, 시작, 글자수, 새글) — 자리로 바꾼다 (SUBSTITUTE 는 글자로)."""
+    글 = _글(a[0])
+    시작 = int(_수(a[1], "REPLACE 시작"))
+    개수 = int(_수(a[2], "REPLACE 글자수"))
+    if 시작 < 1:
+        raise ExprError("REPLACE 의 시작은 1부터입니다 (엑셀과 같습니다)")
+    return 글[:시작 - 1] + _글(a[3]) + 글[시작 - 1 + max(0, 개수):]
+
+
+def _f_switch(a: list):
+    """SWITCH(값, 이것이면, 이것을, ..., 아니면) — IF 중첩을 줄인다."""
+    if len(a) < 3:
+        raise ExprError("SWITCH 는 SWITCH(값, 이것이면, 이것을, ..., 아니면) 입니다")
+    기준 = _글(a[0])
+    남은 = a[1:]
+    for i in range(0, len(남은) - 1, 2):
+        if _글(남은[i]) == 기준:
+            return 남은[i + 1]
+    return 남은[-1] if len(남은) % 2 else ""
+
+
+def _숫자인가(v) -> bool:
+    글 = _글(v).strip()
+    if not 글:
+        return False
+    try:
+        float(글)
+        return True
+    except ValueError:
+        return False
+
+
 def _오늘() -> str:
     return now_kst().strftime("%Y%m%d")
 
@@ -424,6 +537,9 @@ FUNCS: dict[str, tuple[int, Callable[[list], object]]] = {
     "UPPER": (1, lambda a: _글(a[0]).upper()),
     "LOWER": (1, lambda a: _글(a[0]).lower()),
     "SUBSTITUTE": (3, lambda a: _글(a[0]).replace(_글(a[1]), _글(a[2]))),
+    "REPLACE": (4, _f_replace),
+    "FIND": (2, lambda a: _f_find(a, True)),
+    "SEARCH": (2, lambda a: _f_find(a, False)),
     "REPT": (2, lambda a: _글(a[0]) * int(_수(a[1], "REPT"))),
     # 줄바꿈은 엑셀과 같이 CHAR(10) 이다. 입력칸이 한 줄짜리라 엔터를 칠 수
     # 없으므로, 글자를 번호로 넣는 이 방법이 유일한 길이기도 하다.
@@ -436,13 +552,32 @@ FUNCS: dict[str, tuple[int, Callable[[list], object]]] = {
     "OR": (1, lambda a: TRUE if any(_참인가(x) for x in a) else FALSE),
     "NOT": (1, lambda a: FALSE if _참인가(a[0]) else TRUE),
     "ISBLANK": (1, lambda a: TRUE if not _글(a[0]).strip() else FALSE),
+    "ISNUMBER": (1, lambda a: TRUE if _숫자인가(a[0]) else FALSE),
+    "ISTEXT": (1, lambda a: TRUE if (_글(a[0]).strip()
+                                     and not _숫자인가(a[0])) else FALSE),
+    "EXACT": (2, lambda a: TRUE if _글(a[0]) == _글(a[1]) else FALSE),
+    "SWITCH": (3, _f_switch),
     # -- 숫자
     "VALUE": (1, lambda a: _수(a[0], "VALUE")),
     "ROUND": (1, _f_round),
+    "ROUNDUP": (1, lambda a: _f_올림(a, True)),
+    "ROUNDDOWN": (1, lambda a: _f_올림(a, False)),
+    "MOD": (2, _f_mod),
+    "POWER": (2, lambda a: _수(a[0], "POWER") ** _수(a[1], "POWER")),
+    "SQRT": (1, _f_sqrt),
+    # -- 여러 값 셈. 시트에서 `A1:A10` 을 펼쳐 넘기면 그대로 먹는다.
+    # 이름이 집계와 겹치는 것들은 **첫 인자가 대상이냐**로 갈린다
+    # (`sheet.집계먼저`) — COUNT(A1:A5) 는 칸을, COUNT(지원자) 는 사람을 센다.
+    "AVERAGE": (1, _f_average),
+    "MEDIAN": (1, _f_median),
+    "COUNT": (1, _f_count),
+    "COUNTA": (1, _f_counta),
     "INT": (1, lambda a: float(int(_수(a[0], "INT")))),
     "ABS": (1, lambda a: abs(_수(a[0], "ABS"))),
-    "MIN": (1, lambda a: min(_수(x, "MIN") for x in a)),
-    "MAX": (1, lambda a: max(_수(x, "MAX") for x in a)),
+    # 빈 칸을 건너뛴다. 0 으로 치면 `MIN(A1:A10)` 이 아직 안 적은 칸 때문에
+    # 늘 0 이 된다 — 엑셀도 건너뛴다. (SUM 은 0 을 더해도 같아서 그대로 둔다.)
+    "MIN": (1, lambda a: min(_숫자만(a, "MIN"))),
+    "MAX": (1, lambda a: max(_숫자만(a, "MAX"))),
     "SUM": (1, lambda a: sum(_수(x, "SUM") for x in a)),
     # -- 날짜 (DB 는 yyyymm / yyyymmdd 로 들고 있다)
     "TODAY": (0, lambda a: _오늘()),
