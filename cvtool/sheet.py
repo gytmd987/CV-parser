@@ -44,6 +44,8 @@ MAX_COLS = 26          # A~Z. 더 늘리려면 col_letter 가 AA 도 내주니 �
 _주소_RE = re.compile(r"\b([A-Z]{1,2})([1-9][0-9]{0,3})\b")
 #: 범위 (`A1:B3`)
 _범위_RE = re.compile(r"\b([A-Z]{1,2}[1-9][0-9]{0,3}):([A-Z]{1,2}[1-9][0-9]{0,3})\b")
+#: 딱 주소 하나 (`A3`). 조건 값이 칸을 가리키는지 볼 때 쓴다.
+_주소하나_RE = re.compile(r"[A-Z]{1,2}[1-9][0-9]{0,3}")
 
 
 class SheetError(ValueError):
@@ -103,7 +105,90 @@ def 범위펼치기(글: str) -> str:
     return _따옴표_밖에서(글, 한번)
 
 
-def 집계먼저(글: str, rows, 아는열=None) -> str:
+def _집계인가(함수: str, 인자: list[str], 아는열) -> bool:
+    """이 호출이 **사람을 세는 집계**인가, 칸을 셈하는 함수인가.
+
+    `SUM`·`MIN`·`MAX`·`COUNT`·`AVERAGE` 는 두 계산기에 똑같이 있다. 넷으로 가른다.
+    """
+    if not 인자:
+        return 함수 not in E.FUNC_NAMES
+    if F._unquote(인자[0]) in F.TARGETS:
+        return True                          # =COUNT(지원자, ...)
+    if 함수 not in E.FUNC_NAMES:
+        return True                          # 집계에만 있는 이름 (PCT·LIST·COUNTIF…)
+
+    첫 = 인자[0].strip()
+    if (not F._COND_RE.match(첫) and 첫 == F._unquote(첫)
+            and not _주소하나_RE.fullmatch(첫) and not _범위_RE.fullmatch(첫)
+            and not 첫.replace(".", "", 1).lstrip("-").isdigit()
+            and E._이름_RE.fullmatch(첫)):
+        # 첫 인자가 **맨 낱말**이다 (칸 주소도 숫자도 따옴표도 아니다).
+        # 대상이나 열을 적으려 한 것이다 — `=AVERAGE(저널_수)` 는 맞고
+        # `=COUNT(없는대상)` 은 틀렸는데, 둘 다 집계로 보내야 "대상을 적으려
+        # 했다면…" 이라는 제대로 된 말이 나온다. expr 로 보내면
+        # "모르는 열입니다" 로 끝나 대상을 잘못 쓴 줄 모른다.
+        return True
+
+    if 아는열:
+        for 조각 in 인자:
+            m = F._COND_RE.match(조각)
+            이름 = (m.group(1).strip() if m else F._unquote(조각)).strip()
+            if 이름 in 아는열:
+                # =COUNT(부서="A") — 표의 열을 가리키는 조건이 들어 있다.
+                return True
+    return False
+
+
+def _따옴표(값: str) -> str:
+    """조건 값으로 넣을 수 있게 감싼다.
+
+    안 감싸면 공백이나 연산자가 든 값이 조건을 깨뜨린다. 값에 `"` 가 있으면
+    `'` 로 감싼다 — `formula._split_args` 와 `_unquote` 가 둘 다 안다.
+    """
+    글 = str(값 or "")
+    따 = "'" if '"' in 글 else '"'
+    return 따 + 글.replace(따, "") + 따
+
+
+def _조건에_칸값(인자: list[str], 값찾기) -> list[str]:
+    """조건의 **값 쪽**에 적힌 칸 주소를 그 칸의 값으로 바꾼다.
+
+    `=COUNTIF(부서=A3)` 의 `A3` 는 「A3 라는 글자」가 아니라 A3 칸이다.
+    안 바꾸면 부서가 "A3" 인 사람이 없어 **오류도 없이 0** 이 나온다.
+
+    **열 쪽은 안 건드린다.** 열 이름이 우연히 `A3` 처럼 생겼을 수 있고, 거기서
+    칸을 가리킬 일도 없다. **따옴표로 감싼 값도 안 건드린다** — `부서="A3"` 은
+    칸이 아니라 그 글자를 찾겠다는 뜻이다.
+    """
+    if 값찾기 is None:
+        return 인자                           # 칸이 없는 자리 (숫자·축표·자유표)
+    나온것 = []
+    for 조각 in 인자:
+        m = F._COND_RE.match(조각)
+        값 = m.group(3).strip() if m else ""
+        if m and _주소하나_RE.fullmatch(값):
+            나온것.append(f"{m.group(1).strip()}{m.group(2)}{_따옴표(값찾기(값))}")
+        else:
+            나온것.append(조각)
+    return 나온것
+
+
+def _칸값넣기(글: str, 값찾기) -> str:
+    """`=FUNC(...)` 한 줄의 조건 값에서 칸 주소를 푼다.
+
+    통째로 집계 하나인 수식은 `계산` 이 빠른 길로 `formula.run` 에 바로
+    넘기는데, 그 길에서도 칸은 풀려 있어야 한다. 안 그러면
+    `=COUNTIF(부서=A3)` 만 0 이 되고 `=COUNTIF(부서=A3)/2` 는 맞는,
+    앞뒤가 안 맞는 일이 생긴다.
+    """
+    m = F._CALL_RE.match(글 or "")
+    if not m or 값찾기 is None:
+        return 글
+    인자 = _조건에_칸값(F._split_args(m.group(2)), 값찾기)
+    return f"={m.group(1)}({','.join(인자)})"
+
+
+def 집계먼저(글: str, rows, 아는열=None, 값찾기=None) -> str:
     """`COUNT(지원자, ...)` 같은 집계 호출을 **값으로 바꿔** 놓는다.
 
     `formula.py` 는 수식 한 줄이 통째로 집계 호출일 때만 읽는다. 시트에서는
@@ -156,13 +241,15 @@ def 집계먼저(글: str, rows, 아는열=None) -> str:
             raise SheetError(f"괄호가 안 닫혔습니다: {글[i:][:40]}")
         호출 = 글[i:j]
         인자 = F._split_args(글[m.end():j - 1])
-        if not 인자 or F._unquote(인자[0]) not in F.TARGETS:
+        if not _집계인가(m.group(1).upper(), 인자, 아는열):
             # 집계가 아니다. expr 이 알아서 한다 (SUM(A1,A2) 같은 것).
             # **여는 괄호까지만** 내보내고 속은 다시 훑는다 — 그 안에 집계가
             # 들어 있을 수 있다 (`=ROUND(COUNT(지원자)/2, 1)`).
             나온것.append(글[i:m.end()])
             i = m.end()
             continue
+        # 조건 값이 칸을 가리키면(`부서=A3`) 먼저 그 칸 값으로 바꾼다.
+        호출 = f"{m.group(1)}({','.join(_조건에_칸값(인자, 값찾기))})"
         try:
             보일글, 값 = F.run("=" + 호출, rows, 아는열)
         except F.FormulaError as exc:
@@ -206,21 +293,30 @@ def 계산(수식: str, rows, 아는열=None, 값찾기=None) -> tuple[str, obje
     글 = (수식 or "").strip()
     if not E.is_formula(글):
         return 글, None
+    # 통째로 집계 호출 하나인가. **모양만 보면 안 된다** — 대상을 생략할 수
+    # 있게 되면서 `=SUM(A1:A3)` 도 `formula` 가 "지원자의 A1:A3 열을 더해라"
+    # 로 읽어 버린다(그런 열이 없으니 조용히 `-`). 칸을 셈하는 것인지
+    # 사람을 세는 것인지 `_집계인가` 로 먼저 가른다.
+    부름 = F._CALL_RE.match(글)
+    집계호출 = bool(부름) and _집계인가(
+        부름.group(1).upper(), F._split_args(부름.group(2)), 아는열)
     집계오류 = None
     try:
-        F.parse(글)                          # 통째로 집계 호출 하나인가
+        if not 집계호출:
+            raise F.FormulaError("집계 호출이 아닙니다")
+        F.parse(글)
     except F.FormulaError as exc:
         # 집계로 안 읽혔다. 그래도 **모양이 집계 호출이었으면** 까닭을 들고
         # 간다 — 섞인 길에서도 터지면 이쪽 말이 훨씬 친절하다.
         # `=COUNT(없는대상)` 을 "모르는 열입니다" 라고 하면 대상을 잘못 쓴 줄
         # 모른다. 반대로 `=COUNT(지원자)/0` 은 모양부터 집계가 아니므로
         # "=함수(대상, 조건...) 모양이어야 합니다" 가 엉뚱한 말이 된다.
-        if F._CALL_RE.match(글):
+        if 집계호출:
             집계오류 = exc
     else:
-        return F.run(글, rows, 아는열)
+        return F.run(_칸값넣기(글, 값찾기), rows, 아는열)
     try:
-        식 = 집계먼저(범위펼치기(글), rows, 아는열)
+        식 = 집계먼저(범위펼치기(글), rows, 아는열, 값찾기)
         묶음 = ({a: 값찾기(a) for a in 참조들(식)} if 값찾기 is not None else {})
         값 = E.evaluate(식, 묶음)
     except (E.ExprError, SheetError, ValueError):

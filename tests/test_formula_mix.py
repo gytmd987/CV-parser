@@ -88,7 +88,9 @@ def test_대상을_잘못_쓰면_대상_이야기를_한다(rows):
     """섞인 길로 흘러가면 "모르는 열입니다" 가 되어 대상을 잘못 쓴 줄 모른다."""
     with pytest.raises(F.FormulaError) as exc:
         계산("=COUNT(없는대상)", rows, 아는열)
-    assert "모르는 대상" in str(exc.value)
+    말 = str(exc.value)
+    assert "없는대상" in 말
+    assert "지원자" in 말 and "채용" in 말
 
 
 def test_없는_열은_여전히_막힌다(rows):

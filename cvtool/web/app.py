@@ -6393,12 +6393,23 @@ function 시트편집기(칸){
   표.addEventListener('dblclick', function(){ if(기준) 수식칸.focus(); });
 
   /* 글·수식이 바뀌면 값이 바뀐다 -> 서버에 다시 그려 달라고 한다. */
-  수식칸.addEventListener('change', function(){
+  function 글넣기(){
     if(!기준) return;
     if(수식칸.value) 칸값(기준).글 = 수식칸.value;
     else if(모델.칸[기준]) delete 모델.칸[기준].글;
     if(비었나(기준)) delete 모델.칸[기준];
     담기(); 폼.submit();
+  }
+  수식칸.addEventListener('change', 글넣기);
+  /* Enter 를 **우리가 잡는다.** 안 잡으면 브라우저가 제 나름대로 폼을 보내는데,
+     그게 change 보다 먼저 나가는 때가 있다. 그러면 방금 친 글이 안 담긴
+     옛 값이 그대로 저장돼 **조용히 사라진다** (실제로 그랬다 — 같은 순서로
+     쳐도 어떤 칸은 저장되고 어떤 칸은 안 됐다).
+     자동완성 목록이 열려 있을 때는 비켜 준다. 그때 Enter 는 «고른다» 는 뜻이다. */
+  수식칸.addEventListener('keydown', function(e){
+    if(e.key !== 'Enter' || document.getElementById('fxdrop')) return;
+    e.preventDefault();
+    글넣기();
   });
 
   function 서식먹이기(이름, 값){
@@ -6732,6 +6743,15 @@ def _수식도움() -> str:
         "<code>=COUNTIFS(지원자, 부서=\"A\", 최종상태=\"합격\")</code> 는 "
         "<code>=COUNT(지원자, 부서=\"A\", 최종상태=\"합격\")</code> 와 같습니다 — "
         "원래부터 조건을 여러 개 받았습니다.</p>"
+        "<div class='warn' style='background:#eef5ff;border-color:#c9dcf5'>"
+        "<b>대상을 안 적으면 «지원자»</b>(인재 Pool 전체)입니다. "
+        "<code>=COUNTIF(부서=\"소재분석\")</code> 처럼 짧게 써도 됩니다. "
+        "채용 중인 사람만 세려면 <code>=COUNTIF(채용, …)</code> 처럼 적으세요.<br>"
+        "<b>시트에서는 조건 값에 칸 주소</b>를 쓸 수 있습니다 — "
+        "<code>=COUNTIF(부서=A3)</code> 는 A3 칸에 적힌 부서를 셉니다. "
+        "A열에 부서를 늘어놓고 B열에서 세는 식으로 씁니다. "
+        "따옴표로 감싸면(<code>부서=\"A3\"</code>) 칸이 아니라 "
+        "<b>그 글자</b>를 찾습니다.</div>"
         "<p class='muted'><b>한 사람의 한 칸 값</b>을 가져오려면 LIST 의 마지막에 "
         "<b>열 이름</b>을 적습니다.<br>"
         "<code>=LIST(지원자, 한글_이름=\"홍길동\", 박사_학교)</code> → "
@@ -7435,6 +7455,9 @@ _FXAC_JS = """
        화면을 가리고, `=COUNT(` 처럼 괄호 뒤에서도 떠서 Enter 를 가로챈다.
        무엇을 쓸 수 있는지는 «쓸 수 있는 열 이름 전부» 를 펼쳐 보면 된다. */
     if(!말) return [];
+    /* 숫자만 친 것은 완성하지 않는다. `1` 을 치고 Enter 를 누르면
+       `1저자_우수_제출처` 가 들어가 버렸다 — 칸에 숫자를 적는 건 흔한 일이다. */
+    if(/^[0-9.]+$/.test(말)) return [];
     var 전부 = 살것(el);
     var 낮 = 말.toLowerCase(), 앞 = [], 안 = [];
     전부.forEach(function(x){

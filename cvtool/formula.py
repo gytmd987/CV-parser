@@ -167,16 +167,18 @@ def parse(수식: str) -> Formula:
             f"모르는 함수입니다: {m.group(1)} (쓸 수 있는 것: {', '.join(CALLABLE)})"
         )
     인자 = _split_args(m.group(2))
-    if not 인자:
-        raise FormulaError(f"{함수} 에 대상이 없습니다 (쓸 수 있는 것: {', '.join(TARGETS)})")
 
-    대상 = _unquote(인자[0])
-    if 대상 not in TARGETS:
-        raise FormulaError(f"모르는 대상입니다: {대상} (쓸 수 있는 것: {', '.join(TARGETS)})")
+    # **대상을 안 적으면 «지원자»** (인재 Pool 전체). 엑셀에는 대상이라는 게
+    # 없어서 `=COUNTIF(부서="A")` 라고 쓰는 게 자연스럽다. 채용 중인 사람만
+    # 세려면 `=COUNTIF(채용, ...)` 처럼 적는다.
+    if 인자 and _unquote(인자[0]) in TARGETS:
+        대상, 쓸인자 = _unquote(인자[0]), 인자[1:]
+    else:
+        대상, 쓸인자 = "지원자", 인자
 
     f = Formula(함수=함수, 대상=대상)
     맨열 = []            # 조건이 아닌 인자 = 그냥 열 이름 (=AVG(지원자, 저널_수))
-    for 조각 in 인자[1:]:
+    for 조각 in 쓸인자:
         c = _COND_RE.match(조각)
         if not c:
             맨열.append(_unquote(조각))
@@ -189,8 +191,11 @@ def parse(수식: str) -> Formula:
 
     if 맨열:
         if 함수 not in _NUMERIC and 함수 != "LIST":
+            # 대상을 적으려다 틀린 것일 수 있다. 대상을 생략할 수 있게 되면서
+            # 잘못 적은 대상이 조건 쪽으로 흘러오므로, 그 가능성을 같이 말해 준다.
             raise FormulaError(
-                f'조건 모양이 아닙니다: {맨열[0]} (예: 부서="차세대공정")'
+                f'조건 모양이 아닙니다: {맨열[0]} (예: 부서="차세대공정"). '
+                f"대상을 적으려 했다면 {' · '.join(TARGETS)} 중 하나여야 합니다."
             )
         f.열 = f.열 or 맨열[-1]
     if 함수 in _NUMERIC and not f.열:

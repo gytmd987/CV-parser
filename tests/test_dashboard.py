@@ -88,8 +88,15 @@ def test_unknown_function_is_refused(rows):
 
 
 def test_unknown_target_is_refused(rows):
-    with pytest.raises(F.FormulaError, match="모르는 대상"):
+    """대상을 생략할 수 있게 되면서, 잘못 적은 대상은 **조건 쪽**으로 흘러온다.
+
+    그래서 말이 둘을 다 짚는다 — 조건 모양도 아니고, 대상이라면 지원자·채용
+    중 하나여야 한다고.
+    """
+    with pytest.raises(F.FormulaError) as exc:
         F.run("=COUNT(users)", rows)
+    assert "users" in str(exc.value)
+    assert "지원자" in str(exc.value) and "채용" in str(exc.value)
 
 
 def test_unknown_column_is_refused_at_save_time(rows):
@@ -262,7 +269,8 @@ def test_a_broken_formula_shows_a_question_mark_not_a_zero(rows):
               설정={"행": ["가"], "열": ["나"], "칸": {"가\t나": "=COUNT(없는대상)"}})
     결과 = render_table(b, rows, {})
     assert 결과.행 == [("가", ["?"])]
-    assert 결과.오류 and "모르는 대상" in 결과.오류[0]
+    assert 결과.오류 and "없는대상" in 결과.오류[0]
+    assert "지원자" in 결과.오류[0]          # 대상을 적으려 했다면, 이라고 짚어 준다
 
 
 def test_profile_block_renders_one_card_per_person(rows):
