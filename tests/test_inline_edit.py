@@ -1708,12 +1708,18 @@ def test_the_default_text_colour_is_not_saved(web):
 
 
 def test_every_block_kind_has_the_draft_form(web):
-    """목록에만 붙일 이유가 없었다 — 빈 화면은 어느 블록이든 부담스럽다."""
+    """목록에만 붙일 이유가 없었다 — 빈 화면은 어느 블록이든 부담스럽다.
+
+    **시트는 뺀다.** 엑셀처럼 빈 격자에서 칸을 하나하나 짚는 자리라, 「무엇을
+    보여줄까」를 말로 받아 틀을 짜 주는 다른 블록들과 성격이 다르다.
+    """
+    초안없는것 = {"시트"}
     did = web.module.boards.add("초안전부", "admin")
     for 종류 in web.module.BLOCK_KINDS:
         web.module.boards.add_block(did, 종류, 제목=종류)
     page = web.get(f"/dash/edit?id={did}")
-    assert page.count("action='/dash/block/draft'") == len(web.module.BLOCK_KINDS)
+    assert (page.count("action='/dash/block/draft'")
+            == len(set(web.module.BLOCK_KINDS) - 초안없는것))
     # 종류마다 다른 보기를 준다 — 빈 칸에 '무엇을 적으라는 거지' 가 없게
     for 보기 in ("부서별로 단계마다", "최종 합격한 사람 수", "한 장씩"):
         assert 보기 in page
@@ -2050,3 +2056,68 @@ def test_논문_손질은_변경_이력에_한_줄만_남는다(web, cid):
     assert 남은것[0].항목 == "논문"
     assert "추가" in 남은것[0].비고 and "고침" in 남은것[0].비고
     assert (남은것[0].이전값, 남은것[0].새값) == ("1편", "2편")
+
+
+# --- 시트 블록 (/dash/sheet/save · /dash/sheet.xlsx) ---------------------------
+def _시트블록(web, 칸=None, 행수=3, 열수=3):
+    did = web.module.boards.add(f"시트{id(칸)}", "admin")
+    bid = web.module.boards.add_block(did, "시트", 제목="시트")
+    web.post("/dash/sheet/save", id=bid, title="시트", 끝="1",
+             sheet=json.dumps({"행수": 행수, "열수": 열수, "칸": 칸 or {}},
+                              ensure_ascii=False))
+    return did, bid
+
+
+def test_시트를_저장하고_다시_열면_서식이_그대로다(web):
+    did, bid = _시트블록(web, {"A1": {"글": "제목", "굵게": 1, "배경": "#fff4cc",
+                                 "가로병합": 3, "크기": 18, "정렬": "center"}})
+    b = web.module.boards.block(bid)
+    assert b.시트칸["A1"] == {"글": "제목", "배경": "#fff4cc", "굵게": 1,
+                           "크기": 18, "정렬": "center", "가로병합": 3}
+    쪽 = web.get(f"/dash/edit?id={did}")
+    assert "colspan='3'" in 쪽 and "background:#fff4cc" in 쪽
+
+
+def test_시트_수식이_옆_칸을_읽는다(web):
+    did, _ = _시트블록(web, {"A1": {"글": "30"}, "A2": {"글": "120"},
+                         "B1": {"글": "=A1/A2*100"}})
+    쪽 = web.get(f"/dash/view?id={did}")
+    assert ">25<" in 쪽
+
+
+def test_시트_수식이_집계와_섞인다(web):
+    did, _ = _시트블록(web, {"A1": {"글": "=COUNT(지원자) + 1"}})
+    assert "<td" in web.get(f"/dash/view?id={did}")       # 터지지 않는다
+
+
+def test_엉망인_JSON_이_와도_안_터진다(web):
+    did = web.module.boards.add("엉망시트", "admin")
+    bid = web.module.boards.add_block(did, "시트", 제목="시트")
+    for 보낸것 in ("", "[]", "{", "null", '{"행수": "열둘"}'):
+        code, _ = web.post("/dash/sheet/save", id=bid, title="시트", 끝="1",
+                           sheet=보낸것)
+        assert code in (200, 303), 보낸것
+    b = web.module.boards.block(bid)
+    assert b.시트행수 == 10 and b.시트열수 == 6          # 기본값으로 떨어진다
+
+
+def test_시트를_엑셀로_받는다(web):
+    from cvtool.xlsx_read import read_sheet
+
+    _did, bid = _시트블록(web, {"A1": {"글": "10"}, "B1": {"글": "20"},
+                            "A2": {"글": "=A1+B1", "굵게": 1}})
+    데이터 = web.raw(f"/dash/sheet.xlsx?block={bid}")
+    표 = read_sheet(데이터)
+    assert 표[0][:2] == ["10", "20"]
+    assert 표[1][0] == "30"
+
+
+def test_시트가_아닌_블록은_엑셀로_못_받는다(web):
+    """숫자 블록 번호를 넣어도 엉뚱한 파일이 나가면 안 된다."""
+    did = web.module.boards.add("시트아님", "admin")
+    bid = web.module.boards.add_block(did, "숫자", 제목="숫자")
+    for 주소 in (f"/dash/sheet.xlsx?block={bid}", "/dash/sheet.xlsx?block=999999",
+               "/dash/sheet.xlsx?block=abc", "/dash/sheet.xlsx"):
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            web.raw(주소)
+        assert exc.value.code == 404, 주소

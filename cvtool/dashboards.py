@@ -28,7 +28,7 @@ from .timeutil import now_kst
 #: "목록" 이 제일 앞이다 — 사람들이 만들고 싶어 하는 표의 대부분이 이것이다.
 #: 한 사람이 한 줄, 열은 만드는 사람이 정한다 (엑셀에서 표를 만들듯이).
 #: "축표" 는 피벗(부서 × 단계 인원수)이고, "표" 는 칸을 하나하나 적는 자유표다.
-BLOCK_KINDS = ("목록", "축표", "표", "숫자", "글", "프로필")
+BLOCK_KINDS = ("목록", "축표", "표", "숫자", "글", "프로필", "시트")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS dashboards (
@@ -50,6 +50,24 @@ CREATE TABLE IF NOT EXISTS blocks (
 );
 CREATE INDEX IF NOT EXISTS blocks_dash ON blocks (dashboard_id, 순서);
 """
+
+
+#: 시트 격자의 상한. 넘으면 JSON 도 화면도 감당이 안 된다.
+SHEET_MAX_ROWS = 100
+SHEET_MAX_COLS = 26
+
+#: 시트 칸에 줄 수 있는 값들. **목록 밖의 값은 받지 않는다** — 브라우저가 보낸
+#: JSON 이 그대로 style 속성에 들어가므로, 모양을 확인한 것만 내보낸다.
+SHEET_FONTS = ("기본", "고딕", "명조", "고정폭")
+SHEET_ALIGNS = ("left", "center", "right")
+SHEET_MIN_SIZE, SHEET_MAX_SIZE = 8, 48
+
+
+def _사이(값, 작은: int, 큰: int, 기본: int) -> int:
+    try:
+        return max(작은, min(큰, int(값)))
+    except (TypeError, ValueError):
+        return 기본
 
 
 @dataclass
@@ -74,6 +92,37 @@ class Block:
     def 칸(self) -> dict[str, str]:
         """자유 표의 칸. 키는 "행\\t열"."""
         return self.설정.get("칸") or {}
+
+    # -- 시트 -------------------------------------------------------------
+    @property
+    def 시트행수(self) -> int:
+        return _사이(self.설정.get("행수"), 1, SHEET_MAX_ROWS, 10)
+
+    @property
+    def 시트열수(self) -> int:
+        return _사이(self.설정.get("열수"), 1, SHEET_MAX_COLS, 6)
+
+    @property
+    def 시트칸(self) -> dict[str, dict]:
+        """{`A1`: {글, 배경, 글자, 굵게, 기울임, 크기, 글꼴, 정렬, 가로병합, 세로병합}}
+
+        자유표의 `칸` 과 달리 **주소(자리)** 를 열쇠로 쓴다. 시트의 열은 이름이
+        아니라 자리라서, 열을 하나 끼워 넣으면 뒤가 다 밀리는 게 맞다.
+        """
+        담긴것 = self.설정.get("시트칸")
+        return 담긴것 if isinstance(담긴것, dict) else {}
+
+    @property
+    def 시트열너비(self) -> dict[str, str]:
+        """{`A`: px}. 축표·자유표의 `열너비` 는 **이름**이 열쇠지만 여기는 자리다."""
+        담긴것 = self.설정.get("시트열너비")
+        return 담긴것 if isinstance(담긴것, dict) else {}
+
+    @property
+    def 시트행높이(self) -> dict[str, str]:
+        """{`1`: px}"""
+        담긴것 = self.설정.get("시트행높이")
+        return 담긴것 if isinstance(담긴것, dict) else {}
 
     # -- 축 표 ------------------------------------------------------------
     @property
@@ -765,3 +814,158 @@ def render_profile(b: Block, rows, 값찾기, 아는열: set[str] | None = None
         if 모르는:
             오류.append("표에 없는 열입니다: " + ", ".join(모르는))
     return RenderedProfile(제목=b.제목, 사람=사람, 오류=오류)
+
+
+# ---------------------------------------------------------------------------
+# 시트
+# ---------------------------------------------------------------------------
+def 시트_다듬기(들어온것: dict) -> dict:
+    """브라우저가 보낸 시트 JSON 을 **믿지 않고** 걸러 받는다.
+
+    값이 그대로 style 속성과 격자 크기가 되므로, 모양을 확인한 것만 남긴다.
+    어긋난 항목은 그것만 버리고 나머지는 받는다 — 색 하나 잘못 왔다고 그 사람이
+    한참 꾸며 둔 시트를 통째로 되돌리면 안 된다.
+    """
+    from .sheet import 자리
+
+    행수 = _사이((들어온것 or {}).get("행수"), 1, SHEET_MAX_ROWS, 10)
+    열수 = _사이((들어온것 or {}).get("열수"), 1, SHEET_MAX_COLS, 6)
+
+    칸들: dict[str, dict] = {}
+    for 주소글, 값 in ((들어온것 or {}).get("칸") or {}).items():
+        if not isinstance(값, dict):
+            continue
+        try:
+            r, c = 자리(str(주소글))
+        except ValueError:
+            continue
+        if not (0 <= r < 행수 and 0 <= c < 열수):
+            continue                      # 격자 밖의 칸은 버린다
+        남길것: dict = {}
+        글 = str(값.get("글") or "")
+        if 글:
+            남길것["글"] = 글
+        for 이름 in ("배경", "글자"):
+            색 = str(값.get(이름) or "").strip()
+            if re.fullmatch(r"#[0-9a-fA-F]{6}", 색):
+                남길것[이름] = 색
+        for 이름 in ("굵게", "기울임", "밑줄"):
+            if 값.get(이름):
+                남길것[이름] = 1
+        # 0 이나 빈 값은 «안 정함» 이다. 그대로 `_사이` 에 넣으면 8 로 올려
+        # 붙어서, 크기를 안 고른 칸이 전부 8px 글씨가 된다.
+        if 값.get("크기"):
+            남길것["크기"] = _사이(값.get("크기"), SHEET_MIN_SIZE, SHEET_MAX_SIZE,
+                              SHEET_MIN_SIZE)
+        if str(값.get("글꼴") or "") in SHEET_FONTS[1:]:
+            남길것["글꼴"] = str(값.get("글꼴"))
+        if str(값.get("정렬") or "") in SHEET_ALIGNS:
+            남길것["정렬"] = str(값.get("정렬"))
+        # 병합은 격자를 벗어나지 않게 자른다. 1 은 '안 합침' 이라 안 담는다.
+        가로 = _사이(값.get("가로병합"), 1, 열수 - c, 1)
+        세로 = _사이(값.get("세로병합"), 1, 행수 - r, 1)
+        if 가로 > 1:
+            남길것["가로병합"] = 가로
+        if 세로 > 1:
+            남길것["세로병합"] = 세로
+        if 남길것:
+            칸들[f"{주소글}".upper()] = 남길것
+
+    def 크기묶음(무엇: str, 열쇠확인) -> dict[str, str]:
+        나온것 = {}
+        for k, v in ((들어온것 or {}).get(무엇) or {}).items():
+            if not 열쇠확인(str(k)):
+                continue
+            px = _사이(v, 20, 2000, 0)
+            if px:
+                나온것[str(k).upper()] = str(px)
+        return 나온것
+
+    return {
+        "행수": 행수,
+        "열수": 열수,
+        "시트칸": 칸들,
+        "시트열너비": 크기묶음("열너비", lambda k: re.fullmatch(r"[A-Za-z]{1,2}", k)),
+        "시트행높이": 크기묶음("행높이", lambda k: k.isdigit()),
+    }
+
+
+def 시트_칸스타일(칸: dict) -> str:
+    """칸 하나의 인라인 스타일. **다듬기를 거친 값만** 들어온다고 본다."""
+    조각 = [_색스타일(칸.get("배경", ""), 칸.get("글자", ""))]
+    if 칸.get("굵게"):
+        조각.append("font-weight:700")
+    if 칸.get("기울임"):
+        조각.append("font-style:italic")
+    if 칸.get("밑줄"):
+        조각.append("text-decoration:underline")
+    if 칸.get("크기"):
+        조각.append(f"font-size:{int(칸['크기'])}px")
+    글꼴 = 칸.get("글꼴")
+    if 글꼴 in _글꼴스택:
+        조각.append(f"font-family:{_글꼴스택[글꼴]}")
+    if 칸.get("정렬"):
+        조각.append(f"text-align:{칸['정렬']}")
+    return ";".join(x for x in 조각 if x)
+
+
+#: 폐쇄망이라 웹폰트를 못 받는다. 깔려 있을 만한 것으로만 고른다.
+_글꼴스택 = {
+    "고딕": "'맑은 고딕','Malgun Gothic',sans-serif",
+    "명조": "'바탕','Batang',serif",
+    "고정폭": "'D2Coding','Consolas',monospace",
+}
+
+
+@dataclass
+class RenderedSheet:
+    제목: str
+    행수: int
+    열수: int
+    #: [[(주소, 보일 값, 스타일, 가로병합, 세로병합)]] — 덮인 칸은 아예 빠진다
+    행: list
+    열너비: dict
+    행높이: dict
+    오류: list
+    #: {주소: 다듬어진 서식 dict}. 엑셀로 내보낼 때 쓴다 — 화면은 스타일 글자를
+    #: 쓰지만 엑슬은 값이 하나하나 필요하다.
+    칸서식: dict = field(default_factory=dict)
+
+
+def render_sheet(b: Block, rows, 아는열: set[str] | None = None) -> RenderedSheet:
+    """시트를 계산한다. 덮인 칸은 내보내지 않는다 (병합된 칸의 왼쪽 위만 그린다)."""
+    from .sheet import 주소, 값들
+
+    칸들 = b.시트칸
+    행수, 열수 = b.시트행수, b.시트열수
+    계산값, 오류 = 값들(칸들, rows, 아는열)
+
+    덮인 = set()
+    for 주소글, 칸 in 칸들.items():
+        가로, 세로 = int(칸.get("가로병합", 1)), int(칸.get("세로병합", 1))
+        if 가로 <= 1 and 세로 <= 1:
+            continue
+        try:
+            from .sheet import 자리 as _자리
+            r, c = _자리(주소글)
+        except ValueError:
+            continue
+        for rr in range(r, min(r + 세로, 행수)):
+            for cc in range(c, min(c + 가로, 열수)):
+                if (rr, cc) != (r, c):
+                    덮인.add((rr, cc))
+
+    나온행 = []
+    for r in range(행수):
+        줄 = []
+        for c in range(열수):
+            if (r, c) in 덮인:
+                continue
+            주소글 = 주소(r, c)
+            칸 = 칸들.get(주소글) or {}
+            줄.append((주소글, 계산값.get(주소글, ""), 시트_칸스타일(칸),
+                      int(칸.get("가로병합", 1)), int(칸.get("세로병합", 1))))
+        나온행.append(줄)
+    return RenderedSheet(제목=b.제목, 행수=행수, 열수=열수, 행=나온행,
+                         열너비=b.시트열너비, 행높이=b.시트행높이, 오류=오류,
+                         칸서식=칸들)

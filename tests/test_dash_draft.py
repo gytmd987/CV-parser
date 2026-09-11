@@ -152,10 +152,16 @@ def test_a_dead_llm_never_blocks_building_by_hand():
         assert 설정 == {} and "초안" in 메모[0], 종류
 
 
+#: 초안(말로 적어서 만들기)이 없는 블록. **시트는 일부러 뺀다** — 엑셀처럼
+#: 빈 격자에서 칸을 하나하나 짚어 가며 만드는 자리라, 「무엇을 보여줄까」를
+#: 말로 받아 틀을 짜 주는 다른 블록들과 성격이 다르다.
+초안없는것 = {"시트"}
+
+
 def test_every_block_kind_has_a_prompt():
     from cvtool.dashboards import BLOCK_KINDS
 
-    for 종류 in BLOCK_KINDS:
+    for 종류 in set(BLOCK_KINDS) - 초안없는것:
         assert 종류 in dash_draft._모양, 종류
         안내 = dash_draft._안내(종류)
         assert len(안내) > 100, 종류

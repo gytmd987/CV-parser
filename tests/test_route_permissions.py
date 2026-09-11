@@ -49,6 +49,7 @@ GET_정책 = {
     "/recruit/columns": 거부,
     "/dash": 거부,
     "/dash/view": 거부,
+    "/dash/sheet.xlsx": 거부,
     "/dash/edit": 거부,
     "/dash/preview": 거부,           # 수식 미리보기 — 남의 지원자 값이 나온다
     "/candidate": 자기것만,
@@ -84,6 +85,7 @@ POST_정책 = {
     "/candidate/delete": 거부,
     "/candidate/edit": 거부,
     "/candidate/papers": 거부,
+    "/dash/sheet/save": 거부,
     "/candidate/save": 거부,
     "/candidate/unpin": 거부,
     "/candidate/review/done": 거부,

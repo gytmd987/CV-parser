@@ -40,7 +40,10 @@ from ..dashboards import (
     format_cell,
     render_list,
     render_profile,
+    render_sheet,
     render_table,
+    시트_다듬기,
+    SHEET_FONTS,
 )
 from .. import dash_draft
 from .. import edit
@@ -74,6 +77,7 @@ from .. import normalize as N
 from ..normalize import MULTI_SEP
 from ..schemas import (NAME_COLUMNS, TIER_COLUMN_PREFIX, 게재상태_ENUM,
                        저자구분_ENUM, CVRecord, Paper, is_tier_venue)
+from ..export import build_sheet_xlsx, col_letter
 from ..schemas import columns as table_columns
 from ..store import (
     CUSTOM_SCOPES,
@@ -561,6 +565,27 @@ table.dtbl.fit th,table.dtbl.fit td{max-width:420px}
    - 상한(260/420px)도 푼다. 정한 너비가 상한에 걸려 잘리면 정한 뜻이 없다. */
 table.dtbl.fixed{table-layout:fixed;min-width:0}
 table.dtbl.fixed th,table.dtbl.fixed td{max-width:none}
+/* --- 시트 ---------------------------------------------------------------
+   엑셀처럼 칸마다 서식을 건다. 칸 스타일이 인라인으로 붙으므로 여기서는
+   격자와 머리글(A·B·1·2)만 만든다. 표 폭은 열 너비의 합이다. */
+table.sheet{border-collapse:collapse;table-layout:fixed;width:auto}
+table.sheet th,table.sheet td{border:1px solid #d6dbe3;padding:4px 6px;
+  max-width:none;white-space:normal;vertical-align:middle}
+table.sheet th{background:#f1f4f8;color:#5b6472;font-weight:600;text-align:center;
+  font-size:12px;width:44px;min-width:44px;user-select:none}
+table.sheet td{min-width:90px}
+table.sheet th.corner{width:44px}
+/* 편집 중에만: 고른 칸을 파랗게. outline 이라 칸 크기가 안 흔들린다. */
+table.sheet.editing td{cursor:cell}
+table.sheet.editing td.picked{outline:2px solid #2f6fd0;outline-offset:-2px}
+table.sheet.editing td.anchor{outline-width:3px}
+.sheetbar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;
+  padding:8px;border:1px solid #e3e7ee;border-radius:8px;background:#fbfcfe;
+  margin-bottom:8px}
+.sheetbar button,.sheetbar select,.sheetbar input{font-size:13px}
+.sheetbar input[type=color]{width:34px;height:26px;padding:0;border:1px solid #ccd3dd}
+.sheetbar .sep{width:1px;height:20px;background:#dde2ea;margin:0 2px}
+.sheetfx{width:100%;font-family:'D2Coding','Consolas',monospace}
 table.dtbl.zebra tr:nth-child(even) td{background:#fafbfc}
 /* 조건서식으로 칠한 칸은 얼룩말도 hover 도 덮지 않는다 — 일부러 칠한 것이다.
    (인라인 스타일이라 이 규칙들보다 우선하지만, 명시해 두어야 나중에 규칙을
@@ -1756,6 +1781,10 @@ function dirtyGuard(){
 
 function enhanceTables(){
   document.querySelectorAll('.scroll table').forEach(function(tb){
+    /* 시트는 빼 둔다. 이 막대의 «엑셀 내려받기» 는 화면 글자를 TSV 로 긁는
+       길이라 색도 병합도 안 실리고(시트에는 서버가 만드는 제 것이 있다),
+       머리글 정렬·범위선택도 시트가 스스로 하는 칸 고르기와 부딪힌다. */
+    if(tb.classList.contains('sheet')) return;
     if(tb.dataset.enhanced) return;
     tb.dataset.enhanced = '1';
     if(!tb.tHead && tb.rows.length) tb.createTHead().appendChild(tb.rows[0]);
@@ -6233,8 +6262,230 @@ def _dash_list_page(me: User, error: str = "", msg: str = "") -> bytes:
     )
 
 
+def _시트표(b, rows, 아는열, *, 편집: bool = False) -> tuple[str, list[str]]:
+    """시트 격자를 그린다. (표 HTML, 오류들)
+
+    보기 화면과 편집 화면이 **같은 함수**를 쓴다. 둘이 갈라지면 "편집에서는
+    이랬는데 저장하니 다르다" 가 된다. 편집일 때는 칸마다 주소를 달아 두어
+    도구막대가 짚을 수 있게 한다.
+    """
+    결과 = render_sheet(b, rows, 아는열)
+    머리 = "".join(
+        f"<th style='width:{html.escape(결과.열너비[col_letter(c)])}px'>"
+        f"{col_letter(c)}</th>"
+        if col_letter(c) in 결과.열너비 else f"<th>{col_letter(c)}</th>"
+        for c in range(결과.열수)
+    )
+    줄들 = []
+    for r, 줄 in enumerate(결과.행):
+        높이 = 결과.행높이.get(str(r + 1))
+        칸들 = []
+        for 주소글, 값, 스타일, 가로, 세로 in 줄:
+            속성 = f" style='{html.escape(스타일)}'" if 스타일 else ""
+            if 가로 > 1:
+                속성 += f" colspan='{가로}'"
+            if 세로 > 1:
+                속성 += f" rowspan='{세로}'"
+            if 편집:
+                속성 += f" data-cell='{주소글}' tabindex='0'"
+            속 = "<br>".join(html.escape(x) for x in str(값).split("\n"))
+            칸들.append(f"<td{속성}>{속}</td>")
+        줄머리 = (f"<th style='height:{html.escape(높이)}px'>{r + 1}</th>"
+               if 높이 else f"<th>{r + 1}</th>")
+        줄들.append(f"<tr>{줄머리}{''.join(칸들)}</tr>")
+    # `data-name` 을 안 붙인다. 그걸 붙이면 표 위에 «찾기 · 엑셀 내려받기» 막대가
+    # 저절로 달라붙는데, 그 내려받기는 화면 글자를 TSV 로 긁어 만드는 길이라
+    # 색도 병합도 안 실린다. 시트에는 서버가 만드는 제 내려받기가 따로 있다.
+    반 = "sheet" + (" editing" if 편집 else "")
+    표 = (f"<div class='scroll'><table class='{반}'>"
+         f"<tr><th class='corner'></th>{머리}</tr>{''.join(줄들)}</table></div>")
+    return 표, 결과.오류
+
+
+#: 시트 편집기. 격자를 **JSON 한 덩어리**로 주고받는다 — 칸마다 폼 입력을
+#: 만들면 10x6 만 해도 숨은 칸이 수백 개가 되고, 선택·병합은 폼으로는 못 한다.
+#:
+#: 서버는 이 JSON 을 믿지 않는다 (`dashboards.시트_다듬기` 가 다시 거른다).
+#:
+#: **서식은 브라우저가 바로 칠하고, 값이 바뀌는 일만 서버에 다시 묻는다.**
+#: 색 한 번 누를 때마다 화면이 새로 뜨면 못 쓰겠고, 그렇다고 수식까지 여기서
+#: 계산하면 계산기가 둘이 되어 언젠가 둘의 답이 갈린다.
+_SHEET_JS = """
+function 시트편집기(칸){
+  var 숨은 = 칸.querySelector('input.sheetdata');
+  var 표 = 칸.querySelector('table.sheet');
+  var 수식칸 = 칸.querySelector('.sheetfx');
+  var 폼 = 칸.querySelector('form.sheetform');
+  if(!숨은 || !표 || !폼) return;
+  var 모델 = JSON.parse(숨은.value || '{}');
+  모델.칸 = 모델.칸 || {}; 모델.열너비 = 모델.열너비 || {}; 모델.행높이 = 모델.행높이 || {};
+  var 고른것 = [], 기준 = null;
+
+  function 담기(){ 숨은.value = JSON.stringify(모델); }
+  function 칸값(주소){ return 모델.칸[주소] || (모델.칸[주소] = {}); }
+  function 비었나(주소){
+    var v = 모델.칸[주소];
+    return v && Object.keys(v).length === 0;
+  }
+  function 자리(주소){
+    var m = /^([A-Z]+)([0-9]+)$/.exec(주소);
+    var c = 0, 글 = m[1];
+    for(var i=0;i<글.length;i++) c = c*26 + (글.charCodeAt(i)-64);
+    return {r: +m[2]-1, c: c-1};
+  }
+  function 주소(r,c){
+    var 글 = '', n = c+1;
+    while(n){ var 나머지 = (n-1)%26; 글 = String.fromCharCode(65+나머지)+글;
+              n = ((n-1-나머지)/26)|0; }
+    return 글 + (r+1);
+  }
+  function 칸태그(주소){ return 표.querySelector("td[data-cell='"+주소+"']"); }
+
+  /* 칸 하나의 서식을 실제 <td> 에 칠한다. 서버의 `시트_칸스타일` 과 같은 규칙
+     이어야 한다 — 저장 전과 후가 달라 보이면 안 된다. */
+  var 글꼴표 = {'고딕':"'맑은 고딕','Malgun Gothic',sans-serif",
+              '명조':"'바탕','Batang',serif",
+              '고정폭':"'D2Coding','Consolas',monospace"};
+  function 칠하기한칸(주소){
+    var td = 칸태그(주소); if(!td) return;
+    var v = 모델.칸[주소] || {};
+    td.style.background = v.배경 || '';
+    td.style.color = v.글자 || '';
+    td.style.fontWeight = v.굵게 ? '700' : '';
+    td.style.fontStyle = v.기울임 ? 'italic' : '';
+    td.style.textDecoration = v.밑줄 ? 'underline' : '';
+    td.style.fontSize = v.크기 ? (v.크기 + 'px') : '';
+    td.style.fontFamily = 글꼴표[v.글꼴] || '';
+    td.style.textAlign = v.정렬 || '';
+  }
+
+  function 고른것칠하기(){
+    표.querySelectorAll('td').forEach(function(td){
+      td.classList.toggle('picked', 고른것.indexOf(td.dataset.cell) >= 0);
+      td.classList.toggle('anchor', td.dataset.cell === 기준);
+    });
+    수식칸.value = 기준 ? ((모델.칸[기준]||{}).글 || '') : '';
+    수식칸.disabled = !기준;
+    var 표시 = 칸.querySelector('.sheetat');
+    if(표시) 표시.textContent = 기준 || '-';
+  }
+
+  /* 두 주소가 만드는 네모 안의 주소들. Shift+누르기가 이걸 쓴다. */
+  function 네모(가, 나){
+    var a = 자리(가), b = 자리(나), 목록 = [];
+    for(var r=Math.min(a.r,b.r); r<=Math.max(a.r,b.r); r++)
+      for(var c=Math.min(a.c,b.c); c<=Math.max(a.c,b.c); c++)
+        목록.push(주소(r,c));
+    return 목록;
+  }
+
+  표.addEventListener('mousedown', function(e){
+    var td = e.target.closest('td[data-cell]');
+    if(!td) return;
+    if(e.shiftKey && 기준) 고른것 = 네모(기준, td.dataset.cell);
+    else { 기준 = td.dataset.cell; 고른것 = [기준]; }
+    고른것칠하기();
+  });
+  표.addEventListener('dblclick', function(){ if(기준) 수식칸.focus(); });
+
+  /* 글·수식이 바뀌면 값이 바뀐다 -> 서버에 다시 그려 달라고 한다. */
+  수식칸.addEventListener('change', function(){
+    if(!기준) return;
+    if(수식칸.value) 칸값(기준).글 = 수식칸.value;
+    else if(모델.칸[기준]) delete 모델.칸[기준].글;
+    if(비었나(기준)) delete 모델.칸[기준];
+    담기(); 폼.submit();
+  });
+
+  function 서식먹이기(이름, 값){
+    고른것.forEach(function(a){
+      if(값 === null) { if(모델.칸[a]) delete 모델.칸[a][이름]; }
+      else 칸값(a)[이름] = 값;
+      if(비었나(a)) delete 모델.칸[a];
+      칠하기한칸(a);
+    });
+    담기();
+  }
+  function 껐다켜기(이름){
+    var 켤까 = !고른것.every(function(a){ return (모델.칸[a]||{})[이름]; });
+    서식먹이기(이름, 켤까 ? 1 : null);
+  }
+  function 서식지우기(){
+    고른것.forEach(function(a){
+      var 글 = (모델.칸[a]||{}).글;
+      if(글) 모델.칸[a] = {글: 글}; else delete 모델.칸[a];
+      칠하기한칸(a);
+    });
+    담기();
+  }
+
+  칸.querySelectorAll('[data-sheet]').forEach(function(el){
+    var 무엇 = el.dataset.sheet;
+    var 이벤트 = (el.tagName === 'SELECT' || el.type === 'color') ? 'change' : 'click';
+    el.addEventListener(이벤트, function(e){
+      if(el.tagName === 'BUTTON') e.preventDefault();
+      if(!고른것.length && ['행추가','행삭제','열추가','열삭제'].indexOf(무엇) < 0) return;
+      if(무엇 === '굵게' || 무엇 === '기울임' || 무엇 === '밑줄') 껐다켜기(무엇);
+      else if(무엇 === '서식지우기') 서식지우기();
+      else if(무엇 === '병합') 병합();
+      else if(무엇 === '병합해제') 해제();
+      else if(무엇 === '행추가') 크기(1, 0);
+      else if(무엇 === '행삭제') 크기(-1, 0);
+      else if(무엇 === '열추가') 크기(0, 1);
+      else if(무엇 === '열삭제') 크기(0, -1);
+      else 서식먹이기(무엇, el.value || null);
+    });
+  });
+
+  /* 아래 셋은 격자 자체가 바뀐다 -> 서버에 다시 그려 달라고 한다. */
+  function 크기(행, 열){
+    if(행) 모델.행수 = Math.max(1, Math.min(100, (+모델.행수 || 1) + 행));
+    if(열) 모델.열수 = Math.max(1, Math.min(26, (+모델.열수 || 1) + 열));
+    담기(); 폼.submit();
+  }
+  function 병합(){
+    if(고른것.length < 2) return;
+    var rs = 고른것.map(자리);
+    var r0 = Math.min.apply(null, rs.map(function(x){return x.r;}));
+    var c0 = Math.min.apply(null, rs.map(function(x){return x.c;}));
+    var r1 = Math.max.apply(null, rs.map(function(x){return x.r;}));
+    var c1 = Math.max.apply(null, rs.map(function(x){return x.c;}));
+    var 왼위 = 주소(r0, c0);
+    /* 덮이는 칸의 글은 버린다 — 엑셀도 그렇게 하고, 안 버리면 병합을 풀 때
+       어디서 나온 글인지 알 수가 없다. */
+    네모(왼위, 주소(r1,c1)).forEach(function(a){ if(a !== 왼위) delete 모델.칸[a]; });
+    칸값(왼위).가로병합 = c1 - c0 + 1;
+    칸값(왼위).세로병합 = r1 - r0 + 1;
+    담기(); 폼.submit();
+  }
+  function 해제(){
+    고른것.forEach(function(a){
+      if(모델.칸[a]){ delete 모델.칸[a].가로병합; delete 모델.칸[a].세로병합;
+                    if(비었나(a)) delete 모델.칸[a]; }
+    });
+    담기(); 폼.submit();
+  }
+
+  고른것칠하기();
+}
+document.addEventListener('DOMContentLoaded', function(){
+  document.querySelectorAll('.sheetedit').forEach(시트편집기);
+});
+"""
+
+
 def _블록그리기(b, rows, 축값, 아는열) -> str:
     """블록 하나를 보기 화면용 HTML 로."""
+    if b.종류 == "시트":
+        표, 오류 = _시트표(b, rows, 아는열)
+        경고 = "".join(f"<p class='flag'>{html.escape(x)}</p>" for x in 오류)
+        받기 = (f"<a class='btn sec' href='/dash/sheet.xlsx?block={b.id}'>"
+              "엑셀 내려받기</a>")
+        return (f"<div class='card'><h2>{html.escape(b.제목)}</h2>{경고}"
+                f"<p>{받기} <span class='muted'>복사(Ctrl+C)는 값만 옮깁니다. "
+                "색·굵기·병합까지 그대로 받으려면 엑셀로 받으세요.</span></p>"
+                f"{표}</div>")
+
     if b.종류 == "글":
         본문 = "<br>".join(html.escape(x) for x in (b.글 or "").splitlines())
         return (f"<div class='card'><h2>{html.escape(b.제목)}</h2>{본문}</div>"
@@ -6728,6 +6979,93 @@ def _열너비편집(b, 이름들: list[str], 줄이름칸: bool = True) -> str:
     )
 
 
+def _시트편집(b) -> str:
+    """시트 블록 편집 — 도구막대 + 격자.
+
+    격자는 보기 화면과 **같은 함수**(`_시트표`)로 그린다. 편집에서 보던 모양과
+    저장 뒤 모양이 다르면 아무도 안 믿는다.
+    """
+    rows = 대시보드_행()
+    아는열 = 대시보드_열()
+    표, 오류 = _시트표(b, rows, 아는열, 편집=True)
+    경고 = "".join(f"<p class='flag'>{html.escape(x)}</p>" for x in 오류)
+
+    담긴것 = json.dumps(
+        {"행수": b.시트행수, "열수": b.시트열수, "칸": b.시트칸,
+         "열너비": b.시트열너비, "행높이": b.시트행높이},
+        ensure_ascii=False,
+    )
+
+    단추 = lambda 무엇, 글, 도움="": (
+        f"<button type='button' class='sec' data-sheet='{무엇}'"
+        f" title='{html.escape(도움)}'>{글}</button>")
+    크기옵션 = "".join(f"<option value='{n}'>{n}</option>"
+                   for n in (10, 11, 12, 13, 14, 16, 18, 20, 24, 28, 32))
+    글꼴옵션 = "".join(f"<option value='{'' if f == '기본' else f}'>{f}</option>"
+                   for f in SHEET_FONTS)
+    도구막대 = (
+        "<div class='sheetbar'>"
+        "<span class='muted'>고른 칸 <b class='sheetat'>-</b></span>"
+        "<span class='sep'></span>"
+        + 단추("굵게", "<b>가</b>", "굵게")
+        + 단추("기울임", "<i>가</i>", "기울임")
+        + 단추("밑줄", "<u>가</u>", "밑줄")
+        + f"<select data-sheet='크기'><option value=''>크기</option>{크기옵션}</select>"
+        + f"<select data-sheet='글꼴'>{글꼴옵션}</select>"
+        "<span class='sep'></span>"
+        "<label class='muted'>글자<input type='color' data-sheet='글자'"
+        " value='#333333'></label>"
+        "<label class='muted'>배경<input type='color' data-sheet='배경'"
+        " value='#fff4cc'></label>"
+        "<span class='sep'></span>"
+        + 단추("left", "≡ 왼쪽", "왼쪽 맞춤").replace("data-sheet='left'",
+                                                "data-sheet='정렬' value='left'")
+        + 단추("center", "≡ 가운데", "가운데 맞춤").replace(
+            "data-sheet='center'", "data-sheet='정렬' value='center'")
+        + 단추("right", "≡ 오른쪽", "오른쪽 맞춤").replace(
+            "data-sheet='right'", "data-sheet='정렬' value='right'")
+        + "<span class='sep'></span>"
+        + 단추("병합", "병합", "고른 칸을 하나로 합칩니다")
+        + 단추("병합해제", "병합 해제")
+        + 단추("서식지우기", "서식 지우기", "글은 두고 색·굵기만 지웁니다")
+        + "<span class='sep'></span>"
+        + 단추("행추가", "행 +") + 단추("행삭제", "행 −")
+        + 단추("열추가", "열 +") + 단추("열삭제", "열 −")
+        + "</div>"
+    )
+    return (
+        f"<div class='sheetedit' id='b{b.id}'>"
+        f"<form method='post' action='/dash/sheet/save' class='sheetform'>"
+        f"<input type='hidden' name='id' value='{b.id}'>"
+        f"<input type='hidden' class='sheetdata' name='sheet'"
+        f" value='{html.escape(담긴것)}'>"
+        f"<p><b>시트</b> "
+        f"<input type='text' name='title' value='{html.escape(b.제목)}'"
+        " placeholder='블록 제목' style='width:280px'></p>"
+        + 도구막대
+        # `fx` 클래스를 안 붙인다. 그 자동완성은 **행 문맥 열 이름**을 위한
+        # 것이라, `=COUNT(` 까지 쳤을 때 목록이 열려 Enter 를 가로챈다 —
+        # 실제로 그 칸만 저장이 안 됐다. 시트 수식은 문법이 달라 안 맞는다.
+        + "<p><input type='text' class='sheetfx' placeholder='칸을 고르고 여기에"
+          " 글이나 수식을 적으세요 (예: =COUNT(지원자, 부서=\"소재분석\") 또는"
+          " =B2/B3*100)' disabled></p>"
+        + 경고 + 표
+        + "<p class='muted'>칸을 누르면 고르고, <b>Shift+누르기</b> 로 여러 칸을"
+          " 고릅니다. 색·굵기는 바로 칠해지고, <b>글·수식·병합·행열</b> 은 값이"
+          " 바뀌므로 그 자리에서 다시 계산합니다. 다 하고 <b>저장</b> 을 누르세요.</p>"
+        "<p><button type='submit' name='끝' value='1'>이 블록 저장</button></form> "
+        "<form method='post' action='/dash/block/move' style='display:inline'>"
+        f"<input type='hidden' name='id' value='{b.id}'>"
+        "<button class='sec' name='dir' value='-1'>↑</button> "
+        "<button class='sec' name='dir' value='1'>↓</button></form> "
+        "<form method='post' action='/dash/block/delete' style='display:inline'"
+        " onsubmit=\"return confirm('이 블록을 지웁니다.')\">"
+        f"<input type='hidden' name='id' value='{b.id}'>"
+        "<button class='danger'>블록 삭제</button></form></p>"
+        + _수식도움() + "</div>"
+    )
+
+
 def _블록편집(b, 축값, 미리볼사람: str = "") -> str:
     """블록 하나의 설정 폼.
 
@@ -6780,6 +7118,11 @@ def _블록편집(b, 축값, 미리볼사람: str = "") -> str:
         f"<input type='hidden' name='id' value='{b.id}'>"
         "<button class='danger'>블록 삭제</button></form></p>"
     )
+
+    if b.종류 == "시트":
+        # 시트는 다른 블록과 **폼이 따로**다. 격자·서식·병합이 JSON 한 덩어리로
+        # 오가므로, 제목·수식 칸들과 같은 폼에 담으면 서로 밟는다.
+        return _시트편집(b)
 
     if b.종류 == "글":
         가운데 = (f"<textarea name='text' rows='4' style='width:100%'>"
@@ -6977,7 +7320,9 @@ def _dash_edit_page(did: int, me: User, error: str = "", msg: str = "") -> bytes
         + _수식도움() + _틀도움() + _열목록도움() + 미리보기고르기 + "</div>"
         + ("".join(_블록편집(b, 축값, 미리볼사람) for b in 블록들)
            or "<div class='card'><p class='muted'>블록이 없습니다. 위에서 추가하세요.</p></div>")
-        + _수식목록() + _FX_JS + _FXAC_JS,
+        + _수식목록() + _FX_JS + _FXAC_JS
+        + (f"<script>{_SHEET_JS}</script>"
+           if any(b.종류 == "시트" for b in 블록들) else ""),
         me=me,
     )
 
@@ -7633,6 +7978,30 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(_status_table().encode("utf-8"))
         if path == "/favicon.ico":
             return self._send(b"", "image/x-icon", code=204)
+        if path == "/dash/sheet.xlsx":
+            # 시트는 서버가 직접 만든다. 화면에서 TSV 를 만들어 보내는 길로는
+            # 색도 병합도 못 싣는다 (글자만 옮겨진다).
+            if not can(me, "대시보드_조회") or not can(me, "엑셀_다운로드"):
+                return self._deny()
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            try:
+                bid = int((params.get("block") or ["0"])[0])
+            except ValueError:
+                bid = 0
+            b = boards.block(bid)
+            if b is None or b.종류 != "시트":
+                return self._send(_page("없음", "<div class='card'>시트를 찾을 수 없습니다.</div>",
+                                        me=me), code=404)
+            결과 = render_sheet(b, 대시보드_행(), 대시보드_열())
+            데이터 = build_sheet_xlsx(결과, b.제목 or "시트")
+            이름 = urllib.parse.quote((b.제목 or "시트") + ".xlsx")
+            return self._send(
+                데이터,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                extra={"Content-Disposition":
+                       f"attachment; filename*=UTF-8''{이름}"},
+            )
+
         if path == "/export.xlsx":
             if not can(me, "엑셀_다운로드"):
                 return self._deny()
@@ -8445,6 +8814,33 @@ class Handler(BaseHTTPRequestHandler):
                              항목=f"{b.종류} 초안", 새값=말[:80])
                 return self._redirect(
                     f"{뒤로}&msg=" + urllib.parse.quote(" / ".join(메모)))
+
+            if path == "/dash/sheet/save":
+                # 시트는 격자·서식·병합이 JSON 한 덩어리로 온다. **믿지 않는다** —
+                # `시트_다듬기` 가 색·크기·병합·격자 밖 칸을 전부 다시 거른다.
+                bid = 정수("id")
+                b = boards.block(bid)
+                if b is None:
+                    return self._redirect("/dash")
+                try:
+                    들어온것 = json.loads((data.get("sheet") or ["{}"])[0] or "{}")
+                except (ValueError, TypeError):
+                    들어온것 = {}
+                if not isinstance(들어온것, dict):
+                    들어온것 = {}
+                설정 = {**b.설정, **시트_다듬기(들어온것)}
+                제목 = (data.get("title") or [""])[0]
+                boards.save_block(bid, 제목=제목, 설정=설정)
+                뒤로 = f"/dash/edit?id={b.dashboard_id}"
+                if not (data.get("끝") or [""])[0]:
+                    # 도구막대가 값을 바꿔 **다시 계산하러** 보낸 것이다.
+                    # 저장은 됐지만 안내는 안 띄운다 — 누를 때마다 뜨면 시끄럽다.
+                    return self._redirect(f"{뒤로}#b{bid}")
+                audit.record(me.아이디, "대시보드", str(b.dashboard_id),
+                             항목="시트 블록", 새값=제목)
+                return self._redirect(f"{뒤로}&msg="
+                                      + urllib.parse.quote("시트를 저장했습니다.")
+                                      + f"#b{bid}")
 
             if path == "/dash/block/save":
                 bid = 정수("id")
