@@ -441,6 +441,39 @@ class DashboardStore:
             self.add_block(새id, b.종류, 제목=b.제목, 설정=b.설정)
         return 새id
 
+    @atomic
+    def copy_block(self, bid: int) -> int:
+        """블록 하나를 **바로 아래에** 복제한다. 0 이면 없는 블록이다.
+
+        비슷한 표를 둘 만들 때 쓴다. 대시보드 통째 복제(`copy`)만 있어서, 표
+        하나를 닮은 것으로 하나 더 만들려면 열·수식·너비를 처음부터 다시 적어야
+        했다 — 시트 블록이면 칸 백 개를 다시 꾸미는 일이다.
+
+        **맨 끝이 아니라 바로 아래다.** `add_block` 은 끝에 붙이는데, 블록이
+        열 개쯤 되면 복제본을 찾아 ↑ 를 아홉 번 눌러야 한다.
+
+        설정은 JSON 으로 오가므로(`add_block` 이 `json.dumps`, `_row` 가
+        `json.loads`) 두 블록이 같은 dict 를 나눠 쓰는 일은 없다 — 한쪽 칸을
+        고쳐도 다른 쪽은 그대로다.
+        """
+        b = self.block(bid)
+        if b is None:
+            return 0
+        # 제목 뒤에 «복제» 를 붙인다. 똑같은 제목이 나란히 두 개면 어느 쪽을
+        # 고치는 중인지 알 수 없다.
+        새id = self.add_block(b.dashboard_id, b.종류,
+                             제목=f"{b.제목 or b.종류} 복제", 설정=b.설정)
+        # 끝에 붙은 것을 원본 바로 뒤로 끌어온다. `move_block` 과 같은 방식으로
+        # 순서를 1 부터 다시 매겨 틈이 생기지 않게 한다.
+        형제 = self.blocks(b.dashboard_id)
+        줄 = [x.id for x in 형제 if x.id != 새id]
+        줄.insert(줄.index(bid) + 1, 새id)
+        for i, x in enumerate(줄, start=1):
+            self._conn.execute("UPDATE blocks SET 순서=? WHERE id=?", (i, x))
+        self._touch(b.dashboard_id)
+        self._conn.commit()
+        return 새id
+
     # -- 블록 ---------------------------------------------------------------
     def _touch(self, did: int) -> None:
         self._conn.execute(

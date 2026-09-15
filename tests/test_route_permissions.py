@@ -103,6 +103,7 @@ POST_정책 = {
     "/dash/block/draft": 거부,        # 말로 만드는 목록 표 초안
     "/dash/block/save": 거부,
     "/dash/block/move": 거부,
+    "/dash/block/copy": 거부,
     "/dash/block/delete": 거부,
     "/candidates/start": 허용,       # 현업은 자기 과제 지원자만 (라우트에서 거른다)
     "/candidates/stop": 허용,

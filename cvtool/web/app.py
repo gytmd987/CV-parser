@@ -7101,6 +7101,9 @@ def _시트편집(b) -> str:
         f"<input type='hidden' name='id' value='{b.id}'>"
         "<button class='sec' name='dir' value='-1'>↑</button> "
         "<button class='sec' name='dir' value='1'>↓</button></form> "
+        "<form method='post' action='/dash/block/copy' style='display:inline'>"
+        f"<input type='hidden' name='id' value='{b.id}'>"
+        "<button class='sec' title='이 블록을 바로 아래에 하나 더 만듭니다 (저장한 내용을 복제합니다)'>블록 복제</button></form> "
         "<form method='post' action='/dash/block/delete' style='display:inline'"
         " onsubmit=\"return confirm('이 블록을 지웁니다.')\">"
         f"<input type='hidden' name='id' value='{b.id}'>"
@@ -7156,6 +7159,9 @@ def _블록편집(b, 축값, 미리볼사람: str = "") -> str:
         f"<input type='hidden' name='id' value='{b.id}'>"
         "<button class='sec' name='dir' value='-1'>↑</button> "
         "<button class='sec' name='dir' value='1'>↓</button></form> "
+        "<form method='post' action='/dash/block/copy' style='display:inline'>"
+        f"<input type='hidden' name='id' value='{b.id}'>"
+        "<button class='sec' title='이 블록을 바로 아래에 하나 더 만듭니다 (저장한 내용을 복제합니다)'>블록 복제</button></form> "
         "<form method='post' action='/dash/block/delete' style='display:inline'"
         " onsubmit=\"return confirm('이 블록을 지웁니다.')\">"
         f"<input type='hidden' name='id' value='{b.id}'>"
@@ -8829,6 +8835,18 @@ class Handler(BaseHTTPRequestHandler):
                 b = boards.block(bid)
                 boards.move_block(bid, 정수("dir", 1))
                 return self._redirect(f"/dash/edit?id={b.dashboard_id if b else 0}")
+
+            if path == "/dash/block/copy":
+                # 블록 하나만 닮은 것으로 하나 더. **저장된 것**을 베낀다 —
+                # 화면에서 고치다 만 것은 아직 DB 에 없다.
+                bid = 정수("id")
+                b = boards.block(bid)
+                did = b.dashboard_id if b else 0
+                if b is not None:
+                    boards.copy_block(bid)
+                    audit.record(me.아이디, "대시보드", str(did), 항목="블록 복제",
+                                 새값=b.제목 or b.종류)
+                return self._redirect(f"/dash/edit?id={did}")
 
             if path == "/dash/block/delete":
                 bid = 정수("id")
