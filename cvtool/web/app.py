@@ -43,6 +43,7 @@ from ..dashboards import (
     render_sheet,
     render_table,
     시트_다듬기,
+    시트_채우기,
     SHEET_FONTS,
 )
 from .. import dash_draft
@@ -580,8 +581,15 @@ table.sheet td{min-width:90px}
 table.sheet th.corner{width:44px}
 /* 편집 중에만: 고른 칸을 파랗게. outline 이라 칸 크기가 안 흔들린다. */
 table.sheet.editing td{cursor:cell}
+table.sheet.editing td{position:relative}
 table.sheet.editing td.picked{outline:2px solid #2f6fd0;outline-offset:-2px}
 table.sheet.editing td.anchor{outline-width:3px}
+/* 끌어서 채우는 손잡이. 고른 네모의 오른쪽 아래 귀퉁이에 붙는다 (엑셀과 같다). */
+table.sheet.editing td .fillgrip{position:absolute;right:-4px;bottom:-4px;
+  width:9px;height:9px;background:#2f6fd0;border:1px solid #fff;border-radius:2px;
+  cursor:crosshair;z-index:3}
+table.sheet.editing td.filling{outline:2px dashed #2f6fd0;outline-offset:-2px;
+  background:rgba(47,111,208,.07)}
 .sheetbar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;
   padding:8px;border:1px solid #e3e7ee;border-radius:8px;background:#fbfcfe;
   margin-bottom:8px}
@@ -6373,7 +6381,10 @@ def _시트표(b, rows, 아는열, *, 편집: bool = False) -> tuple[str, list[s
 #: **서식은 브라우저가 바로 칠하고, 값이 바뀌는 일만 서버에 다시 묻는다.**
 #: 색 한 번 누를 때마다 화면이 새로 뜨면 못 쓰겠고, 그렇다고 수식까지 여기서
 #: 계산하면 계산기가 둘이 되어 언젠가 둘의 답이 갈린다.
-_SHEET_JS = """
+#: **raw 문자열이다** (`r"""`). 이 안의 `\t`·`\n` 은 JS 가 읽을 글자라,
+#: 파이썬이 먼저 탭·줄바꿈으로 바꿔 버리면 JS 문자열이 한 줄에서 끊긴다
+#: (그러면 시트 편집기가 통째로 안 뜬다). `_TABLE_JS` 도 같은 까닭으로 raw 다.
+_SHEET_JS = r"""
 function 시트편집기(칸){
   var 숨은 = 칸.querySelector('input.sheetdata');
   var 표 = 칸.querySelector('table.sheet');
@@ -6422,15 +6433,45 @@ function 시트편집기(칸){
     td.style.textAlign = v.정렬 || '';
   }
 
+  /* 고른 칸들이 만드는 네모. `A1:C3` (한 칸이면 `A1`). */
+  function 네모글(주소들){
+    if(!주소들 || !주소들.length) return '';
+    var rs = 주소들.map(자리);
+    var r0 = Math.min.apply(null, rs.map(function(x){return x.r;}));
+    var c0 = Math.min.apply(null, rs.map(function(x){return x.c;}));
+    var r1 = Math.max.apply(null, rs.map(function(x){return x.r;}));
+    var c1 = Math.max.apply(null, rs.map(function(x){return x.c;}));
+    var 가 = 주소(r0,c0), 나 = 주소(r1,c1);
+    return 가 === 나 ? 가 : (가 + ':' + 나);
+  }
+
   function 고른것칠하기(){
+    var 손잡이 = 고른것.length ? 네모글(고른것).split(':').pop() : '';
     표.querySelectorAll('td').forEach(function(td){
       td.classList.toggle('picked', 고른것.indexOf(td.dataset.cell) >= 0);
       td.classList.toggle('anchor', td.dataset.cell === 기준);
+      var 그립 = td.querySelector('.fillgrip');
+      if(td.dataset.cell === 손잡이 && !그립){
+        var g = document.createElement('span');
+        g.className = 'fillgrip';
+        g.title = '끌어서 채우기 (수식의 칸 참조가 따라 옮겨집니다)';
+        td.appendChild(g);
+      }else if(td.dataset.cell !== 손잡이 && 그립){ 그립.remove(); }
     });
     수식칸.value = 기준 ? ((모델.칸[기준]||{}).글 || '') : '';
     수식칸.disabled = !기준;
     var 표시 = 칸.querySelector('.sheetat');
-    if(표시) 표시.textContent = 기준 || '-';
+    if(표시) 표시.textContent = 네모글(고른것) || '-';
+  }
+
+  /* 자동 채우기·붙여넣기. **미는 일은 서버가 한다** — 여기서 밀면 규칙이
+     두 벌이 되어, 화면이 만든 수식과 서버가 계산하는 수식이 조용히 갈라진다.
+     브라우저는 «어디를 어디에» 만 보낸다. */
+  function 채우기(원본, 대상){
+    if(!원본 || !대상 || 원본 === 대상) return;
+    칸.querySelector('.fillfrom').value = 원본;
+    칸.querySelector('.fillto').value = 대상;
+    담기(); 폼.submit();
   }
 
   /* 두 주소가 만드는 네모 안의 주소들. Shift+누르기가 이걸 쓴다. */
@@ -6442,7 +6483,15 @@ function 시트편집기(칸){
     return 목록;
   }
 
+  var 끄는중 = null;                 /* 손잡이를 끄는 동안의 원본 네모 */
+
   표.addEventListener('mousedown', function(e){
+    /* 손잡이를 잡았으면 «고르기» 가 아니라 «채우기» 의 시작이다. */
+    if(e.target.classList && e.target.classList.contains('fillgrip')){
+      e.preventDefault();
+      끄는중 = {원본: 네모글(고른것), 칸들: 고른것.slice()};
+      return;
+    }
     var td = e.target.closest('td[data-cell]');
     if(!td) return;
     if(e.shiftKey && 기준) 고른것 = 네모(기준, td.dataset.cell);
@@ -6450,6 +6499,78 @@ function 시트편집기(칸){
     고른것칠하기();
   });
   표.addEventListener('dblclick', function(){ if(기준) 수식칸.focus(); });
+
+  /* 끄는 동안 어디까지 채워지는지 점선으로 보여준다. 안 보여주면 놓고 나서야
+     알게 되는데, 그때는 이미 칸들이 덮인 뒤다. */
+  표.addEventListener('mousemove', function(e){
+    if(!끄는중) return;
+    var td = e.target.closest('td[data-cell]');
+    if(!td) return;
+    끄는중.대상 = 네모글(끄는중.칸들.concat([td.dataset.cell]));
+    var 목록 = 네모(끄는중.대상.split(':')[0], 끄는중.대상.split(':').pop());
+    표.querySelectorAll('td').forEach(function(x){
+      x.classList.toggle('filling', 목록.indexOf(x.dataset.cell) >= 0);
+    });
+  });
+  document.addEventListener('mouseup', function(){
+    if(!끄는중) return;
+    var 것 = 끄는중; 끄는중 = null;
+    표.querySelectorAll('td.filling').forEach(function(x){
+      x.classList.remove('filling');
+    });
+    if(것.대상) 채우기(것.원본, 것.대상);
+  });
+
+  /* 복사·붙여넣기와 Ctrl+D / Ctrl+R. 수식칸에 글을 치는 중이면 비켜 준다 —
+     거기서 Ctrl+C 는 글자를 복사하는 것이지 칸을 복사하는 게 아니다. */
+  var 복사한것 = '';
+  칸.addEventListener('keydown', function(e){
+    if(!(e.ctrlKey || e.metaKey) || !고른것.length) return;
+    var 곳 = e.target.tagName;
+    if(곳 === 'INPUT' || 곳 === 'TEXTAREA' || 곳 === 'SELECT') return;
+    var 키 = e.key.toLowerCase();
+    if(키 === 'c'){
+      복사한것 = 네모글(고른것);
+      /* 밖으로도 붙일 수 있게 글자로도 담는다 (엑셀처럼 탭으로 나눈다). */
+      if(navigator.clipboard){
+        var rs = 고른것.map(자리), 줄 = {};
+        rs.forEach(function(x, i){
+          (줄[x.r] = 줄[x.r] || []).push({c: x.c, a: 고른것[i]});
+        });
+        var 글 = Object.keys(줄).sort(function(a,b){return a-b;}).map(function(r){
+          return 줄[r].sort(function(a,b){return a.c-b.c;}).map(function(x){
+            var td = 칸태그(x.a);
+            return td ? td.textContent.trim() : '';
+          }).join('\t');
+        }).join('\n');
+        navigator.clipboard.writeText(글).catch(function(){});
+      }
+      return;
+    }
+    if(키 === 'v'){
+      if(!복사한것) return;
+      e.preventDefault();
+      var 원 = 복사한것.split(':'), 가 = 자리(원[0]), 나 = 자리(원.pop());
+      var 높이 = Math.abs(나.r - 가.r), 너비 = Math.abs(나.c - 가.c);
+      var 대상;
+      if(고른것.length > 1) 대상 = 네모글(고른것);   /* 고른 만큼 깐다 */
+      else {
+        var 자 = 자리(기준);
+        대상 = 네모글([기준, 주소(자.r + 높이, 자.c + 너비)]);
+      }
+      채우기(복사한것, 대상);
+      return;
+    }
+    if(키 === 'd' || 키 === 'r'){
+      e.preventDefault();
+      var 네 = 네모글(고른것).split(':');
+      if(네.length < 2) return;                  /* 한 칸이면 채울 것이 없다 */
+      var a = 자리(네[0]), b = 자리(네[1]);
+      var 원본 = 키 === 'd' ? 네모글([주소(a.r,a.c), 주소(a.r,b.c)])
+                          : 네모글([주소(a.r,a.c), 주소(b.r,a.c)]);
+      채우기(원본, 네모글(고른것));
+    }
+  });
 
   /* 글·수식이 바뀌면 값이 바뀐다 -> 서버에 다시 그려 달라고 한다. */
   function 글넣기(){
@@ -6464,7 +6585,9 @@ function 시트편집기(칸){
      그게 change 보다 먼저 나가는 때가 있다. 그러면 방금 친 글이 안 담긴
      옛 값이 그대로 저장돼 **조용히 사라진다** (실제로 그랬다 — 같은 순서로
      쳐도 어떤 칸은 저장되고 어떤 칸은 안 됐다).
-     자동완성 목록이 열려 있을 때는 비켜 준다. 그때 Enter 는 «고른다» 는 뜻이다. */
+     자동완성은 **Tab 으로만** 고른다. 그래서 Enter 는 목록이 열려 있어도
+     늘 «다 적었다» 는 뜻이다 — 자동완성 쪽이 목록을 닫고 비켜 주므로, 여기
+     올 때는 `fxdrop` 이 이미 없다. (그물로 한 번 더 본다.) */
   수식칸.addEventListener('keydown', function(e){
     if(e.key !== 'Enter' || document.getElementById('fxdrop')) return;
     e.preventDefault();
@@ -7137,6 +7260,10 @@ def _시트편집(b) -> str:
         + "<span class='sep'></span>"
         + 단추("행추가", "행 +") + 단추("행삭제", "행 −")
         + 단추("열추가", "열 +") + 단추("열삭제", "열 −")
+        + "<span class='sep'></span>"
+        + "<span class='muted'>고른 네모 오른쪽 아래 <b>■</b> 를 끌면 채웁니다"
+          " · <b>Ctrl+D</b> 아래로 · <b>Ctrl+R</b> 오른쪽 ·"
+          " <b>Ctrl+C/V</b> 복사·붙여넣기</span>"
         + "</div>"
     )
     return (
@@ -7145,6 +7272,10 @@ def _시트편집(b) -> str:
         f"<input type='hidden' name='id' value='{b.id}'>"
         f"<input type='hidden' class='sheetdata' name='sheet'"
         f" value='{html.escape(담긴것)}'>"
+        # 자동 채우기·붙여넣기. 브라우저는 «어디를 어디에» 만 채워 보내고,
+        # 수식의 칸 참조를 미는 일은 서버가 한다.
+        "<input type='hidden' class='fillfrom' name='채울원본' value=''>"
+        "<input type='hidden' class='fillto' name='채울대상' value=''>"
         f"<p><b>시트</b> "
         f"<input type='text' name='title' value='{html.escape(b.제목)}'"
         " placeholder='블록 제목' style='width:280px'></p>"
@@ -7160,7 +7291,11 @@ def _시트편집(b) -> str:
         + 경고 + 표
         + "<p class='muted'>칸을 누르면 고르고, <b>Shift+누르기</b> 로 여러 칸을"
           " 고릅니다. 색·굵기는 바로 칠해지고, <b>글·수식·병합·행열</b> 은 값이"
-          " 바뀌므로 그 자리에서 다시 계산합니다. 다 하고 <b>저장</b> 을 누르세요.</p>"
+          " 바뀌므로 그 자리에서 다시 계산합니다. 다 하고 <b>저장</b> 을 누르세요.<br>"
+          "채우기·복사는 엑셀과 같습니다 — <code>=SUM(A1:C1)</code> 을 한 줄"
+          " 아래로 채우면 <code>=SUM(A2:C2)</code> 가 됩니다. 안 밀리게 하려면"
+          " <b>$</b> 를 붙이세요(<code>=SUM($A$1:$C$1)</code>). 격자 밖으로"
+          " 나가면 <code>#참조!</code> 가 됩니다.</p>"
         "<p><button type='submit' name='끝' value='1'>이 블록 저장</button></form> "
         "<form method='post' action='/dash/block/move' style='display:inline'>"
         f"<input type='hidden' name='id' value='{b.id}'>"
@@ -7602,9 +7737,15 @@ _FXAC_JS = """
       e.preventDefault(); 고른것 = (고른것 + 1) % 후보.length; 표시();
     }else if(e.key === 'ArrowUp'){
       e.preventDefault(); 고른것 = (고른것 - 1 + 후보.length) % 후보.length; 표시();
-    }else if(e.key === 'Enter' || e.key === 'Tab'){
-      /* 목록이 열려 있는 동안 Enter 는 **폼을 보내지 않는다.** 고르는 중이다. */
+    }else if(e.key === 'Tab'){
+      /* **완성은 Tab 으로만 한다.** Enter 로도 완성하던 동안에는, 다 적고
+         저장하려고 Enter 를 쳤을 뿐인데 목록이 열려 있으면 엉뚱한 이름이
+         들어가 버렸다. Enter 는 «다 적었다», Tab 은 «골라 달라» 로 가른다. */
       e.preventDefault(); 넣기(고른것);
+    }else if(e.key === 'Enter'){
+      /* 목록을 닫기만 하고 **비켜 준다.** 그래야 칸의 Enter 처리(저장)가
+         이어서 돈다 — 그쪽은 `fxdrop` 이 없어야 움직인다. */
+      닫기();
     }else if(e.key === 'Escape'){
       e.preventDefault(); 닫기();
     }
@@ -8960,6 +9101,13 @@ class Handler(BaseHTTPRequestHandler):
                     들어온것 = {}
                 if not isinstance(들어온것, dict):
                     들어온것 = {}
+                # 자동 채우기·붙여넣기. 브라우저는 «어디를 어디에» 만 보내고,
+                # 수식의 칸 참조를 미는 일은 서버가 한다 — 규칙이 두 벌이면
+                # 화면에서 만든 수식과 계산하는 수식이 조용히 갈라진다.
+                원본 = (data.get("채울원본") or [""])[0].strip().upper()
+                대상 = (data.get("채울대상") or [""])[0].strip().upper()
+                if 원본 and 대상:
+                    들어온것 = 시트_채우기(들어온것, 원본, 대상)
                 설정 = {**b.설정, **시트_다듬기(들어온것)}
                 제목 = (data.get("title") or [""])[0]
                 boards.save_block(bid, 제목=제목, 설정=설정)
