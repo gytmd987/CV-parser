@@ -76,7 +76,8 @@ from ..ingestion.parsers import UnsupportedFormat, extract_text
 from .. import normalize as N
 from ..normalize import MULTI_SEP
 from ..schemas import (NAME_COLUMNS, TIER_COLUMN_PREFIX, 게재상태_ENUM,
-                       저자구분_ENUM, CVRecord, Paper, is_tier_venue)
+                       저자구분_ENUM, 특허상태_ENUM, 특허지역_ENUM,
+                       CVRecord, Paper, Patent, is_tier_venue)
 from ..export import build_sheet_xlsx, col_letter
 from ..sheet import SheetError
 from ..sheet import 계산 as 수식계산
@@ -3322,18 +3323,22 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
     공저자배지 = "<span class='muted'>공저자</span>"
     심사중배지 = "<span class='pill p-안본것'>심사중</span>"
 
-    def _고르기(이름: str, 값: str, 고를것: list[str], 빈칸: str = "") -> str:
+    # 논문과 특허는 **폼이 따로**다 (줄 번호가 서로 섞이면 안 된다). 두 표가
+    # 같은 칸 그리기를 쓰므로 폼 이름만 받는다.
+    def _고르기(이름: str, 값: str, 고를것: list[str], 빈칸: str = "",
+              폼: str = "paperform") -> str:
         opts = "".join(
             f"<option value='{html.escape(o)}'{' selected' if o == 값 else ''}>"
             f"{html.escape(o) or 빈칸}</option>" for o in 고를것)
-        return (f"<select form='paperform' name='{이름}'"
+        return (f"<select form='{폼}' name='{이름}'"
                 f" onchange='markDirty(this)'>{opts}</select>")
 
-    def _논문칸(이름: str, 값: str, 폭: str = "100%", 안내: str = "") -> str:
+    def _논문칸(이름: str, 값: str, 폭: str = "100%", 안내: str = "",
+             폼: str = "paperform") -> str:
         # 안내(placeholder)를 반드시 단다. 제목과 제출처가 한 칸에 위아래로
         # 놓이는데, 빈 칸이면 어느 쪽이 무엇인지 알 수가 없다.
         도움 = f" placeholder='{html.escape(안내)}'" if 안내 else ""
-        return (f"<input type='text' form='paperform' name='{이름}'"
+        return (f"<input type='text' form='{폼}' name='{이름}'"
                 f" value='{html.escape(값)}' style='width:{폭}'"
                 f" oninput='markDirty(this)'{도움}>")
 
@@ -3390,13 +3395,47 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
             + f"<td>{html.escape(v['등급'])}</td></tr>"
             for v in 논문보기
         )
-    특허행 = "".join(
-        f"<tr><td>{html.escape(pt.상태)}</td>"
-        f"<td title='{html.escape(pt.제목)}'>{html.escape(pt.제목) or '-'}</td>"
-        f"<td>{html.escape(pt.연도)}</td><td>{html.escape(pt.번호)}</td></tr>"
-        for pt in rec.특허
-    )
+    def _특허줄(n: int, pt: Patent | None) -> str:
+        """특허 한 줄. `pt` 가 None 이면 맨 아래 **추가용 빈 줄**이다."""
+        상태 = pt.상태 if pt else "등록"
+        국가 = pt.국가 if pt else ""
+        지역 = pt.국내해외 if pt else "불명"
+        지우기 = ("" if pt is None else
+                f"<label><input type='checkbox' form='patentform'"
+                f" name='특허del_{n}' value='1' onchange='markDirty(this)'>"
+                " 삭제</label>")
+        # 칸 이름에 «특허» 를 붙인다. 논문 표에도 `제목_1`·`국내해외_1` 이 있어서
+        # 안 붙이면 한 화면에 같은 이름이 두 벌 생긴다. 폼이 달라 서버는
+        # 헷갈리지 않지만, 화면을 짚어 보는 사람과 브라우저 시험이 헷갈린다.
+        ㄱ = lambda 이름, 값, 고를것: _고르기(f"특허{이름}_{n}", 값, 고를것,
+                                      폼="patentform")
+        ㅊ = lambda 이름, 값, 폭, 안내: _논문칸(f"특허{이름}_{n}", 값, 폭, 안내,
+                                        폼="patentform")
+        return (
+            f"<tr><td>{ㄱ('상태', 상태, list(특허상태_ENUM))}</td>"
+            f"<td>{ㅊ('국가', 국가, '90px', '한국·미국…')}</td>"
+            f"<td>{ㄱ('국내해외', 지역, list(특허지역_ENUM))}</td>"
+            f"<td>{ㅊ('제목', pt.제목 if pt else '', '100%', '특허 제목')}</td>"
+            f"<td>{ㅊ('연도', pt.연도 if pt else '', '70px', 'YYYY')}</td>"
+            f"<td>{ㅊ('번호', pt.번호 if pt else '', '140px', '등록·출원 번호')}</td>"
+            f"<td>{지우기}</td></tr>"
+        )
+
+    if 수정가능:
+        특허줄들 = [_특허줄(i, pt) for i, pt in enumerate(rec.특허, start=1)]
+        특허줄들.append(_특허줄(len(rec.특허) + 1, None))     # 추가용 빈 줄
+        특허행 = "".join(특허줄들)
+    else:
+        특허행 = "".join(
+            f"<tr><td>{html.escape(pt.상태)}</td>"
+            f"<td>{html.escape(pt.국가) or '-'}</td>"
+            f"<td>{html.escape(pt.국내해외)}</td>"
+            f"<td title='{html.escape(pt.제목)}'>{html.escape(pt.제목) or '-'}</td>"
+            f"<td>{html.escape(pt.연도)}</td><td>{html.escape(pt.번호)}</td></tr>"
+            for pt in rec.특허
+        )
     센것 = {**rec.논문_수(registry), **rec.특허_수()}
+    출원수 = rec.특허_출원_건수()
     심사중수 = sum(1 for v in 논문보기 if v["게재상태"] == "심사중")
     실적카드 = ""
     if 논문보기 or rec.특허 or 수정가능:
@@ -3407,7 +3446,12 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
                  + ("<th style='width:60px'></th>" if 수정가능 else "") + "</tr>")
         논문표 = ("<div class='scroll'><table data-name='논문'>"
                + 논문머리 + 논문행 + "</table></div>")
-        논문폼 = ""
+        특허머리 = ("<tr><th style='width:80px'>상태</th>"
+                 "<th style='width:100px'>국가</th>"
+                 "<th style='width:90px'>국내/해외</th><th>제목</th>"
+                 "<th style='width:80px'>연도</th><th style='width:150px'>번호</th>"
+                 + ("<th style='width:60px'></th>" if 수정가능 else "") + "</tr>")
+        논문폼 = 특허폼 = ""
         if 수정가능:
             # 논문은 **줄이 여럿인 목록**이라 지원자 정보 폼(saveform)과 따로
             # 받는다. 한 폼에 담으면 줄 번호와 항목 번호가 섞인다.
@@ -3420,21 +3464,36 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
                 "<span class='muted'>맨 아랫줄에 적으면 <b>새 논문</b>이 됩니다. "
                 "제출처를 비우면 그 줄은 저장되지 않습니다.</span></form>"
             )
+            특허폼 = (
+                "<form method='post' action='/candidate/patents' id='patentform'"
+                " class='mergebar'>"
+                f"<input type='hidden' name='id' value='{html.escape(지원자_ID)}'>"
+                f"<input type='hidden' name='끝' value='{len(rec.특허) + 1}'>"
+                "<button type='submit'>특허 목록 저장</button>"
+                "<span class='muted'>맨 아랫줄에 적으면 <b>새 특허</b>가 됩니다. "
+                "제목과 번호를 둘 다 비우면 그 줄은 저장되지 않습니다. "
+                "<b>국내/해외를 «불명» 으로 두면 개수에서 빠집니다.</b></span></form>"
+            )
         실적카드 = (
             "<div class='card'><h2>연구 실적 <span class='muted'>"
             f"저널 {센것['저널_수']}편(주저자 {센것['저널_주저자_수']}) · "
             f"학회 {센것['학회_수']}편(주저자 {센것['학회_주저자_수']}) · "
-            f"특허 등록 {센것['특허_등록_수']} / 출원 {센것['특허_출원_수']}"
+            f"특허 등록 국내 {센것['특허_등록_국내_수']} · "
+            f"해외 {센것['특허_등록_해외_수']}"
+            + (f" <span class='muted'>(출원 {출원수}건은 안 셈)</span>"
+               if 출원수 else "")
             + (f" · <b>심사중 {심사중수}편은 빼고 셈</b>" if 심사중수 else "")
             + "</span></h2>"
             + 논문폼
             + (논문표 if (논문보기 or 수정가능) else "")
-            + ("<h2 style='margin-top:14px'>특허</h2><div class='scroll'>"
-               "<table data-name='특허'><tr><th style='width:70px'>상태</th><th>제목</th>"
-               "<th style='width:60px'>연도</th><th>번호</th></tr>"
-               + 특허행 + "</table></div>" if rec.특허 else "")
-            + "<p class='muted'>표의 <b>저널_수 · 학회_수 · 특허_등록_수</b> 열은 "
+            + (("<h2 style='margin-top:14px'>특허</h2>" + 특허폼
+                + "<div class='scroll'><table data-name='특허'>" + 특허머리
+                + 특허행 + "</table></div>") if (rec.특허 or 수정가능) else "")
+            + "<p class='muted'>표의 <b>저널_수 · 학회_수 · "
+              "특허_등록_국내_수 · 특허_등록_해외_수</b> 열은 "
               "여기 있는 것을 셉니다 — <b>심사중 논문은 빼고</b> 셉니다. "
+              "특허는 <b>등록만</b> 세고, <b>같은 제목은 국내·해외 안에서 한 건</b>"
+              "으로 셉니다 (같은 발명을 미국·중국에 냈으면 해외 1건). "
               "학회·저널 구분과 등급은 "
               "<a href='/names?kind=" + urllib.parse.quote("학회·저널")
             + "'>명칭 관리</a>에서 판별한 값을 씁니다.</p></div>"
@@ -5967,7 +6026,7 @@ def _fields_page(me: User, error: str = "", msg: str = "") -> bytes:
     ["경력", "{경력_회사}/{직책}({기간:경력_시작~경력_종료})"],
     ["실적", "저널 {수:저널_수}편(주저자 {수:저널_주저자_수}) · "
             "학회 {수:학회_수}편(주저자 {수:학회_주저자_수}) · "
-            "특허 등록 {수:특허_등록_수}/출원 {수:특허_출원_수}"],
+            "특허 등록 국내 {수:특허_등록_국내_수}/해외 {수:특허_등록_해외_수}"],
     ["채용", "{부서} {과제} — {최종상태}"],
     ["매칭", "{매칭_과제} ({수:매칭_점수}점)"],
 ]
@@ -9443,6 +9502,63 @@ class Handler(BaseHTTPRequestHandler):
                              비고=요약)
                 return self._redirect(
                     f"{뒤로}&msg={urllib.parse.quote('논문 목록: ' + 요약)}#실적")
+            return self._redirect(
+                f"{뒤로}&msg={urllib.parse.quote('바뀐 내용이 없습니다.')}#실적")
+
+        if path == "/candidate/patents":
+            # 특허 목록 통째로 받기. LLM 이 국내/해외를 «불명» 으로 두면 등록
+            # 개수에서 빠지는데, 재분석 말고 그것을 고칠 길이 여기뿐이다.
+            if not can(me, "지원자_수정"):
+                return self._deny()
+            data = urllib.parse.parse_qs(
+                self._read_body().decode("utf-8", "replace"), keep_blank_values=True
+            )
+            cid = (data.get("id") or [""])[0]
+            뒤로 = f"/candidate?id={urllib.parse.quote(cid)}"
+            rec = store.get(cid)
+            if rec is None:
+                return self._redirect("/")
+            try:
+                끝 = int((data.get("끝") or ["0"])[0])
+            except ValueError:
+                끝 = 0
+
+            옛것 = list(rec.특허)
+            새목록: list[Patent] = []
+            고침 = 지움 = 더함 = 0
+            for i in range(1, 끝 + 1):
+                if (data.get(f"특허del_{i}") or [""])[0]:
+                    지움 += 1
+                    continue
+                한줄 = {칸: (data.get(f"특허{칸}_{i}") or [""])[0]
+                      for 칸 in ("제목", "상태", "연도", "번호", "국가", "국내해외")}
+                try:
+                    특허 = edit.validate_patent(한줄)
+                except ValidationError as exc:
+                    return self._redirect(
+                        f"{뒤로}&err={urllib.parse.quote(f'{i}번째 줄 — {exc}')}#실적")
+                if 특허 is None:          # 제목·번호가 다 빈 줄 (추가용 빈 줄)
+                    continue
+                옛줄 = 옛것[i - 1] if i <= len(옛것) else None
+                if 옛줄 is None:
+                    더함 += 1
+                elif 특허.model_dump() != 옛줄.model_dump():
+                    고침 += 1
+                새목록.append(특허)
+
+            if 고침 or 지움 or 더함:
+                rec.특허 = 새목록
+                store.save(rec)
+                요약 = " · ".join(
+                    x for x in (f"{고침}줄 고침" if 고침 else "",
+                                f"{더함}줄 추가" if 더함 else "",
+                                f"{지움}줄 삭제" if 지움 else "") if x)
+                # 논문과 같은 이유로 한 번 저장에 한 줄만 남긴다.
+                audit.record(me.아이디, "지원자", cid, 항목="특허",
+                             이전값=f"{len(옛것)}건", 새값=f"{len(새목록)}건",
+                             비고=요약)
+                return self._redirect(
+                    f"{뒤로}&msg={urllib.parse.quote('특허 목록: ' + 요약)}#실적")
             return self._redirect(
                 f"{뒤로}&msg={urllib.parse.quote('바뀐 내용이 없습니다.')}#실적")
 

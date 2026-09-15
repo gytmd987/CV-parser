@@ -109,7 +109,12 @@ DEFAULT_LONG_COLUMNS = ("경력_요약", "비고", "채용_비고")
 
 #: 한 번만 도는 이관을 적어 두는 자리 (`PRAGMA user_version`).
 #: 1 = 채용 쪽 `비고` 를 `채용_비고` 로 옮겼다 (지원자 쪽에 `비고` 가 새로 생겨서).
-SCHEMA_VERSION = 1
+#: 2 = 없어진 특허 열(`특허_등록_수`·`특허_출원_수`)의 표 설정을 지웠다.
+SCHEMA_VERSION = 2
+
+#: 열이 없어졌는데 `column_config` 에 설정이 남아 있으면, 나중에 누가 같은
+#: 이름으로 열을 새로 만들었을 때 그 옛 설정(숨김·순서)이 되살아난다.
+_GONE_COLUMNS = ("특허_등록_수", "특허_출원_수")
 
 SUPPORTED_SUFFIXES = {".pdf", ".docx", ".txt", ".md"}
 
@@ -158,6 +163,7 @@ class CandidateStore:
                 self._conn.execute(
                     f"ALTER TABLE column_config ADD COLUMN {col} {decl}")
         self._rename_recruit_note()
+        self._drop_gone_columns()
 
     def _rename_recruit_note(self) -> None:
         """채용 쪽 `비고` 열 설정을 `채용_비고` 로 옮긴다.
@@ -167,15 +173,32 @@ class CandidateStore:
 
         **딱 한 번만 돌아야 한다.** 두 번 돌면 그 사이에 사람이 새로 만든
         지원자 `비고` 설정까지 채용 쪽으로 끌어간다. `user_version` 으로 막는다.
+
+        판 번호를 **1 로 못 박는다.** `SCHEMA_VERSION` 을 보면, 판이 올라갈
+        때마다 이미 1 을 지난 DB 에서 이 이관이 다시 돈다.
         """
         판 = self._conn.execute("PRAGMA user_version").fetchone()[0]
-        if 판 >= SCHEMA_VERSION:
+        if 판 >= 1:
             return
         있는것 = {r["열이름"] for r in
                 self._conn.execute("SELECT 열이름 FROM column_config")}
         if "비고" in 있는것 and "채용_비고" not in 있는것:
             self._conn.execute(
                 "UPDATE column_config SET 열이름='채용_비고' WHERE 열이름='비고'")
+        self._conn.execute("PRAGMA user_version = 1")
+
+    def _drop_gone_columns(self) -> None:
+        """없어진 열의 표 설정을 치운다. **한 번만** 돈다.
+
+        특허 열이 등록/출원에서 등록의 국내/해외로 바뀌었다. 옛 이름의 설정이
+        남아 있어도 화면에는 안 나오지만, 누가 그 이름으로 추가 열을 만들면
+        숨김·순서가 저절로 따라붙어 «왜 이 열이 숨어 있지» 가 된다.
+        """
+        판 = self._conn.execute("PRAGMA user_version").fetchone()[0]
+        if 판 >= SCHEMA_VERSION:
+            return
+        for 이름 in _GONE_COLUMNS:
+            self._conn.execute("DELETE FROM column_config WHERE 열이름=?", (이름,))
         self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     # -- 원본 파일 ---------------------------------------------------------

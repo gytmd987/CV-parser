@@ -25,8 +25,11 @@ from .schemas import (
     석박통합_ENUM,
     저자구분_ENUM,
     학위상태_ENUM,
+    특허상태_ENUM,
+    특허지역_ENUM,
     현재_신분_ENUM,
     Paper,
+    Patent,
 )
 
 #: 논문 한 줄에서 목록 안의 값만 받는 칸들 (칸 이름 -> 고를 수 있는 값)
@@ -35,6 +38,12 @@ PAPER_CHOICES: dict[str, list[str]] = {
     "국내해외": ["국내", "해외", "불명"],
     "저자구분": list(저자구분_ENUM),
     "게재상태": list(게재상태_ENUM),
+}
+
+#: 특허 한 줄에서 목록 안의 값만 받는 칸들
+PATENT_CHOICES: dict[str, list[str]] = {
+    "상태": list(특허상태_ENUM),
+    "국내해외": list(특허지역_ENUM),
 }
 
 #: 수정할 수 없는 항목 (시스템이 관리한다)
@@ -398,6 +407,35 @@ def validate_paper(값들: dict) -> Paper | None:
 
     return Paper(제목=(값들.get("제목") or "").strip(), 제출처=제출처,
                  연도=연도, **고른것)
+
+
+def validate_patent(값들: dict) -> Patent | None:
+    """특허 한 줄을 검사해 `Patent` 로. 제목·번호가 둘 다 비었으면 None.
+
+    논문은 제출처를 기준으로 빈 줄을 버리는데, 특허에는 그런 칸이 없다. 특허를
+    가리키는 최소 정보는 **제목이나 번호**다 — 제목만 적은 줄도, 번호만 적은
+    줄도 실제로 있다. 둘 다 비면 화면 맨 아래의 추가용 빈 줄이므로 버린다.
+    """
+    제목 = (값들.get("제목") or "").strip()
+    번호 = (값들.get("번호") or "").strip()
+    if not 제목 and not 번호:
+        return None
+
+    연도 = (값들.get("연도") or "").strip()
+    if 연도 and not (len(연도) == 4 and 연도.isdigit()):
+        raise ValidationError(f"특허 연도는 4자리여야 합니다: {연도!r}")
+
+    고른것 = {}
+    for 칸, 고를수있는것 in PATENT_CHOICES.items():
+        값 = (값들.get(칸) or "").strip()
+        if 값 and 값 not in 고를수있는것:
+            raise ValidationError(
+                f"특허 '{칸}' 은 다음 중 하나여야 합니다: {', '.join(고를수있는것)}")
+        if 값:                 # 빈 값은 넘기지 않는다 — Patent 의 기본값이 서야 한다
+            고른것[칸] = 값
+
+    return Patent(제목=제목, 번호=번호, 연도=연도,
+                  국가=(값들.get("국가") or "").strip(), **고른것)
 
 
 # ---------------------------------------------------------------------------
