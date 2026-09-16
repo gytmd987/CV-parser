@@ -7254,7 +7254,9 @@ def _시트편집(b) -> str:
         + 단추("right", "≡ 오른쪽", "오른쪽 맞춤").replace(
             "data-sheet='right'", "data-sheet='정렬' value='right'")
         + "<span class='sep'></span>"
-        + 단추("병합", "병합", "고른 칸을 하나로 합칩니다")
+        + 단추("병합", "병합",
+             "고른 칸을 하나로 합칩니다. 덮인 자리도 같은 값이 됩니다 "
+             "(A1·A2 를 합치면 =A1 도 =A2 도 그 값입니다)")
         + 단추("병합해제", "병합 해제")
         + 단추("서식지우기", "서식 지우기", "글은 두고 색·굵기만 지웁니다")
         + "<span class='sep'></span>"
@@ -7295,7 +7297,11 @@ def _시트편집(b) -> str:
           "채우기·복사는 엑셀과 같습니다 — <code>=SUM(A1:C1)</code> 을 한 줄"
           " 아래로 채우면 <code>=SUM(A2:C2)</code> 가 됩니다. 안 밀리게 하려면"
           " <b>$</b> 를 붙이세요(<code>=SUM($A$1:$C$1)</code>). 격자 밖으로"
-          " 나가면 <code>#참조!</code> 가 됩니다.</p>"
+          " 나가면 <code>#참조!</code> 가 됩니다.<br>"
+          "<b>병합한 칸은 덮인 자리도 같은 값</b>입니다 — <code>A1</code>·"
+          "<code>A2</code> 를 합치면 <code>=A1</code> 도 <code>=A2</code> 도 그 "
+          "값입니다. 그래서 <code>=SUM(A1:A2)</code> 처럼 병합된 칸을 범위로 "
+          "묶으면 <b>그 값이 여러 번 더해집니다</b>(엑셀은 한 번만 셉니다).</p>"
         "<p><button type='submit' name='끝' value='1'>이 블록 저장</button></form> "
         "<form method='post' action='/dash/block/move' style='display:inline'>"
         f"<input type='hidden' name='id' value='{b.id}'>"

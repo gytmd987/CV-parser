@@ -1033,35 +1033,25 @@ class RenderedSheet:
 
 
 def render_sheet(b: Block, rows, 아는열: set[str] | None = None) -> RenderedSheet:
-    """시트를 계산한다. 덮인 칸은 내보내지 않는다 (병합된 칸의 왼쪽 위만 그린다)."""
-    from .sheet import 주소, 값들
+    """시트를 계산한다. 덮인 칸은 내보내지 않는다 (병합된 칸의 왼쪽 위만 그린다).
+
+    **덮인 자리를 세는 일은 `sheet.덮인칸` 하나가 한다.** 계산하는 쪽도 그것을
+    본다 — 두 벌로 두면 «그려지는 칸» 과 «값이 있는 칸» 이 조용히 갈라진다.
+    """
+    from .sheet import 값들, 덮인칸, 주소
 
     칸들 = b.시트칸
     행수, 열수 = b.시트행수, b.시트열수
-    계산값, 오류 = 값들(칸들, rows, 아는열)
-
-    덮인 = set()
-    for 주소글, 칸 in 칸들.items():
-        가로, 세로 = int(칸.get("가로병합", 1)), int(칸.get("세로병합", 1))
-        if 가로 <= 1 and 세로 <= 1:
-            continue
-        try:
-            from .sheet import 자리 as _자리
-            r, c = _자리(주소글)
-        except ValueError:
-            continue
-        for rr in range(r, min(r + 세로, 행수)):
-            for cc in range(c, min(c + 가로, 열수)):
-                if (rr, cc) != (r, c):
-                    덮인.add((rr, cc))
+    계산값, 오류 = 값들(칸들, rows, 아는열, 행수=행수, 열수=열수)
+    덮인 = set(덮인칸(칸들, 행수, 열수))
 
     나온행 = []
     for r in range(행수):
         줄 = []
         for c in range(열수):
-            if (r, c) in 덮인:
-                continue
             주소글 = 주소(r, c)
+            if 주소글 in 덮인:
+                continue
             칸 = 칸들.get(주소글) or {}
             줄.append((주소글, 계산값.get(주소글, ""), 시트_칸스타일(칸),
                       int(칸.get("가로병합", 1)), int(칸.get("세로병합", 1))))

@@ -416,7 +416,36 @@ def 계산(수식: str, rows, 아는열=None, 값찾기=None) -> tuple[str, obje
     return 값, 값
 
 
-def 값들(칸들: dict, rows, 아는열=None) -> tuple[dict[str, str], list[str]]:
+def 덮인칸(칸들: dict, 행수: int = MAX_ROWS,
+        열수: int = MAX_COLS) -> dict[str, str]:
+    """병합에 **덮인 칸 -> 주인 칸**. 병합이 없으면 빈 묶음.
+
+    `A1` 과 `A2` 를 합치면 격자에는 칸 하나만 그려지지만, 수식에서는 둘 다
+    **그 값**을 가리켜야 한다. 안 그러면 `=A1` 은 값이 나오고 `=A2` 는 빈칸이
+    나와서, 보이는 것과 가리키는 것이 어긋난다.
+
+    그리는 쪽(`dashboards.render_sheet`)과 계산하는 쪽이 **같은 이것**을 본다.
+    두 벌로 두면 «그려지는 칸» 과 «값이 있는 칸» 이 조용히 갈라진다.
+    """
+    나온것: dict[str, str] = {}
+    for 주소글, 칸 in (칸들 or {}).items():
+        가로, 세로 = int((칸 or {}).get("가로병합", 1) or 1), \
+                   int((칸 or {}).get("세로병합", 1) or 1)
+        if 가로 <= 1 and 세로 <= 1:
+            continue
+        try:
+            r, c = 자리(주소글)
+        except ValueError:
+            continue
+        for rr in range(r, min(r + 세로, 행수)):
+            for cc in range(c, min(c + 가로, 열수)):
+                if (rr, cc) != (r, c):
+                    나온것[주소(rr, cc)] = 주소글
+    return 나온것
+
+
+def 값들(칸들: dict, rows, 아는열=None, *, 행수: int = MAX_ROWS,
+       열수: int = MAX_COLS) -> tuple[dict[str, str], list[str]]:
     """모든 칸을 계산한다. ({주소: 보일 값}, 오류 목록)
 
     칸을 미리 줄 세우지 않는다. **필요할 때 계산하고 기억한다**(memo). 계산 중인
@@ -424,7 +453,11 @@ def 값들(칸들: dict, rows, 아는열=None) -> tuple[dict[str, str], list[str
 
     틀린 칸은 `?` 를 두고 무엇이 틀렸는지 따로 모아 돌려준다. 조용히 0 을
     띄우면 아무도 못 알아챈다.
+
+    **병합된 칸은 덮인 자리도 같은 값이다** — `A1`·`A2` 를 합쳐 «abc» 를 적으면
+    `=A1` 도 `=A2` 도 abc 다.
     """
+    덮인 = 덮인칸(칸들, 행수, 열수)
     결과: dict[str, str] = {}
     오류: list[str] = []
     도는중: list[str] = []
@@ -434,6 +467,9 @@ def 값들(칸들: dict, rows, 아는열=None) -> tuple[dict[str, str], list[str
     실패: dict[str, str] = {}
 
     def 한칸(주소글: str) -> str:
+        # 병합에 덮인 자리는 **주인 칸을 가리킨다.** 여기서 갈아 끼우면
+        # 순환 참조 검사도 저절로 따라온다 (주인 칸을 계산하는 중이면 걸린다).
+        주소글 = 덮인.get(주소글, 주소글)
         if 주소글 in 실패:
             raise SheetError(f"{주소글} 칸을 계산하지 못했습니다")
         if 주소글 in 결과:
