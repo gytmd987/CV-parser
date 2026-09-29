@@ -154,9 +154,13 @@ def test_수식칸의_Enter_를_우리가_잡는다():
     from cvtool.web.app import _SHEET_JS
 
     assert "function 글넣기()" in _SHEET_JS
-    assert "수식칸.addEventListener('change', 글넣기)" in _SHEET_JS
-    assert "e.key !== 'Enter' || document.getElementById('fxdrop')" in _SHEET_JS
-    assert "e.preventDefault()" in _SHEET_JS
+    # Enter 는 우리가 잡아서 적은 것을 넣는다. 목록이 떠 있으면 비켜 준다.
+    assert "if(e.key === 'Enter' && !e.altKey){" in _SHEET_JS
+    assert "if(document.getElementById('fxdrop')) return;" in _SHEET_JS
+    assert "e.preventDefault(); 글넣기();" in _SHEET_JS
+    # 저장 단추로 폼이 나갈 때도 적던 글이 먼저 들어간다.
+    assert "폼.addEventListener('submit', function(){ if(적는중인가()) 글넣기(); 담기(); });" \
+        in _SHEET_JS
 
 
 def test_숫자만_친_것은_자동완성하지_않는다():

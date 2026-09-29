@@ -61,6 +61,12 @@ SHEET_MAX_COLS = 26
 SHEET_FONTS = ("기본", "고딕", "명조", "고정폭")
 SHEET_ALIGNS = ("left", "center", "right")
 SHEET_MIN_SIZE, SHEET_MAX_SIZE = 8, 48
+#: 테두리 선 모양. 칸마다 네 변(위·아래·왼쪽·오른쪽)을 따로 정한다.
+SHEET_BORDER_STYLES = ("얇게", "굵게", "점선", "이중")
+SHEET_BORDER_SIDES = ("위", "아래", "왼쪽", "오른쪽")
+_선CSS = {"얇게": "1px solid", "굵게": "2px solid", "점선": "1px dashed",
+         "이중": "3px double"}
+_변CSS = {"위": "top", "아래": "bottom", "왼쪽": "left", "오른쪽": "right"}
 
 
 def _사이(값, 작은: int, 큰: int, 기본: int) -> int:
@@ -123,6 +129,15 @@ class Block:
         """{`1`: px}"""
         담긴것 = self.설정.get("시트행높이")
         return 담긴것 if isinstance(담긴것, dict) else {}
+
+    @property
+    def 시트격자숨김(self) -> bool:
+        """보기 화면에서 연한 격자선과 A·B·1·2 머리글을 숨긴다.
+
+        보고서처럼 꾸민 시트는 **내가 그은 테두리만** 보여야 읽힌다. 편집 화면은
+        늘 격자를 보여준다 (칸을 골라야 하니까).
+        """
+        return bool(self.설정.get("격자숨김"))
 
     # -- 축 표 ------------------------------------------------------------
     @property
@@ -278,6 +293,29 @@ class Block:
         """누구를 보여줄지. `=LIST(...)` 와 같은 조건 문법."""
         return self.설정.get("대상") or "=LIST(지원자, 열=지원자_ID)"
 
+    @property
+    def 프로필최대(self) -> int:
+        """최대 몇 명까지 그릴지. 0 이면 전부."""
+        try:
+            return max(0, int(self.설정.get("최대") or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    @property
+    def 프로필펼침(self) -> int:
+        """처음부터 펼쳐 둘 사람 수. 나머지는 이름 한 줄로 접힌다.
+
+        200명이 전부 펼쳐지면 화면이 50장 길이가 된다. 설정이 없던 옛 블록도
+        이 기본값(5명)을 따른다.
+        """
+        값 = self.설정.get("펼침")
+        if 값 in (None, ""):
+            return 5
+        try:
+            return max(0, int(값))
+        except (TypeError, ValueError):
+            return 5
+
 
 #: 대시보드 폭. 표가 넓으면 화면을 다 쓰고 싶고, 글이 많으면 좁은 게 읽기 좋다.
 WIDTHS = ("보통", "넓게", "좁게")
@@ -296,6 +334,10 @@ class Dashboard:
     만든일시: str
     수정일시: str
     너비: str = ""
+    #: 휴지통 — 비어 있으면 살아 있는 대시보드다.
+    지운일시: str = ""
+    지운이: str = ""
+    지운이름: str = ""
 
     @property
     def 폭(self) -> str:
@@ -314,6 +356,14 @@ class DashboardStore:
         있는열 = {r["name"] for r in self._conn.execute("PRAGMA table_info(dashboards)")}
         if "너비" not in 있는열:
             self._conn.execute("ALTER TABLE dashboards ADD COLUMN 너비 TEXT DEFAULT ''")
+        # 휴지통. 지워도 바로 없애지 않는다 — 대시보드 하나에 표 수십 개를 꾸며
+        # 두었다가 잘못 눌러 날리면 되돌릴 길이 없었다.
+        for 열 in ("지운일시", "지운이", "지운이름"):
+            if 열 not in 있는열:
+                self._conn.execute(f"ALTER TABLE dashboards ADD COLUMN {열} TEXT DEFAULT ''")
+        블록열 = {r["name"] for r in self._conn.execute("PRAGMA table_info(blocks)")}
+        if "지운일시" not in 블록열:
+            self._conn.execute("ALTER TABLE blocks ADD COLUMN 지운일시 TEXT DEFAULT ''")
         self._rename_recruit_note()
         self._conn.commit()
         for suffix in ("", "-wal", "-shm"):
@@ -386,12 +436,19 @@ class DashboardStore:
 
     def all(self) -> list[Dashboard]:
         return [Dashboard(**dict(r)) for r in self._conn.execute(
-            "SELECT * FROM dashboards ORDER BY 이름"
+            "SELECT * FROM dashboards WHERE 지운일시='' ORDER BY 이름"
         )]
 
-    def get(self, did: int) -> Dashboard | None:
+    def trash(self) -> list[Dashboard]:
+        """휴지통에 든 대시보드. 최근에 지운 것부터."""
+        return [Dashboard(**dict(r)) for r in self._conn.execute(
+            "SELECT * FROM dashboards WHERE 지운일시<>'' ORDER BY 지운일시 DESC"
+        )]
+
+    def get(self, did: int, *, 지운것도: bool = False) -> Dashboard | None:
         row = self._conn.execute(
-            "SELECT * FROM dashboards WHERE id=?", (did,)
+            "SELECT * FROM dashboards WHERE id=?"
+            + ("" if 지운것도 else " AND 지운일시=''"), (did,)
         ).fetchone()
         return Dashboard(**dict(row)) if row else None
 
@@ -425,14 +482,51 @@ class DashboardStore:
         self._conn.commit()
 
     @atomic
-    def delete(self, did: int) -> str:
+    def delete(self, did: int, 누가: str = "") -> str:
+        """휴지통으로 보낸다. 블록은 그대로 두어 되살리면 전부 돌아온다.
+
+        이름은 비켜 준다 (`이름 ⌫시각`) — 이름이 겹치면 안 되는데, 지운 것 때문에
+        같은 이름으로 새로 못 만들면 이상하다. 원래 이름은 `지운이름` 에 둔다.
+        """
         d = self.get(did)
         if d is None:
+            return ""
+        지금 = now_kst().strftime("%Y-%m-%d %H:%M:%S")
+        self._conn.execute(
+            "UPDATE dashboards SET 지운일시=?, 지운이=?, 지운이름=?, 이름=? WHERE id=?",
+            (지금, 누가, d.이름, f"{d.이름} ⌫{지금}", did))
+        self._conn.commit()
+        return d.이름
+
+    @atomic
+    def restore(self, did: int) -> str:
+        """휴지통에서 되살린다. 그사이 같은 이름이 생겼으면 «(되살림)» 을 붙인다."""
+        d = self.get(did, 지운것도=True)
+        if d is None or not d.지운일시:
+            return ""
+        이름 = d.지운이름 or d.이름
+        if self.by_name(이름):
+            이름 = f"{이름} (되살림)"
+            n = 2
+            while self.by_name(이름):
+                이름 = f"{d.지운이름} (되살림 {n})"
+                n += 1
+        self._conn.execute(
+            "UPDATE dashboards SET 지운일시='', 지운이='', 지운이름='', 이름=? WHERE id=?",
+            (이름, did))
+        self._conn.commit()
+        return 이름
+
+    @atomic
+    def purge(self, did: int) -> str:
+        """휴지통에서 **완전히** 지운다. 되돌릴 수 없다."""
+        d = self.get(did, 지운것도=True)
+        if d is None or not d.지운일시:
             return ""
         self._conn.execute("DELETE FROM blocks WHERE dashboard_id=?", (did,))
         self._conn.execute("DELETE FROM dashboards WHERE id=?", (did,))
         self._conn.commit()
-        return d.이름
+        return d.지운이름 or d.이름
 
     def copy(self, did: int, 새이름: str, 만든이: str = "") -> int:
         """블록까지 통째로 복제한다. 비슷한 대시보드를 여럿 만들 때 쓴다."""
@@ -511,13 +605,35 @@ class DashboardStore:
 
     def blocks(self, dashboard_id: int) -> list[Block]:
         return [self._row(r) for r in self._conn.execute(
-            "SELECT * FROM blocks WHERE dashboard_id=? ORDER BY 순서, id",
+            "SELECT * FROM blocks WHERE dashboard_id=? AND 지운일시=''"
+            " ORDER BY 순서, id",
             (dashboard_id,),
         )]
 
-    def block(self, bid: int) -> Block | None:
-        row = self._conn.execute("SELECT * FROM blocks WHERE id=?", (bid,)).fetchone()
+    def deleted_blocks(self, dashboard_id: int) -> list[tuple[Block, str]]:
+        """지운 블록과 지운 때. 최근에 지운 것부터."""
+        return [(self._row(r), r["지운일시"]) for r in self._conn.execute(
+            "SELECT * FROM blocks WHERE dashboard_id=? AND 지운일시<>''"
+            " ORDER BY 지운일시 DESC", (dashboard_id,))]
+
+    def block(self, bid: int, *, 지운것도: bool = False) -> Block | None:
+        row = self._conn.execute(
+            "SELECT * FROM blocks WHERE id=?" + ("" if 지운것도 else " AND 지운일시=''"),
+            (bid,)).fetchone()
         return self._row(row) if row else None
+
+    def restore_block(self, bid: int) -> int:
+        """지운 블록을 되살린다 (맨 아래로). 대시보드 id, 없으면 0."""
+        b = self.block(bid, 지운것도=True)
+        if b is None:
+            return 0
+        순서 = self._conn.execute(
+            "SELECT COALESCE(MAX(순서), 0) + 1 AS n FROM blocks"
+            " WHERE dashboard_id=? AND 지운일시=''", (b.dashboard_id,)).fetchone()["n"]
+        self._conn.execute("UPDATE blocks SET 지운일시='', 순서=? WHERE id=?", (순서, bid))
+        self._touch(b.dashboard_id)
+        self._conn.commit()
+        return b.dashboard_id
 
     def save_block(self, bid: int, *, 제목: str | None = None,
                    설정: dict | None = None) -> None:
@@ -552,7 +668,9 @@ class DashboardStore:
         b = self.block(bid)
         if b is None:
             return ""
-        self._conn.execute("DELETE FROM blocks WHERE id=?", (bid,))
+        # 휴지통으로. 편집 화면 아래 «지운 블록» 에서 되살린다.
+        self._conn.execute("UPDATE blocks SET 지운일시=? WHERE id=?",
+                           (now_kst().strftime("%Y-%m-%d %H:%M:%S"), bid))
         self._touch(b.dashboard_id)
         self._conn.commit()
         return b.제목 or b.종류
@@ -608,6 +726,10 @@ class RenderedProfile:
     제목: str
     사람: list[tuple[str, list[tuple[str, str]]]] = field(default_factory=list)
     오류: list[str] = field(default_factory=list)
+    #: 조건에 맞은 사람 수 (최대로 자르기 전)
+    전체: int = 0
+    #: 사람마다의 지원자_ID (`사람` 과 같은 순서)
+    ids: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -712,11 +834,11 @@ def render_list(b: Block, rows, 아는열: set[str] | None = None) -> RenderedLi
         칸색.append(칸스타일)
 
         칸들 = []
-        for 머리, 식, _폭 in 열들:
+        for 열번호, (머리, 식, _폭) in enumerate(열들, start=1):
             if not expr.is_formula(식):
                 칸들.append(식)                  # 그냥 글자는 그대로
                 continue
-            보임, 잘못 = expr.render(식, 값들)
+            보임, 잘못 = expr.render(식, {**값들, expr.열번호_키: 열번호})
             if 잘못:
                 칸들.append("?")
                 본오류.add(f"'{머리 or 식}' → {잘못}")
@@ -834,8 +956,10 @@ def render_profile(b: Block, rows, 값찾기, 아는열: set[str] | None = None
 
     from . import expr
 
-    사람 = []
-    for 번호, cid in enumerate(ids if isinstance(ids, list) else [], start=1):
+    사람, 누구 = [], []
+    ids = ids if isinstance(ids, list) else []
+    최대 = b.프로필최대
+    for 번호, cid in enumerate(ids[:최대] if 최대 else ids, start=1):
         값들 = 값찾기(cid)
         if not 값들:
             continue
@@ -844,13 +968,14 @@ def render_profile(b: Block, rows, 값찾기, 아는열: set[str] | None = None
         줄들 = P.render_rows(b.줄틀, 값들)
         if 머리 or 줄들:
             사람.append((머리 or cid, 줄들))
+            누구.append(cid)
     if 아는열 is not None:
         쓴열 = {c for _라벨, 틀 in b.줄틀 for c in P.columns(틀)}
         쓴열 |= set(P.columns(b.머리틀))
         모르는 = sorted(c for c in 쓴열 if c not in 아는열)
         if 모르는:
             오류.append("표에 없는 열입니다: " + ", ".join(모르는))
-    return RenderedProfile(제목=b.제목, 사람=사람, 오류=오류)
+    return RenderedProfile(제목=b.제목, 사람=사람, 오류=오류, 전체=len(ids), ids=누구)
 
 
 # ---------------------------------------------------------------------------
@@ -898,6 +1023,16 @@ def 시트_다듬기(들어온것: dict) -> dict:
             남길것["글꼴"] = str(값.get("글꼴"))
         if str(값.get("정렬") or "") in SHEET_ALIGNS:
             남길것["정렬"] = str(값.get("정렬"))
+        # 테두리 — 변마다 정해진 모양만. 색은 #rrggbb 만 (style 속성에 들어간다).
+        테 = 값.get("테두리")
+        if isinstance(테, dict):
+            변들 = {변: str(테.get(변)) for 변 in SHEET_BORDER_SIDES
+                  if str(테.get(변) or "") in SHEET_BORDER_STYLES}
+            if 변들:
+                남길것["테두리"] = 변들
+                색 = str(값.get("테두리색") or "").strip()
+                if re.fullmatch(r"#[0-9a-fA-F]{6}", 색):
+                    남길것["테두리색"] = 색
         # 병합은 격자를 벗어나지 않게 자른다. 1 은 '안 합침' 이라 안 담는다.
         가로 = _사이(값.get("가로병합"), 1, 열수 - c, 1)
         세로 = _사이(값.get("세로병합"), 1, 행수 - r, 1)
@@ -921,6 +1056,7 @@ def 시트_다듬기(들어온것: dict) -> dict:
     return {
         "행수": 행수,
         "열수": 열수,
+        "격자숨김": bool((들어온것 or {}).get("격자숨김")),
         "시트칸": 칸들,
         "시트열너비": 크기묶음("열너비", lambda k: re.fullmatch(r"[A-Za-z]{1,2}", k)),
         "시트행높이": 크기묶음("행높이", lambda k: k.isdigit()),
@@ -1006,7 +1142,94 @@ def 시트_칸스타일(칸: dict) -> str:
         조각.append(f"font-family:{_글꼴스택[글꼴]}")
     if 칸.get("정렬"):
         조각.append(f"text-align:{칸['정렬']}")
+    테 = 칸.get("테두리") or {}
+    if isinstance(테, dict):
+        색 = 칸.get("테두리색") or "#222222"
+        for 변, 모양 in 테.items():
+            if 변 in _변CSS and 모양 in _선CSS:
+                조각.append(f"border-{_변CSS[변]}:{_선CSS[모양]} {색}")
     return ";".join(x for x in 조각 if x)
+
+
+def 시트_행열(들어온것: dict, 무엇: str, 위치: int, 개수: int = 1) -> dict:
+    """행·열을 **그 자리에** 끼우거나 뺀다 (엑셀의 «삽입»·«삭제»).
+
+    `무엇`: "행삽입" "행삭제" "열삽입" "열삭제". `위치` 는 0-based.
+    칸·병합·너비·높이가 따라 옮겨지고, **수식의 칸 참조도 같이 밀린다**
+    (`sheet.참조밀기`). 뺀 줄을 가리키던 참조는 `#참조!` 가 된다 — 조용히
+    옆 칸을 가리키게 두면 아무도 틀린 줄 모른다.
+    """
+    from .sheet import 자리, 주소, 참조밀기
+
+    행수 = _사이((들어온것 or {}).get("행수"), 1, SHEET_MAX_ROWS, 10)
+    열수 = _사이((들어온것 or {}).get("열수"), 1, SHEET_MAX_COLS, 6)
+    축 = "행" if 무엇.startswith("행") else "열"
+    끼움 = 무엇.endswith("삽입")
+    개수 = max(1, int(개수 or 1))
+    한도 = 행수 if 축 == "행" else 열수
+    위치 = max(0, min(int(위치), 한도 - (0 if 끼움 else 1)))
+    if not 끼움:
+        개수 = min(개수, 한도 - 위치)
+        if 한도 - 개수 < 1:
+            return 들어온것                   # 마지막 한 줄은 못 뺀다
+    차 = 개수 if 끼움 else -개수
+    새행수 = min(SHEET_MAX_ROWS, 행수 + 차) if 축 == "행" else 행수
+    새열수 = min(SHEET_MAX_COLS, 열수 + 차) if 축 == "열" else 열수
+
+    새칸: dict = {}
+    for 주소글, 칸 in ((들어온것 or {}).get("칸") or {}).items():
+        try:
+            r, c = 자리(주소글)
+        except ValueError:
+            continue
+        i = r if 축 == "행" else c
+        if not 끼움 and 위치 <= i < 위치 + 개수:
+            continue                          # 뺀 줄의 칸
+        if i >= 위치:
+            i += 차
+        r, c = (i, c) if 축 == "행" else (r, i)
+        if not (0 <= r < 새행수 and 0 <= c < 새열수):
+            continue
+        칸 = dict(칸 or {})
+        if 칸.get("글"):
+            칸["글"] = 참조밀기(칸["글"], 축, 위치, 차, 행수=새행수, 열수=새열수)
+        # 병합이 끼운·뺀 자리를 가로지르면 그만큼 늘이고 줄인다 (엑셀과 같다).
+        병합키 = "세로병합" if 축 == "행" else "가로병합"
+        원자리 = (자리(주소글)[0] if 축 == "행" else 자리(주소글)[1])
+        폭 = int(칸.get(병합키, 1) or 1)
+        if 폭 > 1:
+            if 끼움 and 원자리 < 위치 < 원자리 + 폭:
+                폭 += 개수
+            elif not 끼움:
+                겹침 = max(0, min(원자리 + 폭, 위치 + 개수) - max(원자리, 위치))
+                폭 -= 겹침
+            if 폭 > 1:
+                칸[병합키] = 폭
+            else:
+                칸.pop(병합키, None)
+        새칸[주소(r, c)] = 칸
+
+    def 크기옮기기(묶음: dict, 열쇠가행: bool) -> dict:
+        from .xlsx_read import col_index
+        from .export import col_letter
+        나온것 = {}
+        for k, v in (묶음 or {}).items():
+            i = int(k) - 1 if 열쇠가행 else col_index(str(k).upper())
+            if not 끼움 and 위치 <= i < 위치 + 개수:
+                continue
+            if i >= 위치:
+                i += 차
+            if i < 0:
+                continue
+            나온것[str(i + 1) if 열쇠가행 else col_letter(i)] = v
+        return 나온것
+
+    나온것 = {**(들어온것 or {}), "행수": 새행수, "열수": 새열수, "칸": 새칸}
+    if 축 == "행":
+        나온것["행높이"] = 크기옮기기((들어온것 or {}).get("행높이"), True)
+    else:
+        나온것["열너비"] = 크기옮기기((들어온것 or {}).get("열너비"), False)
+    return 나온것
 
 
 #: 폐쇄망이라 웹폰트를 못 받는다. 깔려 있을 만한 것으로만 고른다.

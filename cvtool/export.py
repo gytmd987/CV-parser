@@ -209,7 +209,9 @@ def build_sheet_xlsx(결과, 이름: str = "시트") -> bytes:
     """
     글꼴들: list[tuple] = [("", 11, False, False, False, "")]   # 0번은 기본
     채움들: list[str] = [""]                                     # 0번은 '안 칠함'
-    모양들: list[tuple] = [(0, 0, "")]                           # (글꼴, 채움, 정렬)
+    모양들: list[tuple] = [(0, 0, "", 1)]                        # (글꼴, 채움, 정렬, 테두리)
+    # 0 = 테두리 없음, 1 = 연한 격자(예전 기본). 칸에 그은 테두리는 2번부터.
+    테두리들: list = [None, "격자"]
 
     def 모양번호(칸: dict) -> int:
         글꼴 = (_시트_글꼴.get(칸.get("글꼴") or "", ""),
@@ -221,7 +223,15 @@ def build_sheet_xlsx(결과, 이름: str = "시트") -> bytes:
         채움 = 칸.get("배경") or ""
         if 채움 not in 채움들:
             채움들.append(채움)
-        모양 = (글꼴들.index(글꼴), 채움들.index(채움), 칸.get("정렬") or "")
+        테 = 칸.get("테두리") or {}
+        if 테:
+            선 = (tuple(sorted(테.items())), 칸.get("테두리색") or "#222222")
+            if 선 not in 테두리들:
+                테두리들.append(선)
+            테번호 = 테두리들.index(선)
+        else:
+            테번호 = 1
+        모양 = (글꼴들.index(글꼴), 채움들.index(채움), 칸.get("정렬") or "", 테번호)
         if 모양 not in 모양들:
             모양들.append(모양)
         return 모양들.index(모양)
@@ -252,9 +262,27 @@ def build_sheet_xlsx(결과, 이름: str = "시트") -> bytes:
                 f'<fgColor rgb="{_argb(색)}"/><bgColor indexed="64"/>'
                 f"</patternFill></fill>")
 
+    _엑셀선 = {"얇게": "thin", "굵게": "medium", "점선": "dashed", "이중": "double"}
+
+    def 테두리XML(선) -> str:
+        if 선 is None:
+            return '<border><left/><right/><top/><bottom/><diagonal/></border>'
+        if 선 == "격자":
+            return ('<border><left style="thin"><color rgb="FFD6DBE3"/></left>'
+                    '<right style="thin"><color rgb="FFD6DBE3"/></right>'
+                    '<top style="thin"><color rgb="FFD6DBE3"/></top>'
+                    '<bottom style="thin"><color rgb="FFD6DBE3"/></bottom><diagonal/></border>')
+        변들, 색 = dict(선[0]), 선[1]
+        속 = ""
+        for 변, 태그 in (("왼쪽", "left"), ("오른쪽", "right"), ("위", "top"), ("아래", "bottom")):
+            모양 = _엑셀선.get(변들.get(변, ""))
+            속 += (f'<{태그} style="{모양}"><color rgb="{_argb(색)}"/></{태그}>'
+                  if 모양 else f"<{태그}/>")
+        return f"<border>{속}<diagonal/></border>"
+
     def 모양XML(m) -> str:
-        f, fl, 정렬 = m
-        속성 = f'numFmtId="0" fontId="{f}" fillId="{fl}" borderId="1" xfId="0"'
+        f, fl, 정렬, 테 = m
+        속성 = f'numFmtId="0" fontId="{f}" fillId="{fl}" borderId="{테}" xfId="0"'
         속성 += ' applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"'
         맞춤 = f' horizontal="{정렬}"' if 정렬 else ""
         return (f"<xf {속성}><alignment{맞춤} vertical=\"center\""
@@ -266,18 +294,15 @@ def build_sheet_xlsx(결과, 이름: str = "시트") -> bytes:
     for 색 in 채움들[1:]:
         채움자리[색] = len(채움XML목록)
         채움XML목록.append(채움XML(색))
-    모양들 = [(f, 채움자리[채움들[fl]], a) for f, fl, a in 모양들]
+    모양들 = [(f, 채움자리[채움들[fl]], a, t) for f, fl, a, t in 모양들]
 
     styles = (
         '<?xml version="1.0" encoding="UTF-8"?>'
         '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
         f'<fonts count="{len(글꼴들)}">' + "".join(글꼴XML(f) for f in 글꼴들) + "</fonts>"
         f'<fills count="{len(채움XML목록)}">' + "".join(채움XML목록) + "</fills>"
-        '<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border>'
-        '<border><left style="thin"><color rgb="FFD6DBE3"/></left>'
-        '<right style="thin"><color rgb="FFD6DBE3"/></right>'
-        '<top style="thin"><color rgb="FFD6DBE3"/></top>'
-        '<bottom style="thin"><color rgb="FFD6DBE3"/></bottom><diagonal/></border></borders>'
+        f'<borders count="{len(테두리들)}">' + "".join(테두리XML(t) for t in 테두리들)
+        + "</borders>"
         '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
         f'<cellXfs count="{len(모양들)}">' + "".join(모양XML(m) for m in 모양들) + "</cellXfs>"
         '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'

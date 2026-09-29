@@ -42,33 +42,10 @@ _HOLE_SEP_RE = re.compile(
     r"\s*[,/·|]\s*" + _HOLE + r"|" + _HOLE + r"\s*[,/·|]\s*"
 )
 
-#: 다니는 중을 뜻하는 표시
-_ONGOING = ("재직중", "재직 중", "현재", "present", "current", "now")
-
-
-def _yy_m(ym: str) -> str:
-    """`202602` → `'26.2`. 연도만 있으면 `'26`. 못 읽으면 원문 그대로."""
-    글 = re.sub(r"\D", "", str(ym or ""))
-    if len(글) >= 6:
-        연, 월 = 글[:4], int(글[4:6] or 0)
-        return f"'{연[2:]}.{월}" if 1 <= 월 <= 12 else f"'{연[2:]}"
-    if len(글) == 4:
-        return f"'{글[2:]}"
-    return str(ym or "").strip()
-
-
-def _period(시작: str, 종료: str) -> str:
-    """`'22.2~'26.2`. 다니는 중이면 `'26.5~현재`. 둘 다 비면 빈 문자열."""
-    s = _yy_m(시작)
-    끝글 = str(종료 or "").strip()
-    e = "현재" if 끝글.lower() in _ONGOING else _yy_m(끝글)
-    if s and e:
-        return f"{s}~{e}"
-    if s:
-        return f"{s}~"
-    if e:
-        return f"~{e}"
-    return ""
+#: 날짜 조각은 수식 쪽(`PERIOD`)과 **같은 함수**를 쓴다. 두 벌이면 틀과 수식의
+#: 기간 표기가 조용히 갈라진다.
+_yy_m = expr.년월글
+_period = expr.기간글
 
 
 def _slot_value(안: str, 값들: dict[str, str]) -> tuple[str, bool]:

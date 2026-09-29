@@ -49,6 +49,7 @@ GET_정책 = {
     "/recruit/columns": 거부,
     "/dash": 거부,
     "/dash/view": 거부,
+    "/dash/who": 거부,
     "/dash/sheet.xlsx": 거부,
     "/dash/edit": 거부,
     "/dash/preview": 거부,           # 수식 미리보기 — 남의 지원자 값이 나온다
@@ -100,9 +101,14 @@ POST_정책 = {
     "/dash/rename": 거부,
     "/dash/copy": 거부,
     "/dash/delete": 거부,
+    "/dash/restore": 거부,
+    "/dash/purge": 거부,
+    "/dash/block/restore": 거부,
     "/dash/block/add": 거부,
     "/dash/block/draft": 거부,        # 말로 만드는 목록 표 초안
     "/dash/block/save": 거부,
+    "/dash/sheet/calc": 거부,
+    "/dash/block/preview": 거부,
     "/dash/block/move": 거부,
     "/dash/block/copy": 거부,
     "/dash/block/delete": 거부,

@@ -45,11 +45,55 @@ class Entry:
     비고: str
 
     def summary(self) -> str:
+        바뀐것 = _설정차이(self.이전값, self.새값)
+        if 바뀐것 is not None:
+            return f"{self.항목}: " + (바뀐것 or "(바뀐 것 없음)")
         if self.항목 and (self.이전값 or self.새값):
             이전 = self.이전값 or "(빈칸)"
             새 = self.새값 or "(빈칸)"
             return f"{self.항목}: {이전} → {새}"
         return self.비고 or self.항목 or "-"
+
+
+def _설정차이(이전: str, 새: str) -> str | None:
+    """대시보드 블록처럼 **JSON 으로 남긴 값**이면 바뀐 자리만 짧게. 아니면 None.
+
+    블록 설정은 통째로 남긴다 (되돌릴 거리가 되도록). 그런데 화면에 통째로
+    찍으면 시트 하나에 수천 글자라 이력이 안 읽힌다.
+    """
+    import json
+
+    def 읽기(글: str):
+        if not (글 or "").startswith("{"):
+            return None
+        try:
+            v = json.loads(글)
+        except ValueError:
+            return None
+        return v if isinstance(v, dict) and "설정" in v else None
+
+    a, b = 읽기(이전), 읽기(새)
+    if a is None and b is None:
+        return None
+    if a is None or b is None:
+        return "블록 " + ("삭제" if b is None else "새로 만듦")
+
+    def 펴기(v: dict) -> dict:
+        나온 = {"제목": v.get("제목", "")}
+        for k, x in (v.get("설정") or {}).items():
+            나온[k] = x
+        return 나온
+
+    def 짧게(x) -> str:
+        글 = x if isinstance(x, str) else json.dumps(x, ensure_ascii=False)
+        return 글 if len(글) <= 40 else 글[:38] + "…"
+
+    pa, pb = 펴기(a), 펴기(b)
+    다른 = [k for k in sorted(set(pa) | set(pb)) if pa.get(k) != pb.get(k)]
+    조각 = [f"{k} {짧게(pa.get(k, ''))} → {짧게(pb.get(k, ''))}" for k in 다른[:3]]
+    if len(다른) > 3:
+        조각.append(f"외 {len(다른) - 3}곳")
+    return " · ".join(조각)
 
 
 class AuditLog:

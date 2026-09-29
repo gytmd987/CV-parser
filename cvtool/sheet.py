@@ -138,6 +138,194 @@ def _따옴표_밖에서(글: str, 바꾸기):
     return "".join(나온것)
 
 
+def 참조밀기(글: str, 축: str, 기준: int, 차: int, *, 행수: int = MAX_ROWS,
+          열수: int = MAX_COLS) -> str:
+    """행·열을 끼우거나 뺄 때 수식의 칸 참조를 따라 옮긴다 (엑셀과 같다).
+
+    `축` 은 "행" 또는 "열", `기준` 은 0-based 자리. `차` 가 양수면 그 자리에
+    `차` 개를 **끼운** 것 — 기준 이상을 가리키던 참조가 그만큼 밀린다.
+    음수면 기준부터 `-차` 개를 **뺀** 것 — 뺀 줄을 가리키던 참조는 `#참조!`,
+    그 뒤를 가리키던 참조는 당겨진다.
+
+    `$` 가 붙어 있어도 옮긴다. `$` 는 «채우기·복사 때 안 밀린다» 는 뜻이지,
+    가리키던 칸이 자리를 옮겼는데 엉뚱한 칸을 가리키라는 뜻이 아니다 (엑셀도
+    그렇게 한다).
+    """
+    if not E.is_formula(글 or "") or not 차:
+        return 글
+
+    def 하나(m: re.Match) -> str:
+        열고정, 열글, 행고정, 행글 = m.groups()
+        r, c = int(행글) - 1, col_index(열글)
+        i = r if 축 == "행" else c
+        if 차 < 0 and 기준 <= i < 기준 - 차:
+            return 밖_표시
+        if i >= 기준:
+            i += 차
+        r, c = (i, c) if 축 == "행" else (r, i)
+        if not (0 <= r < 행수 and 0 <= c < 열수):
+            return 밖_표시
+        return f"{열고정}{col_letter(c)}{행고정}{r + 1}"
+    return _따옴표_밖에서(글, lambda 조각: _주소_RE.sub(하나, 조각))
+
+
+#: 칸 자리를 읽는 함수들. 계산기(`expr`)는 칸을 모르므로, 넘기기 전에 여기서
+#: 숫자나 속 함수로 바꿔 넣는다.
+_위치함수 = ("ROW", "COLUMN", "ROWS", "COLUMNS", "INDEX", "MATCH", "VLOOKUP")
+
+
+def _인자나누기(속: str) -> list[str]:
+    """쉼표로 인자를 가른다. 따옴표 안과 **괄호 안**의 쉼표는 안 가른다.
+
+    `formula._split_args` 는 집계 조건용이라 괄호를 안 센다 —
+    `INDEX(B1:B3, MATCH("감", A1:A3, 0))` 가 거기서는 네 조각이 된다.
+    """
+    조각, 지금, 깊이, 따 = [], [], 0, ""
+    for ch in 속:
+        if 따:
+            지금.append(ch)
+            if ch == 따:
+                따 = ""
+            continue
+        if ch in "\"'":
+            따 = ch
+        elif ch == "(":
+            깊이 += 1
+        elif ch == ")":
+            깊이 -= 1
+        elif ch == "," and 깊이 == 0:
+            조각.append("".join(지금).strip())
+            지금 = []
+            continue
+        지금.append(ch)
+    조각.append("".join(지금).strip())
+    return 조각
+
+
+def _범위모양(글: str) -> tuple[list[str], int, int]:
+    """`A1:C3` 또는 `A1` → (칸 주소들 줄 순서, 높이, 너비). 범위가 아니면 SheetError."""
+    글 = (글 or "").strip()
+    m = _범위_RE.fullmatch(글)
+    if m:
+        (r1, c1), (r2, c2) = 자리(m.group(1)), 자리(m.group(2))
+    elif _주소하나_RE.fullmatch(글):
+        r1, c1 = r2, c2 = 자리(글)
+    else:
+        raise SheetError(f"칸 범위를 적어야 합니다 (예: A1:C5): {글}")
+    r0, r9, c0, c9 = min(r1, r2), max(r1, r2), min(c1, c2), max(c1, c2)
+    if (r9 - r0 + 1) * (c9 - c0 + 1) > MAX_ROWS * MAX_COLS:
+        raise SheetError(f"범위가 너무 넓습니다: {글}")
+    칸 = [주소(r, c) for r in range(r0, r9 + 1) for c in range(c0, c9 + 1)]
+    return 칸, r9 - r0 + 1, c9 - c0 + 1
+
+
+def 위치함수풀기(글: str, 현재칸: str | None = None) -> str:
+    """ROW·COLUMN·ROWS·COLUMNS·INDEX·MATCH·VLOOKUP 를 계산기가 알아듣게 바꾼다.
+
+        ROW()            → 이 칸의 행 번호      ROW(B7)        → 7
+        COLUMN()         → 이 칸의 열 번호      COLUMN(C1)     → 3
+        ROWS(A1:A5)      → 5                   COLUMNS(A1:C1) → 3
+        INDEX(A1:C3,2,3) → _INDEX(3, 2, 3, A1,B1,…)   (너비를 같이 넘긴다)
+        MATCH(v, A1:A9)  → _MATCH(1, v, A1,…,A9)
+        VLOOKUP(v, A1:C9, 3, FALSE) → _VLOOKUP(3, v, 3, FALSE, A1,…)
+
+    범위를 칸 목록으로 풀면 **모양(몇 줄 몇 칸)** 이 사라지므로 너비를 앞에
+    붙여 넘긴다. 속 함수가 그 너비로 다시 자른다.
+    """
+    if not 글 or not any(f"{이름}(" in 글.upper().replace(" ", "") for 이름 in _위치함수):
+        return 글
+    이름RE = re.compile(r"(" + "|".join(sorted(_위치함수, key=len, reverse=True)) + r")\s*\(",
+                      re.IGNORECASE)
+
+    def 바꾸기(이름: str, 인자: list[str]) -> str:
+        if 이름 in ("ROW", "COLUMN"):
+            if not 인자 or not 인자[0]:
+                if 현재칸 is None:
+                    return f"{이름}()"          # 칸이 없는 자리 — 계산기가 말해 준다
+                r, c = 자리(현재칸)
+                return str(r + 1 if 이름 == "ROW" else c + 1)
+            칸, _h, _w = _범위모양(인자[0])
+            r, c = 자리(칸[0])
+            return str(r + 1 if 이름 == "ROW" else c + 1)
+        if 이름 in ("ROWS", "COLUMNS"):
+            if len(인자) != 1:
+                raise SheetError(f"{이름} 은 {이름}(A1:C5) 처럼 범위 하나를 받습니다")
+            _칸, h, w = _범위모양(인자[0])
+            return str(h if 이름 == "ROWS" else w)
+        if 이름 == "INDEX":
+            if len(인자) < 2:
+                raise SheetError("INDEX 는 INDEX(범위, 행, [열]) 입니다")
+            칸, h, w = _범위모양(인자[0])
+            if len(인자) == 2:
+                # 한 줄짜리·한 열짜리 범위는 번호 하나로 고른다 (엑셀과 같다)
+                if h == 1:
+                    행, 열 = "1", 인자[1]
+                elif w == 1:
+                    행, 열 = 인자[1], "1"
+                else:
+                    raise SheetError("여러 줄·여러 열 범위는 INDEX(범위, 행, 열) 로 둘 다 적으세요")
+            else:
+                행, 열 = 인자[1], 인자[2]
+            return f"_INDEX({w},{행},{열},{','.join(칸)})"
+        if 이름 == "MATCH":
+            if len(인자) < 2:
+                raise SheetError("MATCH 는 MATCH(찾을 값, 범위, [0]) 입니다")
+            칸, h, w = _범위모양(인자[1])
+            if h > 1 and w > 1:
+                raise SheetError("MATCH 의 범위는 한 줄이나 한 열이어야 합니다")
+            방식 = 인자[2] if len(인자) > 2 else "1"
+            return f"_MATCH({방식},{인자[0]},{','.join(칸)})"
+        # VLOOKUP
+        if len(인자) < 3:
+            raise SheetError("VLOOKUP 은 VLOOKUP(찾을 값, 범위, 열 번호, [FALSE]) 입니다")
+        칸, h, w = _범위모양(인자[1])
+        대충 = 인자[3] if len(인자) > 3 else "TRUE"
+        return f"_VLOOKUP({w},{인자[0]},{인자[2]},{대충},{','.join(칸)})"
+
+    for _ in range(20):                      # 안쪽에 또 있을 수 있다 (INDEX(…, MATCH(…)))
+        바뀜 = False
+        나온것: list[str] = []
+        i = 0
+        while i < len(글):
+            ch = 글[i]
+            if ch in "\"'":
+                j = i + 1
+                while j < len(글) and 글[j] != ch:
+                    j += 1
+                나온것.append(글[i:min(j + 1, len(글))])
+                i = j + 1
+                continue
+            m = 이름RE.match(글, i)
+            if not m or (i and (글[i - 1].isalnum() or 글[i - 1] in "_$")):
+                나온것.append(ch)
+                i += 1
+                continue
+            깊이, j, 따 = 1, m.end(), ""
+            while j < len(글) and 깊이:
+                c = 글[j]
+                if 따:
+                    if c == 따:
+                        따 = ""
+                elif c in "\"'":
+                    따 = c
+                elif c == "(":
+                    깊이 += 1
+                elif c == ")":
+                    깊이 -= 1
+                j += 1
+            if 깊이:
+                raise SheetError(f"괄호가 안 닫혔습니다: {글[i:][:40]}")
+            속 = 글[m.end():j - 1]
+            새것 = 바꾸기(m.group(1).upper(), _인자나누기(속) if 속.strip() else [])
+            나온것.append(새것)
+            바뀜 = 바뀜 or 새것 != 글[i:j]
+            i = j
+        글 = "".join(나온것)
+        if not 바뀜:
+            break
+    return 글
+
+
 def 범위펼치기(글: str) -> str:
     """`A1:A3` 을 `A1,A2,A3` 으로. 따옴표 안은 그대로 둔다."""
     def 한번(조각: str) -> str:
@@ -357,7 +545,8 @@ def 참조들(글: str) -> list[str]:
     return 본
 
 
-def 계산(수식: str, rows, 아는열=None, 값찾기=None) -> tuple[str, object]:
+def 계산(수식: str, rows, 아는열=None, 값찾기=None,
+       현재칸: str | None = None) -> tuple[str, object]:
     """수식 하나를 끝까지. (보일 글, 값) — `formula.run` 과 **같은 모양**이다.
 
     대시보드의 네 자리(숫자·축표·자유표·시트)가 전부 이것을 쓴다. 예전에는
@@ -383,6 +572,8 @@ def 계산(수식: str, rows, 아는열=None, 값찾기=None) -> tuple[str, obje
         raise SheetError(f"{밖_표시} — 옮기다 격자 밖을 가리켰습니다: {글}")
     # `$` 는 옮길 때만 쓰는 표시다. 계산기에 넘기기 전에 뗀다.
     글 = 고정떼기(글)
+    # ROW()·INDEX(A1:C3,…) 처럼 **칸 자리**를 읽는 함수를 먼저 푼다.
+    글 = 위치함수풀기(글, 현재칸)
     # 통째로 집계 호출 하나인가. **모양만 보면 안 된다** — 대상을 생략할 수
     # 있게 되면서 `=SUM(A1:A3)` 도 `formula` 가 "지원자의 A1:A3 열을 더해라"
     # 로 읽어 버린다(그런 열이 없으니 조용히 `-`). 칸을 셈하는 것인지
@@ -485,7 +676,7 @@ def 값들(칸들: dict, rows, 아는열=None, *, 행수: int = MAX_ROWS,
         try:
             # 칸 하나도 다른 자리와 **같은 계산기**를 쓴다. 그래야 시트에 적은
             # `=PCT(지원자, …)` 가 숫자 블록에 적은 것과 똑같이 보인다.
-            값, _ = 계산(원글, rows, 아는열, 값찾기=한칸)
+            값, _ = 계산(원글, rows, 아는열, 값찾기=한칸, 현재칸=주소글)
         except (SheetError, E.ExprError, F.FormulaError, ValueError) as exc:
             실패[주소글] = str(exc)
             raise

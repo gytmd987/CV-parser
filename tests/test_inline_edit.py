@@ -1936,7 +1936,7 @@ def test_the_function_list_is_not_copied_by_hand(web):
     web.module.boards.add_block(did, "목록", 제목="목록")
     page = web.get(f"/dash/edit?id={did}")
     자료 = _json.loads(page.split("window.수식목록 = ", 1)[1].split(";</script>", 1)[0])
-    assert set(자료["행함수"]) == set(expr.FUNC_NAMES)
+    assert set(자료["행함수"]) == set(expr.PUBLIC_FUNC_NAMES)
 
 
 # --- 계산 열: 화면에 뜨는 값이 날값과 다르다 -----------------------------------

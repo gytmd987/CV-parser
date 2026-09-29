@@ -518,6 +518,106 @@ def _숫자인가(v) -> bool:
         return False
 
 
+def 년월글(ym) -> str:
+    """`202602` → `'26.2`. 연도만 있으면 `'26`. 못 읽으면 원문 그대로."""
+    글 = re.sub(r"\D", "", str(ym or ""))
+    if len(글) >= 6:
+        연, 월 = 글[:4], int(글[4:6] or 0)
+        return f"'{연[2:]}.{월}" if 1 <= 월 <= 12 else f"'{연[2:]}"
+    if len(글) == 4:
+        return f"'{글[2:]}"
+    return str(ym or "").strip()
+
+
+#: 다니는 중을 뜻하는 표시
+_다니는중 = ("재직중", "재직 중", "현재", "present", "current", "now")
+
+
+def 기간글(시작, 종료) -> str:
+    """`'22.2~'26.2`. 다니는 중이면 `'26.5~현재`. 둘 다 비면 빈 문자열."""
+    s = 년월글(_글(시작))
+    끝글 = _글(종료).strip()
+    e = "현재" if 끝글.lower() in _다니는중 else 년월글(끝글)
+    if s and e:
+        return f"{s}~{e}"
+    if s:
+        return f"{s}~"
+    if e:
+        return f"~{e}"
+    return ""
+
+
+def _f_wrap(a: list):
+    """WRAP(값, 앞, [뒤]) — 값이 있을 때만 앞뒤를 붙인다. 비면 통째로 빈칸.
+
+    `(` `)` 만 덩그러니 남는 줄을 막는다 — `{…}` 틀이 저절로 하던 일을
+    수식에서도 한 함수로 한다. `=WRAP(PERIOD(박사_시작, 박사_졸업), "(", ")")`.
+    """
+    값 = _글(a[0])
+    if not 값.strip():
+        return ""
+    return _글(a[1]) + 값 + (_글(a[2]) if len(a) > 2 else "")
+
+
+def _f_choose(a: list):
+    i = int(_수(a[0], "CHOOSE"))
+    if not 1 <= i < len(a):
+        raise ExprError(f"CHOOSE 의 번호가 범위를 벗어났습니다: {i}")
+    return a[i]
+
+
+def _시트전용(이름: str):
+    raise ExprError(f"{이름} 은 시트에서 칸 범위와 함께 씁니다 (예: {이름}(A1:C5, …))")
+
+
+def _f_index(a: list):
+    """_INDEX(너비, 행, 열, 칸들...) — 시트가 `INDEX(범위, 행, 열)` 을 바꿔 넣는다."""
+    너비 = int(_수(a[0]))
+    행, 열 = int(_수(a[1], "INDEX 행")), int(_수(a[2], "INDEX 열"))
+    칸 = a[3:]
+    높이 = len(칸) // max(1, 너비)
+    if not (1 <= 행 <= 높이 and 1 <= 열 <= 너비):
+        raise ExprError(f"INDEX 가 범위 밖을 가리킵니다 ({행}행 {열}열, 범위는 {높이}×{너비})")
+    return 칸[(행 - 1) * 너비 + (열 - 1)]
+
+
+def _찾기번호(찾을, 칸: list, 방식: int) -> int:
+    """1부터 센 자리. 못 찾으면 ExprError. 방식: 0 같은 것, 1 이하 중 가장 큰 것, -1 이상 중 가장 작은 것."""
+    if 방식 == 0:
+        for i, v in enumerate(칸, start=1):
+            if _비교("=", v, 찾을) == TRUE:
+                return i
+        raise ExprError(f"찾는 값이 없습니다: {_글(찾을)}")
+    고른 = 0
+    for i, v in enumerate(칸, start=1):
+        if not _글(v).strip():
+            continue
+        if 방식 > 0 and _비교("<=", v, 찾을) == TRUE:
+            고른 = i
+        elif 방식 < 0 and _비교(">=", v, 찾을) == TRUE:
+            고른 = i
+    if not 고른:
+        raise ExprError(f"찾는 값이 없습니다: {_글(찾을)}")
+    return 고른
+
+
+def _f_match(a: list):
+    """_MATCH(방식, 찾을값, 칸들...) — 시트가 `MATCH(값, 범위, 방식)` 을 바꿔 넣는다."""
+    return float(_찾기번호(a[1], list(a[2:]), int(_수(a[0], "MATCH 방식"))))
+
+
+def _f_vlookup(a: list):
+    """_VLOOKUP(너비, 찾을값, 열번호, 대충, 칸들...) — 첫 열에서 찾아 그 줄의 열번호 칸."""
+    너비 = int(_수(a[0]))
+    열 = int(_수(a[2], "VLOOKUP 열 번호"))
+    if not 1 <= 열 <= 너비:
+        raise ExprError(f"VLOOKUP 의 열 번호가 범위 밖입니다: {열} (범위는 {너비}열)")
+    칸 = list(a[4:])
+    첫열 = 칸[0::너비]
+    줄 = _찾기번호(a[1], 첫열, 1 if _참인가(a[3]) else 0)
+    return 칸[(줄 - 1) * 너비 + (열 - 1)]
+
+
 def _오늘() -> str:
     return now_kst().strftime("%Y%m%d")
 
@@ -585,6 +685,22 @@ FUNCS: dict[str, tuple[int, Callable[[list], object]]] = {
     "MONTH": (1, lambda a: float(_날짜조각(a[0])[1]) if _두자리(_날짜조각(a[0])[1]) else ""),
     "DAY": (1, lambda a: float(_날짜조각(a[0])[2]) if _두자리(_날짜조각(a[0])[2]) else ""),
     "DATEDIF": (2, _f_datedif),
+    # -- 프로필 문장을 수식으로 쓸 때 (예전 `{기간:시작~종료}` 자리)
+    "PERIOD": (2, lambda a: 기간글(a[0], a[1])),
+    "WRAP": (2, _f_wrap),
+    "N": (1, lambda a: _수(a[0]) if _숫자인가(a[0]) else 0.0),
+    "CHOOSE": (2, _f_choose),
+    # -- 칸 범위를 받는 것. **시트에서만** 쓴다 — 시트가 범위를 풀어
+    #    아래 `_INDEX` 같은 속 함수로 바꿔 넣는다. 여기까지 그대로 왔다면
+    #    칸이 없는 자리에서 쓴 것이다.
+    "INDEX": (1, lambda a: _시트전용("INDEX")),
+    "MATCH": (1, lambda a: _시트전용("MATCH")),
+    "VLOOKUP": (1, lambda a: _시트전용("VLOOKUP")),
+    "ROWS": (1, lambda a: _시트전용("ROWS")),
+    "COLUMNS": (1, lambda a: _시트전용("COLUMNS")),
+    "_INDEX": (3, _f_index),
+    "_MATCH": (2, _f_match),
+    "_VLOOKUP": (4, _f_vlookup),
 }
 
 #: 값이 없어도 부를 수 있는 것 (IFERROR 는 인자를 먼저 계산하면 안 되므로 특별하다)
@@ -592,15 +708,20 @@ FUNCS: dict[str, tuple[int, Callable[[list], object]]] = {
 #: 받는데, 이 둘은 그러면 안 된다.
 #:   IFERROR — 첫 인자가 터지는 게 요점이라 미리 계산하면 안 된다.
 #:   ROW     — 인자가 아니라 **문맥**(몇 번째 줄인가)을 읽는다.
-_LAZY = ("IFERROR", "ROW")
+_LAZY = ("IFERROR", "ROW", "COLUMN")
 
 #: 목록·프로필이 줄마다 넣어 주는 자리. 제어문자라 진짜 열 이름과 못 겹친다.
 #: 값 묶음에 이게 없으면 `ROW()` 를 쓸 수 없는 자리라는 뜻이다.
 줄번호_키 = "\x00줄번호"
+#: 목록 표가 칸마다 넣어 주는 열 번호 (`COLUMN()`).
+열번호_키 = "\x00열번호"
 
-#: 쓸 수 있는 함수 이름 전부. 화면의 자동완성이 이걸 그대로 보여준다 —
-#: 목록을 두 군데에 적어 두면 하나를 늘렸을 때 다른 하나가 조용히 뒤처진다.
+#: 쓸 수 있는 함수 이름 전부 (속 함수 `_INDEX` 같은 것 포함 — 시트가 이것으로
+#: «칸을 셈하는 함수인가» 를 가른다).
 FUNC_NAMES: tuple[str, ...] = tuple(sorted(set(FUNCS) | set(_LAZY)))
+#: 사람이 쓰는 이름만. 화면의 자동완성이 이걸 그대로 보여준다 — 목록을 두
+#: 군데에 적어 두면 하나를 늘렸을 때 다른 하나가 조용히 뒤처진다.
+PUBLIC_FUNC_NAMES: tuple[str, ...] = tuple(n for n in FUNC_NAMES if not n.startswith("_"))
 
 
 # ---------------------------------------------------------------------------
@@ -666,16 +787,20 @@ def _계산(나무, 값들: dict) -> object:
         return a / b
     if isinstance(나무, Call):
         이름 = 나무.이름
-        if 이름 == "ROW":
-            # 몇 번째 줄인가. 목록 표가 **정렬·자르기를 끝낸 뒤** 넣어 주므로
+        if 이름 in ("ROW", "COLUMN"):
+            # 몇 번째 줄·열인가. 목록 표가 **정렬·자르기를 끝낸 뒤** 넣어 주므로
             # 화면에 보이는 순서와 늘 같다. 행 고르기·정렬은 번호가 정해지기
-            # 전에 도는 수식이라 여기서 걸린다.
-            if 줄번호_키 not in 값들:
+            # 전에 도는 수식이라 여기서 걸린다. 시트는 이 자리에 오기 전에
+            # 칸 주소로 바꿔 넣는다 (`sheet.계산`).
+            if 나무.인자:
+                raise ExprError(f"{이름}(칸) 은 시트에서만 씁니다 — 목록에서는 {이름}()")
+            키 = 줄번호_키 if 이름 == "ROW" else 열번호_키
+            if 키 not in 값들:
                 raise ExprError(
-                    "ROW() 는 목록 표의 열에서만 쓸 수 있습니다 "
-                    "— 줄이 정해진 뒤에야 번호가 생깁니다."
+                    f"{이름}() 는 목록 표의 열에서만 쓸 수 있습니다 (시트 칸에서도 됩니다) "
+                    "— 자리가 정해진 뒤에야 번호가 생깁니다."
                 )
-            return float(값들[줄번호_키])
+            return float(값들[키])
         if 이름 == "IFERROR":
             # 인자를 미리 계산하면 안 된다. 첫 인자가 터지는 게 요점이다.
             if len(나무.인자) < 2:
