@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -49,6 +51,13 @@ GRADED_KINDS = ("학회·저널",)
 #: 같은 곳을 어떤 CV 는 학회로, 어떤 CV 는 저널로 적어서 사전이 둘로
 #: 갈라지고 같은 이름이 양쪽에 생기는 일이 있었다.
 SUBTYPES = ("학회", "저널", "불명")
+
+#: 사람 대신 프로그램이 «본 것» 으로 둔 줄의 확인자 표시.
+#: - 같은 이름: 사람이 이미 확인한 이름을 묶기 키로 물려받은 새 표기. 할 일이 아니다.
+#: - 경력: 경력 목록에만 나온 회사. 사람마다 서너 줄씩 붙어 할 일 수를 부풀린다.
+#:   나중에 소속·학교 칸에 나오면 다시 «안 본 것» 으로 돌린다.
+AUTO_SAME_NAME = "(자동: 같은 이름)"
+AUTO_CAREER = "(자동: 경력)"
 
 #: 예전 이름 -> 지금 이름
 KIND_ALIASES = {"학교": "소속", "학회": "학회·저널", "저널": "학회·저널"}
@@ -164,14 +173,51 @@ CREATE TABLE IF NOT EXISTS tiers (
 _CLASS_COLS = ("등급", "국내해외", "유형", "IF")
 
 
+class _WatchedDb(Db):
+    """쓰기가 일어날 때마다 알려 주는 연결. 사전 조회 캐시를 비우는 데 쓴다.
+
+    쓰는 자리를 하나하나 찾아 캐시를 비우게 하면, 나중에 쓰는 함수를 하나
+    더 만들 때 빼먹는다. 연결에서 잡으면 빠뜨릴 수가 없다.
+    """
+
+    _쓰기 = ("INSERT", "UPDATE", "DELETE", "REPLACE", "ALTER", "CREATE", "DROP")
+
+    def __init__(self, path, on_write) -> None:
+        self._on_write = lambda: None       # 부모 __init__ 의 PRAGMA 도 execute 를 탄다
+        super().__init__(path)
+        self._on_write = on_write
+
+    def execute(self, sql, args=()):
+        rows = super().execute(sql, args)
+        if sql.lstrip()[:7].upper().startswith(self._쓰기):
+            self._on_write()
+        return rows
+
+    def executescript(self, sql: str) -> None:
+        super().executescript(sql)
+        self._on_write()
+
+
 class NameRegistry:
     #: 한 번만 도는 이관 표시 (`PRAGMA user_version`).
     SCHEMA_VERSION = 1
 
+    #: 다른 연결(다른 프로세스)이 사전을 고쳤는지 이 간격(초)마다 확인한다.
+    #: 같은 연결의 쓰기는 즉시 캐시를 비운다.
+    CACHE_CHECK_SECONDS = 0.5
+
     def __init__(self, db_path: str | Path) -> None:
         self.path = Path(db_path)
         secure_dir(self.path.parent)
-        self._conn = Db(self.path)
+        # 조회 캐시. 지원자 표 한 장을 그릴 때 `lookup` 이 (사람 수 × 논문 수 ×
+        # 5) 번 불린다 — 800명이면 12만 번, SQL 로 25만 번이었다. 사전은 그동안
+        # 거의 안 바뀌므로 결과를 기억해 둔다.
+        self._memo: dict[tuple[str, str], Name | None] = {}
+        self._memo_lock = threading.Lock()
+        self._memo_version: int | None = None
+        self._memo_gen = 0      # 비울 때마다 올린다. 읽는 사이에 비워졌으면 안 담는다.
+        self._memo_checked = 0.0
+        self._conn = _WatchedDb(self.path, self._forget_memo)
         self._migrate()
         self._conn.executescript(_SCHEMA)
         self._add_missing_columns()
@@ -307,6 +353,30 @@ class NameRegistry:
         d = dict(row)
         return Name(**d, **self._class_of(d["종류"], d["표시명"]))
 
+    # -- 조회 캐시 -----------------------------------------------------------
+    def _forget_memo(self) -> None:
+        with self._memo_lock:
+            self._memo.clear()
+            self._memo_version = None
+            self._memo_gen += 1
+
+    def _memo_fresh(self) -> None:
+        """다른 연결이 사전을 고쳤으면 캐시를 버린다.
+
+        `PRAGMA data_version` 은 **다른 연결**이 commit 할 때만 바뀐다. 매번
+        물으면 캐시를 둔 보람이 없어서 잠깐씩 간격을 둔다.
+        """
+        지금 = time.monotonic()
+        if 지금 - self._memo_checked < self.CACHE_CHECK_SECONDS:
+            return
+        판 = self._conn.execute("PRAGMA data_version").fetchone()[0]
+        with self._memo_lock:
+            if self._memo_version != 판:
+                self._memo.clear()
+                self._memo_version = 판
+                self._memo_gen += 1
+            self._memo_checked = 지금
+
     # -- 조회 ---------------------------------------------------------------
     def get(self, name_id: int) -> Name | None:
         row = self._conn.execute("SELECT * FROM names WHERE id=?", (name_id,)).fetchone()
@@ -322,6 +392,19 @@ class NameRegistry:
         표기 = (원문 or "").strip()
         if not 표기:
             return None
+        self._memo_fresh()
+        열쇠 = (종류, 표기)
+        with self._memo_lock:
+            if 열쇠 in self._memo:
+                return self._memo[열쇠]
+            세대 = self._memo_gen
+        found = self._lookup(종류, 표기)
+        with self._memo_lock:
+            if 세대 == self._memo_gen:     # 그 사이에 사전이 바뀌었으면 담지 않는다
+                self._memo[열쇠] = found
+        return found
+
+    def _lookup(self, 종류: str, 표기: str) -> Name | None:
         row = self._conn.execute(
             "SELECT * FROM names WHERE 종류=? AND 원표기=?", (종류, 표기)
         ).fetchone()
@@ -414,11 +497,16 @@ class NameRegistry:
     # -- 등록 ---------------------------------------------------------------
     @atomic
     def observe(self, 종류: str, 표시명: str, *, 국내해외: str = "불명",
-                유형: str = "") -> Name:
+                유형: str = "", 검토: bool = True) -> Name:
         """CV 에서 표기를 발견했을 때.
 
         **표기마다 한 줄**이다. 처음 보는 표기면 줄을 만들고, 묶기 키가 같은
         표기가 이미 있으면 그 이름을 물려받는다. 이미 있는 표기면 횟수만 센다.
+
+        새 줄이 **사람이 볼 일인지**도 여기서 정한다. 사람이 이미 확인한 이름을
+        물려받았으면 볼 일이 아니다. `검토=False` (경력 목록의 회사) 로 들어온
+        새 줄도 할 일로 세지 않는다 — 그 표기가 나중에 `검토=True` 로 다시
+        나오면 그때 «안 본 것» 으로 돌린다.
         """
         유형 = 유형 or (종류 if 종류 in SUBTYPES else "")
         종류 = canonical_kind(종류)
@@ -438,16 +526,31 @@ class NameRegistry:
             )
             이름 = row["표시명"]
             nid = row["id"]
+            if 검토 and row["확인자"] == AUTO_CAREER:
+                # 경력에만 있던 회사가 소속·학교 칸에 나왔다. 이제는 볼 일이다.
+                self._conn.execute(
+                    "UPDATE names SET 확인자='', 확인일시='' WHERE id=?", (nid,))
         else:
             형제 = self._conn.execute(
                 "SELECT 표시명 FROM names WHERE 종류=? AND 정규화키=?"
                 " ORDER BY 발견횟수 DESC, id LIMIT 1", (종류, 키)
             ).fetchone()
             이름 = 형제["표시명"] if 형제 else 표기
+            지금 = now_kst()
+            자동 = ""
+            if not 검토:
+                자동 = AUTO_CAREER
+            elif 형제 and self._conn.execute(
+                "SELECT 1 FROM names WHERE 종류=? AND 표시명=? AND 확인일시<>''"
+                " AND 확인자 NOT IN (?, ?) LIMIT 1",
+                (종류, 이름, AUTO_SAME_NAME, AUTO_CAREER),
+            ).fetchone():
+                자동 = AUTO_SAME_NAME
             cur = self._conn.execute(
-                "INSERT INTO names (종류,원표기,정규화키,표시명,발견횟수,최초등록)"
-                " VALUES (?,?,?,?,1,?)",
-                (종류, 표기, 키, 이름, now_kst().strftime("%Y-%m-%d %H:%M:%S")),
+                "INSERT INTO names (종류,원표기,정규화키,표시명,발견횟수,최초등록,"
+                "확인자,확인일시) VALUES (?,?,?,?,1,?,?,?)",
+                (종류, 표기, 키, 이름, 지금.strftime("%Y-%m-%d %H:%M:%S"),
+                 자동, 지금.strftime("%Y-%m-%d %H:%M") if 자동 else ""),
             )
             nid = cur.lastrowid
 
@@ -503,6 +606,79 @@ class NameRegistry:
         if 값들:
             self._set_class(나.종류, 이름, **값들)
         self._conn.commit()
+
+    @atomic
+    def rename_group(self, 종류: str, 옛이름: str, 새이름: str) -> int:
+        """이 이름을 쓰는 표기 **전부**의 이름을 바꾼다. 바뀐 표기 수.
+
+        이름은 표기 줄마다 저장돼 있어서, 한 줄씩 고치면 고친 줄만 떨어져
+        나가 그룹이 쪼개졌다. 표기가 다섯이면 다섯 번 고쳐야 했다.
+
+        새 이름이 이미 있으면 그 그룹에 **합쳐진다** — 분류(등급 등)는 새
+        이름 쪽 것을 쓴다. 새 이름에 분류가 없으면 옛 분류를 그대로 가져간다.
+        """
+        종류 = canonical_kind(종류)
+        옛이름 = (옛이름 or "").strip()
+        새이름 = (새이름 or "").strip()
+        if not 옛이름 or not 새이름 or 옛이름 == 새이름:
+            return 0
+        새분류 = self._conn.execute(
+            "SELECT 1 FROM name_classes WHERE 종류=? AND 표시명=?", (종류, 새이름)
+        ).fetchone()
+        옛분류 = self._conn.execute(
+            "SELECT 1 FROM name_classes WHERE 종류=? AND 표시명=?", (종류, 옛이름)
+        ).fetchone()
+        if not 새분류 and 옛분류:
+            현재 = self._class_of(종류, 옛이름)
+            self._set_class(종류, 새이름, **현재)
+        cur = self._conn.execute(
+            "UPDATE names SET 표시명=? WHERE 종류=? AND 표시명=?", (새이름, 종류, 옛이름)
+        )
+        # 아무도 안 쓰는 옛 분류는 치운다. 남겨 두면 나중에 누가 같은 이름을
+        # 다시 적었을 때 옛 등급이 되살아난다.
+        self._conn.execute(
+            "DELETE FROM name_classes WHERE 종류=? AND 표시명=?", (종류, 옛이름))
+        self._conn.commit()
+        return cur.rowcount
+
+    @atomic
+    def merge(self, name_ids: list[int], 새이름: str) -> list[int]:
+        """고른 표기들을 한 이름으로 묶는다. 이름이 실제로 바뀐 id 목록.
+
+        새 이름이 처음이면 고른 것 중 **가장 많이 나온 표기**의 분류를 가져간다.
+        이미 있는 이름이면 그 분류를 쓴다 (분류는 이름에 붙는다).
+        """
+        새이름 = (새이름 or "").strip()
+        나들 = [n for n in (self.get(i) for i in name_ids) if n is not None]
+        if not 새이름 or not 나들:
+            return []
+        종류 = 나들[0].종류
+        나들 = [n for n in 나들 if n.종류 == 종류]
+        if not self._conn.execute(
+            "SELECT 1 FROM name_classes WHERE 종류=? AND 표시명=?", (종류, 새이름)
+        ).fetchone():
+            대표 = max(나들, key=lambda n: n.발견횟수)
+            self._set_class(종류, 새이름, 등급=대표.등급, 국내해외=대표.국내해외,
+                            유형=대표.유형, IF=대표.IF)
+        바뀐것 = []
+        for n in 나들:
+            if n.표시명 != 새이름:
+                self._conn.execute("UPDATE names SET 표시명=? WHERE id=?", (새이름, n.id))
+                바뀐것.append(n.id)
+        self._conn.commit()
+        return 바뀐것
+
+    def set_class(self, 종류: str, 표시명: str, **값들) -> None:
+        """이름에 붙은 분류를 바꾼다 (이름별 화면에서). 빈 값은 건너뛴다. IF 는 지울 수 있다."""
+        값들 = {k: v for k, v in 값들.items()
+               if k in _CLASS_COLS and v is not None and (k == "IF" or str(v).strip())}
+        if 값들:
+            self._set_class(canonical_kind(종류), 표시명,
+                            **{k: str(v).strip() for k, v in 값들.items()})
+            self._conn.commit()
+
+    def class_of(self, 종류: str, 표시명: str) -> dict:
+        return self._class_of(canonical_kind(종류), 표시명)
 
     def confirm(self, name_id: int, 사람: str = "") -> None:
         """이 표기를 사람이 봤다고 표시한다."""
@@ -643,7 +819,7 @@ def observe_record(rec, registry: NameRegistry) -> list[str]:
     for c in getattr(rec, "경력", []) or []:
         if (c.회사 or "").strip():
             try:
-                registry.observe("소속", c.회사)
+                registry.observe("소속", c.회사, 검토=False)
             except ValueError:
                 pass
 

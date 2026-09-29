@@ -93,6 +93,8 @@ from ..store import (
 from ..timeutil import now_kst
 from ..dedup import fingerprint, find_duplicates
 from ..names import (
+    AUTO_CAREER,
+    AUTO_SAME_NAME,
     GRADED_KINDS,
     KINDS,
     SUBTYPES,
@@ -266,6 +268,28 @@ def _set_status(name: str, state: str, message: str = "", cid: str = "") -> None
         }
 
 
+def _enqueue(filename: str, 지원자_ID: str, 저장_파일명: str, 메모: str = "") -> None:
+    """분석 대기열에 넣는다. **DB 에 먼저 적는다.**
+
+    메모리 대기열에만 넣으면 서버를 다시 켤 때 대기 중이던 원본이 «DB 에 행이
+    없는 파일» 로 보여 `_startup_cleanup` 이 말없이 지운다. 30개를 올려 두고
+    재시작하면 나머지가 흔적 없이 사라졌다.
+    """
+    store.add_job(지원자_ID, filename, 저장_파일명, 메모)
+    _set_status(filename, "대기중", 메모, cid=지원자_ID)
+    _jobs.put((filename, 지원자_ID, 저장_파일명))
+
+
+def _resume_jobs() -> int:
+    """지난번에 끝내지 못한 분석을 다시 대기열에 넣는다. 넣은 개수."""
+    남은것 = store.pending_jobs()
+    for j in 남은것:
+        _set_status(j["파일명"], "대기중", "서버를 다시 켜서 이어서 분석합니다",
+                    cid=j["지원자_ID"])
+        _jobs.put((j["파일명"], j["지원자_ID"], j["저장_파일명"]))
+    return len(남은것)
+
+
 def _worker() -> None:
     while True:
         filename, 지원자_ID, 저장_파일명 = _jobs.get()
@@ -315,6 +339,11 @@ def _worker() -> None:
             _set_status(filename, "실패", f"{type(exc).__name__}: {exc}")
             traceback.print_exc()
         finally:
+            # 실패도 끝난 것이다. 남겨 두면 재시작할 때마다 같은 실패를 되풀이한다.
+            try:
+                store.finish_job(지원자_ID)
+            except Exception:  # noqa: BLE001 - 워커가 죽으면 안 된다
+                traceback.print_exc()
             _jobs.task_done()
 
 
@@ -1189,7 +1218,7 @@ def 대시보드_축() -> dict[str, list[str]]:
 
 def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "",
                msg: str = "") -> bytes:
-    records = store.list_filtered(q, review_only, 년도)
+    records = store.list_filtered(q, review_only, 년도, registry=registry)
     전체 = store.count()
     만료 = store.expired_count()
     미분류 = registry.unclassified_count()
@@ -3785,7 +3814,8 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
 
 
 def _names_page(종류: str, me: User | None = None,
-                error: str = "", msg: str = "", 안본것만: bool = False) -> bytes:
+                error: str = "", msg: str = "", 안본것만: bool = False,
+                보기: str = "표기") -> bytes:
     """소속·학회·저널·전공을 같은 화면에서 관리한다.
 
     **CV 에 적힌 표기마다 한 줄**이다. 여러 표기를 한 줄로 합쳐 대표명만 남기면,
@@ -3812,7 +3842,8 @@ def _names_page(종류: str, me: User | None = None,
         무리.setdefault(i.표시명, []).append(i)
 
     탭 = " ".join(
-        f"<a class='btn {'' if k == 종류 else 'sec'}' href='/names?kind={urllib.parse.quote(k)}'>"
+        f"<a class='btn {'' if k == 종류 else 'sec'}' href='/names?kind={urllib.parse.quote(k)}"
+        f"{'&view=name' if 보기 == '이름' else ''}'>"
         f"{k}"
         + (f" <span class='pill p-안본것'>{registry.unconfirmed_count(k)}</span>"
            if registry.unconfirmed_count(k) else "")
@@ -3898,9 +3929,11 @@ def _names_page(종류: str, me: User | None = None,
                else "<b class='flag'>확인</b>")
             + "</label></td>"
         )
+        고르기 = (f"<td class='ctl'><input type='checkbox' form='saveform' name='pick'"
+                f" value='{i.id}' title='합칠 줄로 고르기'></td>")
         rows.append(
             f"<tr class='{'' if i.확인 else 'needs'}'>"
-            f"{확인칸}"
+            f"{고르기}{확인칸}"
             f"<td title='{html.escape(i.원표기)}'>{html.escape(i.원표기)}{미분류표시}</td>"
             f"<td>{i.발견횟수}</td>"
             f"<td class='ctl'>"
@@ -3925,7 +3958,17 @@ def _names_page(종류: str, me: User | None = None,
         f"<button type='submit'>고친 내용 저장</button>"
         f"<span class='muted'>여러 줄을 고친 뒤 <b>한 번만</b> 누르세요. "
         f"고친 칸은 노랗게 표시됩니다. <b>고친 줄은 저절로 확인 표시</b>가 됩니다."
-        f"</span></form>"
+        f"</span>"
+        f"<span style='flex-basis:100%'></span>"
+        f"<b>합치기</b> <span class='muted'>「합칠」 칸을 고른 줄을</span>"
+        f"<input type='text' name='merge_to' list='이름목록' style='width:220px'"
+        f" placeholder='합칠 이름 (고르거나 적기)'>"
+        f"<button type='submit' name='action' value='merge' class='sec'>한 이름으로 합치기</button>"
+        f"<span style='flex:1'></span>"
+        f"<button type='submit' name='action' value='confirm_all' class='sec'"
+        f" onclick=\"return window.confirm('이 목록의 줄을 모두 확인한 것으로 표시합니다.\\n"
+        f"(「표에서 찾기」로 가려 둔 줄도 포함됩니다)')\">이 목록 모두 확인</button>"
+        f"</form>"
         if items else ""
     )
 
@@ -3935,7 +3978,8 @@ def _names_page(종류: str, me: User | None = None,
         if 등급종류 else ""
     )
     표 = (
-        "<table><tr><th class='ctl w-sm' title='사람이 보고 맞다고 한 줄'>확인</th>"
+        "<table><tr><th class='ctl w-sm' title='합칠 줄 고르기'>합칠</th>"
+        "<th class='ctl w-sm' title='사람이 보고 맞다고 한 줄'>확인</th>"
         "<th>CV 에 적힌 표기</th><th style='width:56px'>발견</th>"
         f"<th class='ctl'>표에 보일 이름</th><th>같은 이름으로 묶인 표기</th>"
         f"{등급머리}<th></th></tr>{''.join(rows)}</table>"
@@ -3954,6 +3998,15 @@ def _names_page(종류: str, me: User | None = None,
         f"아직 안 본 것 {len(안본것)}</a>"
         if 전부 else ""
     )
+    보기전환 = (
+        f"<a class='btn {'' if 보기 == '이름' else 'sec'}' href='{주소}&view=name'>"
+        f"이름별로 보기</a> "
+        f"<a class='btn {'' if 보기 != '이름' else 'sec'}' href='{주소}'>표기별로 보기</a>"
+        if 전부 else ""
+    )
+    if 보기 == "이름":
+        거르개 = ""
+        저장바, 표 = _names_group_table(종류, 전부, 무리, 등급목록, 등급종류)
     알림 = _알림(msg=msg)
     오류 = _알림(err=error)
     설명 = (
@@ -3972,21 +4025,117 @@ def _names_page(종류: str, me: User | None = None,
         <p class='muted'>{설명}
         <b>CV 에 적힌 표기마다 한 줄</b>이고, 각 줄의 <b>표에 보일 이름</b>만 고칩니다.
         같은 곳이면 같은 이름을 적으세요 — 지원자 표에는 그 이름으로 함께 나옵니다.
-        잘못 묶였으면 그 줄의 이름만 다시 고치면 됩니다.{분류설명}</p>
+        잘못 묶였으면 그 줄의 이름만 다시 고치면 됩니다.{분류설명}
+        <b>이름별로 보기</b>에서는 이름 하나를 고치면 묶인 표기가 전부 따라가고,
+        「합칠」 칸을 골라 <b>한 번에 합칠</b> 수 있습니다.</p>
         <p class='muted'>표기는 CV 에서 발견하는 대로 <b>자동으로</b> 등록되고,
         등급·국내해외는 LLM 이 짐작한 값입니다. 그래서 각 줄에
         <b>확인</b> 칸이 있습니다 — 사람이 보고 맞다고 한 줄은 체크가 켜지고,
         <span class='pill p-안본것'>아직 안 본 줄</span>은 노랗게 남습니다.
-        값을 고쳐서 저장하면 그 줄은 저절로 확인 처리됩니다.</p></div>
+        값을 고쳐서 저장하면 그 줄은 저절로 확인 처리됩니다.
+        이미 확인한 이름을 물려받은 새 표기와 경력 목록에만 나온 회사는
+        할 일로 세지 않습니다.</p></div>
         {등급열}
         <div class='card'><h2>{html.escape(종류)} <span class='muted'>표기 {len(전부)}개 ·
         이름 {len(무리)}개</span></h2>
-        <p>{거르개}</p>
+        <p class='bar'>{보기전환}<span style='flex:1'></span>{거르개}</p>
         {저장바}
         <div class='scroll'>{표}</div>
         <datalist id='이름목록'>{이름옵션}</datalist></div>""",
         me=me,
     )
+
+
+def _names_group_table(종류: str, 전부: list, 무리: dict, 등급목록: list[str],
+                       등급종류: bool) -> tuple[str, str]:
+    """이름별 화면 — **이름 하나당 한 줄**. (저장바, 표) 를 돌려준다.
+
+    표기별 화면에서 이름을 바꾸면 그 줄만 떨어져 나가서, 표기가 다섯인 이름을
+    바꾸려면 다섯 번 고쳐야 했다. 여기서 이름을 고치면 묶인 표기가 전부 따라간다.
+    다른 이름과 같게 적으면 두 그룹이 합쳐진다.
+    """
+    if not 무리:
+        return "", "<p class='muted'>아직 등록된 항목이 없습니다.</p>"
+    # 안 본 표기가 있는 이름을 위로, 그 안에서는 이름 오름차순 (list_all 순서)
+    이름들 = list(무리)
+    이름들.sort(key=lambda n: all(x.확인 for x in 무리[n]))
+    rows = []
+    for g, 이름 in enumerate(이름들):
+        표기들 = 무리[이름]
+        안본 = sum(1 for x in 표기들 if not x.확인)
+        대표 = 표기들[0]
+        분류칸 = ""
+        if 등급종류:
+            def 고르개(열: str, 값들, 현재: str) -> str:
+                opts = "".join(
+                    f"<option{' selected' if v == 현재 else ''}>{html.escape(v)}</option>"
+                    for v in 값들)
+                return (f"<td class='ctl'><select form='groupform' name='{열}_{g}'"
+                        f" data-orig='{html.escape(현재)}' onchange='markDirty(this)'>"
+                        f"{opts}</select></td>")
+            분류칸 = (
+                고르개("유형", SUBTYPES, 대표.유형)
+                + 고르개("등급", 등급목록, 대표.등급)
+                + 고르개("국내해외", ("불명", "해외", "국내"), 대표.국내해외)
+                + f"<td class='ctl'><input type='text' form='groupform' name='IF_{g}'"
+                f" value='{html.escape(대표.IF)}' style='width:64px' placeholder='예: 12.5'"
+                f" data-orig='{html.escape(대표.IF)}' oninput='markDirty(this)'>"
+                f" <a href='{html.escape(대표.google_url())}' target='_blank'"
+                f" rel='noopener'>찾기</a></td>"
+            )
+        표기글 = ", ".join(
+            html.escape(x.원표기) + (f" <span class='muted'>({x.발견횟수})</span>")
+            for x in 표기들)
+        확인칸 = (
+            f"<td class='ctl'><label><input type='checkbox' form='groupform'"
+            f" name='확인_{g}'{'' if 안본 else ' checked'}"
+            f" data-orig='{'' if 안본 else 'y'}'> "
+            + (f"<b class='flag'>안 본 표기 {안본}</b>" if 안본
+               else "<span class='muted'>확인</span>")
+            + "</label></td>"
+        )
+        rows.append(
+            f"<tr class='{'needs' if 안본 else ''}'>"
+            f"<td class='ctl'><input type='checkbox' form='groupform' name='pick'"
+            f" value='{g}' title='합칠 이름으로 고르기'></td>"
+            f"{확인칸}"
+            f"<td class='ctl'><input type='hidden' form='groupform' name='g'"
+            f" value='{html.escape(이름)}'>"
+            f"<input type='text' form='groupform' name='이름_{g}' list='이름목록'"
+            f" value='{html.escape(이름)}' style='width:220px'"
+            f" data-orig='{html.escape(이름)}' oninput='markDirty(this)'></td>"
+            f"<td>{len(표기들)}</td>"
+            f"<td>{sum(x.발견횟수 for x in 표기들)}</td>"
+            f"<td>{표기글}</td>"
+            f"{분류칸}</tr>"
+        )
+    등급머리 = (
+        "<th class='ctl'>학회/저널</th><th class='ctl'>등급</th>"
+        "<th class='ctl'>국내/해외</th><th class='ctl'>Impact Factor</th>"
+        if 등급종류 else ""
+    )
+    표 = (
+        "<table><tr><th class='ctl w-sm' title='합칠 이름 고르기'>합칠</th>"
+        "<th class='ctl' title='켜면 이 이름의 표기를 전부 확인한 것으로 표시'>확인</th>"
+        "<th class='ctl'>표에 보일 이름</th><th style='width:56px'>표기</th>"
+        "<th style='width:56px'>발견</th><th>묶인 표기 (발견 횟수)</th>"
+        f"{등급머리}</tr>{''.join(rows)}</table>"
+    )
+    저장바 = (
+        f"<form method='post' action='/names/save_groups' id='groupform' class='mergebar'>"
+        f"<input type='hidden' name='kind' value='{html.escape(종류)}'>"
+        f"<button type='submit'>고친 내용 저장</button>"
+        f"<span class='muted'>이름을 고치면 <b>묶인 표기가 전부</b> 따라갑니다. "
+        f"다른 이름과 똑같이 적으면 두 이름이 <b>합쳐집니다</b>. "
+        f"잘못 묶인 표기 하나만 떼려면 «표기별로 보기» 에서 그 줄만 고치세요.</span>"
+        f"<span style='flex-basis:100%'></span>"
+        f"<b>합치기</b> <span class='muted'>「합칠」 칸을 고른 이름들을</span>"
+        f"<input type='text' name='merge_to' list='이름목록' style='width:220px'"
+        f" placeholder='합칠 이름 (고르거나 적기)'>"
+        f"<button type='submit' name='action' value='merge' class='sec'>한 이름으로 합치기</button>"
+        f"</form>"
+    )
+    return 저장바, 표
 
 
 def _볼수있는지원자(cid: str, me: User) -> bool:
@@ -8194,6 +8343,7 @@ class Handler(BaseHTTPRequestHandler):
                 error=(params.get("err") or [""])[0],
                 msg=(params.get("msg") or [""])[0],
                 안본것만=bool((params.get("todo") or [""])[0]),
+                보기="이름" if (params.get("view") or [""])[0] == "name" else "표기",
             ))
         if path == "/dash/preview":
             # 문장 칸 아래 미리보기. 대시보드와 **같은 계산기**를 써야 믿을 수 있다.
@@ -8279,6 +8429,7 @@ class Handler(BaseHTTPRequestHandler):
                 (params.get("q") or [""])[0],
                 bool(params.get("review")),
                 (params.get("year") or [""])[0],
+                registry=registry,
             )
             열 = 표열()
             data = records_to_xlsx(records, registry,
@@ -8339,8 +8490,7 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     cid = f"CV-{uuid.uuid4().hex[:8].upper()}"
                     저장명 = store.store_file(cid, safe_name, f.content)
-                    _set_status(safe_name, "대기중", cid=cid)
-                    _jobs.put((safe_name, cid, 저장명))
+                    _enqueue(safe_name, cid, 저장명)
                 except Exception as exc:  # noqa: BLE001
                     _set_status(safe_name, "실패", f"{type(exc).__name__}: {exc}")
             return self._redirect("/upload")
@@ -9917,8 +10067,7 @@ class Handler(BaseHTTPRequestHandler):
             name = meta.get("원본_파일명") or cid
             # 재분석하면 사유가 새로 나온다. 옛 '확인함' 기록은 무효다.
             store.clear_reviews(cid)
-            _set_status(name, "대기중", "재분석", cid=cid)
-            _jobs.put((name, cid, meta["저장_파일명"]))
+            _enqueue(name, cid, meta["저장_파일명"], "재분석")
             return self._redirect("/upload")
 
         if path == "/status/clear":
@@ -9939,6 +10088,9 @@ class Handler(BaseHTTPRequestHandler):
             뒤로 = f"/names?kind={urllib.parse.quote(kind)}"
             if (data.get("todo") or [""])[0]:
                 뒤로 += "&todo=1"
+
+            할일 = (data.get("action") or [""])[0]
+            모두확인 = 할일 == "confirm_all"
 
             # 화면에 있던 줄 전부가 들어온다. 실제로 값이 달라진 것만 저장한다.
             바뀐것: list[str] = []
@@ -9985,7 +10137,8 @@ class Handler(BaseHTTPRequestHandler):
 
                 # 확인 표시. 체크칸을 켰거나, **값을 실제로 고쳤으면** 본 것이다.
                 # 고쳐 놓고 체크를 깜박하면 그 줄이 영영 '안 본 것' 으로 남는다.
-                켬 = bool(data.get(f"확인_{nid}")) or bool(변경)
+                # «보이는 줄 모두 확인» 은 화면의 줄을 전부 켠 것과 같다.
+                켬 = bool(data.get(f"확인_{nid}")) or bool(변경) or 모두확인
                 if 켬 and not 이전.확인:
                     registry.confirm(nid, 사람=me.아이디)
                     확인바뀜 += 1
@@ -9997,6 +10150,32 @@ class Handler(BaseHTTPRequestHandler):
                     audit.record(me.아이디, "명칭", f"{kind}:{이후.원표기}",
                                  항목="확인", 이전값="확인함", 새값="")
 
+            if 할일 == "merge":
+                # 고친 칸을 먼저 저장했으니, 합치기가 그 위에 덮인다.
+                대상 = (data.get("merge_to") or [""])[0].strip()
+                고른것 = []
+                for 원시 in data.get("pick") or []:
+                    try:
+                        고른것.append(int(원시))
+                    except (ValueError, TypeError):
+                        continue
+                if not 대상 or not 고른것:
+                    return self._redirect(f"{뒤로}&err=" + urllib.parse.quote(
+                        "합칠 줄(「합칠」 칸)과 합칠 이름을 모두 정해 주세요."))
+                이전들 = {i: registry.get(i) for i in 고른것}
+                합친것 = registry.merge(고른것, 대상)
+                for nid in 합친것:
+                    이전 = 이전들[nid]
+                    audit.record(me.아이디, "명칭", f"{kind}:{이전.원표기}",
+                                 항목="표에 보일 이름", 이전값=이전.표시명, 새값=대상)
+                    if not 이전.확인 or 이전.확인자 in (AUTO_SAME_NAME, AUTO_CAREER):
+                        registry.confirm(nid, 사람=me.아이디)
+                앞말 = f"{len(바뀐것)}건 저장, " if 바뀐것 else ""
+                return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(
+                    f"{앞말}{len(합친것)}줄을 '{대상}' 로 합쳤습니다."
+                    + (f" ({len(고른것) - len(합친것)}줄은 이미 그 이름)"
+                       if len(고른것) > len(합친것) else "")))
+
             if not 바뀐것 and 확인바뀜:
                 return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(
                     f"{확인바뀜}줄의 확인 표시를 바꿨습니다."))
@@ -10006,6 +10185,97 @@ class Handler(BaseHTTPRequestHandler):
             꼬리 = f" (확인 표시 {확인바뀜}줄)" if 확인바뀜 else ""
             return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(
                 f"{len(바뀐것)}건 저장했습니다 — {보임}{꼬리}"))
+
+        if path == "/names/save_groups":
+            if not can(me, "명칭_관리"):
+                return self._deny()
+            data = urllib.parse.parse_qs(
+                self._read_body().decode("utf-8", "replace"), keep_blank_values=True
+            )
+            kind = canonical_kind((data.get("kind") or ["학회·저널"])[0])
+            뒤로 = f"/names?kind={urllib.parse.quote(kind)}&view=name"
+            그룹들 = data.get("g") or []
+            바뀐것: list[str] = []
+            확인한것 = 0
+
+            def 표기들(이름: str) -> list:
+                return [n for n in registry.list_all(kind) if n.표시명 == 이름]
+
+            def 확인(이름: str) -> int:
+                # 안 본 줄만. 다 본 이름은 확인 칸이 켜진 채로 들어오므로,
+                # 자동 확인 줄까지 건드리면 저장할 때마다 확인자가 사람으로 바뀐다.
+                n개 = 0
+                for n in 표기들(이름):
+                    if not n.확인:
+                        registry.confirm(n.id, 사람=me.아이디)
+                        n개 += 1
+                return n개
+
+            # 이름별 줄마다: 분류 -> 이름 순서로 저장한다. 이름을 먼저 바꾸면
+            # 분류가 새 이름에 붙어야 하는지 옛 이름에 붙어야 하는지 헷갈린다.
+            for g, 옛이름 in enumerate(그룹들):
+                새이름 = ((data.get(f"이름_{g}") or [옛이름])[0] or "").strip() or 옛이름
+                변경 = []
+                if f"등급_{g}" in data or f"IF_{g}" in data:
+                    전 = registry.class_of(kind, 옛이름)
+                    새값 = {열: (data.get(f"{열}_{g}") or [None])[0]
+                           for 열 in ("유형", "등급", "국내해외", "IF")
+                           if f"{열}_{g}" in data}
+                    registry.set_class(kind, 옛이름, **새값)
+                    후 = registry.class_of(kind, 옛이름)
+                    변경 = [(열, 전[열], 후[열]) for 열 in ("유형", "등급", "국내해외", "IF")
+                          if 전[열] != 후[열]]
+                if 새이름 != 옛이름:
+                    for n in 표기들(옛이름):
+                        audit.record(me.아이디, "명칭", f"{kind}:{n.원표기}",
+                                     항목="표에 보일 이름", 이전값=옛이름, 새값=새이름)
+                    registry.rename_group(kind, 옛이름, 새이름)
+                for 열, 전값, 후값 in 변경:
+                    audit.record(me.아이디, "명칭", f"{kind}:{옛이름}",
+                                 항목={"유형": "학회/저널"}.get(열, 열),
+                                 이전값=전값, 새값=후값)
+                if 새이름 != 옛이름 or 변경:
+                    바뀐것.append(
+                        (f"{옛이름} → {새이름}" if 새이름 != 옛이름 else 새이름)
+                        + (f" ({', '.join(f'{열} {후값}' for 열, _, 후값 in 변경)})"
+                           if 변경 else ""))
+                # 고쳤거나 확인 칸을 켰으면 그 이름의 표기를 모두 본 것이다
+                if 새이름 != 옛이름 or 변경 or data.get(f"확인_{g}"):
+                    확인한것 += 확인(새이름)
+
+            if (data.get("action") or [""])[0] == "merge":
+                대상 = (data.get("merge_to") or [""])[0].strip()
+                고른 = []
+                for 원시 in data.get("pick") or []:
+                    try:
+                        고른.append(그룹들[int(원시)])
+                    except (ValueError, TypeError, IndexError):
+                        continue
+                if not 대상 or not 고른:
+                    return self._redirect(f"{뒤로}&err=" + urllib.parse.quote(
+                        "합칠 이름(「합칠」 칸)과 합칠 대상 이름을 모두 정해 주세요."))
+                # 위에서 이름을 바꿨을 수 있다. 바뀐 이름을 따라간다.
+                고른 = [((data.get(f"이름_{그룹들.index(x)}") or [x])[0] or x).strip()
+                       for x in 고른]
+                합친수 = 0
+                for 옛이름 in dict.fromkeys(고른):
+                    if 옛이름 == 대상:
+                        continue
+                    for n in 표기들(옛이름):
+                        audit.record(me.아이디, "명칭", f"{kind}:{n.원표기}",
+                                     항목="표에 보일 이름", 이전값=옛이름, 새값=대상)
+                    합친수 += registry.rename_group(kind, 옛이름, 대상)
+                확인한것 += 확인(대상)
+                앞말 = f"{len(바뀐것)}건 저장, " if 바뀐것 else ""
+                return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(
+                    f"{앞말}표기 {합친수}줄을 '{대상}' 로 합쳤습니다."))
+
+            if not 바뀐것:
+                return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(
+                    f"{확인한것}줄을 확인 표시했습니다." if 확인한것 else "바뀐 내용이 없습니다."))
+            보임 = ", ".join(바뀐것[:5]) + (" 외" if len(바뀐것) > 5 else "")
+            return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(
+                f"{len(바뀐것)}건 저장했습니다 — {보임}"))
 
         if path == "/names/forget":
             if not can(me, "명칭_관리"):
@@ -10083,6 +10353,9 @@ def main() -> int:
     if leftovers:
         print(f"⚠️  이전 실행에서 남은 CV 원본 {len(leftovers)}건을 삭제했습니다: "
               f"{', '.join(leftovers[:5])}{' ...' if len(leftovers) > 5 else ''}")
+    이어서 = _resume_jobs()
+    if 이어서:
+        print(f"지난번에 끝내지 못한 CV {이어서}건을 이어서 분석합니다.")
     if LOADED_FROM:
         print(f".env 읽음        : {LOADED_FROM}")
     else:

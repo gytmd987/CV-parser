@@ -479,18 +479,16 @@ class CVRecord(BaseModel):
         for p in self.논문:
             종류 = "저널" if p.유형 == "저널" else "학회"
             표시명, 등급, 국내해외 = p.제출처, "", p.국내해외
-            if registry is not None and p.제출처:
-                found = registry.lookup(종류, p.제출처)
-                if found is not None:
-                    표시명 = found.표시명
-                    등급 = found.등급
-                    # 담당자가 판별한 값이 LLM 추측을 이긴다
-                    if found.국내해외 in ("국내", "해외"):
-                        국내해외 = found.국내해외
-            # 학회/저널 구분도 담당자가 판별한 값이 LLM 추측을 이긴다
-            if registry is not None and p.제출처:
-                found = registry.lookup(종류, p.제출처)
-                if found is not None and found.유형 in ("학회", "저널"):
+            found = (registry.lookup(종류, p.제출처)
+                     if registry is not None and p.제출처 else None)
+            if found is not None:
+                표시명 = found.표시명
+                등급 = found.등급
+                # 담당자가 판별한 값이 LLM 추측을 이긴다
+                if found.국내해외 in ("국내", "해외"):
+                    국내해외 = found.국내해외
+                # 학회/저널 구분도 담당자가 판별한 값이 LLM 추측을 이긴다
+                if found.유형 in ("학회", "저널"):
                     종류 = found.유형
             out.append(
                 {"제목": p.제목, "표시명": 표시명, "연도": p.연도, "등급": 등급,

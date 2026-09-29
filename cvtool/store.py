@@ -82,6 +82,16 @@ CREATE TABLE IF NOT EXISTS custom_values (
     값           TEXT DEFAULT '',
     PRIMARY KEY (지원자_ID, 필드명)
 );
+-- 분석을 기다리는 CV. 메모리 대기열만 있으면 서버를 다시 켤 때 대기 중이던
+-- 원본이 «DB 에 행이 없는 파일» 로 보여 개인정보 정리에 함께 지워진다.
+-- 여기 적힌 파일은 지우지 않고, 서버가 뜰 때 이어서 분석한다.
+CREATE TABLE IF NOT EXISTS jobs (
+    지원자_ID    TEXT PRIMARY KEY,
+    파일명       TEXT NOT NULL,      -- 처리 현황에 보일 이름
+    저장_파일명   TEXT NOT NULL,
+    메모         TEXT DEFAULT '',    -- '재분석' 등
+    등록일시      TEXT DEFAULT ''
+);
 """
 
 #: 사용자 정의 열이 가질 수 있는 유형
@@ -388,6 +398,7 @@ class CandidateStore:
             "DELETE FROM candidates WHERE 지원자_ID=?", (지원자_ID,)
         )
         self._conn.execute("DELETE FROM review_done WHERE 지원자_ID=?", (지원자_ID,))
+        self._conn.execute("DELETE FROM jobs WHERE 지원자_ID=?", (지원자_ID,))
         self._conn.commit()
         return cur.rowcount > 0
 
@@ -402,6 +413,7 @@ class CandidateStore:
         self._conn.execute(
             f"DELETE FROM review_done WHERE 지원자_ID IN ({marks})", ids
         )
+        self._conn.execute(f"DELETE FROM jobs WHERE 지원자_ID IN ({marks})", ids)
         self._conn.commit()
         return cur.rowcount
 
@@ -411,6 +423,7 @@ class CandidateStore:
         self._unlink_files([r["지원자_ID"] for r in rows])
         cur = self._conn.execute("DELETE FROM candidates")
         self._conn.execute("DELETE FROM review_done")
+        self._conn.execute("DELETE FROM jobs")
         self._conn.commit()
         return cur.rowcount
 
@@ -839,7 +852,36 @@ class CandidateStore:
             for r in self._conn.execute("SELECT 저장명 FROM attachments")
             if r["저장명"]
         }
+        # 분석을 기다리는 원본도 주인이 있는 파일이다
+        known |= {j["저장_파일명"] for j in self.pending_jobs()}
         return [f for f in self.files_dir.iterdir() if f.is_file() and f.name not in known]
+
+    # -- 분석 대기열 -------------------------------------------------------
+    def add_job(self, 지원자_ID: str, 파일명: str, 저장_파일명: str,
+                메모: str = "") -> None:
+        """분석할 CV 를 적어 둔다. 같은 지원자를 다시 넣으면 덮어쓴다."""
+        self._conn.execute(
+            "INSERT OR REPLACE INTO jobs (지원자_ID,파일명,저장_파일명,메모,등록일시)"
+            " VALUES (?,?,?,?,?)",
+            (지원자_ID, 파일명, 저장_파일명, 메모,
+             now_kst().strftime("%Y-%m-%d %H:%M:%S")),
+        )
+        self._conn.commit()
+
+    def finish_job(self, 지원자_ID: str) -> None:
+        """성공이든 실패든 분석이 끝났으면 지운다."""
+        self._conn.execute("DELETE FROM jobs WHERE 지원자_ID=?", (지원자_ID,))
+        self._conn.commit()
+
+    def has_job(self, 지원자_ID: str) -> bool:
+        return self._conn.execute(
+            "SELECT 1 FROM jobs WHERE 지원자_ID=?", (지원자_ID,)
+        ).fetchone() is not None
+
+    def pending_jobs(self) -> list[dict]:
+        """아직 안 끝난 분석. 올린 순서대로."""
+        return [dict(r) for r in self._conn.execute(
+            "SELECT * FROM jobs ORDER BY 등록일시, rowid")]
 
     def purge_expired(self) -> list[str]:
         """보관 기간이 지난 지원자를 삭제하고 삭제된 ID 를 반환한다."""
@@ -863,9 +905,15 @@ class CandidateStore:
         return [self._row_to_record(r) for r in rows]
 
     def list_filtered(
-        self, q: str = "", review_only: bool = False, 년도: str = ""
+        self, q: str = "", review_only: bool = False, 년도: str = "",
+        registry=None,
     ) -> list[CVRecord]:
-        """이름·소속·학교·파일명으로 검색하고, 검토 필요·등록년도로 거른다."""
+        """이름·소속·학교·파일명으로 검색하고, 검토 필요·등록년도로 거른다.
+
+        `registry` 를 주면 **표에 보이는 이름**으로도 찾는다. CV 에
+        `포항공과대학교` 라고 적혀 있어도 표에는 `POSTECH` 으로 보이는데, 그걸
+        보고 `POSTECH` 을 검색하면 안 나오던 것.
+        """
         records = self.list_all()
         if 년도:
             연도맵 = self.year_map()
@@ -874,6 +922,19 @@ class CandidateStore:
             records = [r for r in records if r.검토_필요 == "Y"]
         term = q.strip().lower()
         if term:
+            from .normalize import MULTI_SEP
+            from .schemas import NAME_COLUMNS
+
+            def 보이는이름(r: CVRecord) -> list[str]:
+                if registry is None:
+                    return []
+                return [
+                    registry.display(종류, part)
+                    for col, 종류 in NAME_COLUMNS.items()
+                    for part in str(getattr(r, col, "") or "").split(MULTI_SEP)
+                    if part.strip()
+                ]
+
             def hit(r: CVRecord) -> bool:
                 haystack = " ".join(
                     [
@@ -883,6 +944,7 @@ class CandidateStore:
                         # 손으로 정해 둔 소속·학교·전공. 안 넣으면 방금 적어
                         # 넣은 값으로 그 사람을 못 찾는다.
                         *r.직접입력.values(),
+                        *보이는이름(r),
                     ]
                 ).lower()
                 return term in haystack

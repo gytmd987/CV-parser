@@ -131,6 +131,7 @@ POST_정책 = {
     "/match/one": 거부,
     "/names/forget": 거부,
     "/names/save": 거부,
+    "/names/save_groups": 거부,
     "/names/tiers": 거부,
     "/org/dept/add": 거부,
     "/org/dept/delete": 거부,
