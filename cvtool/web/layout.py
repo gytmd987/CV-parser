@@ -191,6 +191,7 @@ tr.needs td:first-child{border-left:3px solid #f59e0b}
 td.edit{cursor:cell}
 td.edit:hover{outline:2px solid var(--accent);outline-offset:-2px}
 td.saved{background:#dcfce7 !important}
+td.fxcol{color:#4b5563;font-style:italic}
 td.err{background:#fee2e2 !important}
 td.edit input,td.edit select{padding:2px 4px;font-size:12.5px;width:100%}
 td.ctl,th.ctl{white-space:normal;max-width:none;overflow:visible}

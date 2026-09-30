@@ -6,7 +6,7 @@ from __future__ import annotations
 import html
 import json
 
-from .. import review
+from .. import colformula, review
 from ..auth import can, User
 from ..edit import (
     custom_field_spec, field_spec, MULTILINE_OK, READONLY_FIELDS, REGISTRY_FIELDS,
@@ -19,7 +19,7 @@ from .state import auth, mailing, recruit, registry, store
 
 
 def _cell(cid: str, col: str, 표시: str, 원본: str, spec, *,
-          scope: str = "기본", cls: str = "") -> str:
+          scope: str = "기본", cls: str = "", fx: str = "", 수식값: bool = False) -> str:
     """표 안의 편집 가능한 칸 하나.
 
     `표시` 는 칸에 그리는 글자, `원본` 은 편집칸이 시작하는 값이자 저장할 때
@@ -27,16 +27,24 @@ def _cell(cid: str, col: str, 표시: str, 원본: str, spec, *,
     날값을 이전 값으로 보내면(졸업일과 대조하기 전의 학위상태 같은 것) 손도
     안 댄 칸이 저장할 때마다 "다른 사람이 방금 바꿨습니다" 로 튕긴다.
     (`edit.보이는값` 이 그 값을 뽑는다. 부르는 쪽이 그것을 넘긴다.)
+
+    `fx` 는 그 열에 걸린 수식. `수식값` 이면 칸의 글은 수식이 낸 값이고
+    `원본`(사람이 적은 값)은 빈칸이다 — 적으면 그 값이 이긴다.
     """
     opts = json.dumps(list(spec.선택지), ensure_ascii=False) if spec.입력 == "select" else "[]"
     # 속성 안의 줄바꿈을 브라우저가 어떻게 다루는지에 기대지 않는다. 값이
     # 한 칸 밀리면 편집칸에 엉뚱한 글이 들어간다.
     담기 = lambda v: html.escape(v).replace("\n", "&#10;")
+    if 수식값:
+        cls += " fxcol"
+    덧 = f" data-fx='{html.escape(fx)}'" if fx else ""
     return (
-        f"<td class='edit{cls}' data-id='{html.escape(cid)}' data-col='{html.escape(col)}'"
+        f"<td class='edit{cls}'{덧} data-id='{html.escape(cid)}' data-col='{html.escape(col)}'"
         f" data-raw='{담기(원본)}' data-kind='{html.escape(spec.입력)}'"
         f" data-opts='{html.escape(opts)}' data-scope='{scope}'"
-        f" data-help='{html.escape(spec.도움말)}' title='{담기(표시)}'>"
+        f" data-help='{html.escape(spec.도움말)}' title='{담기(표시)}"
+        + (f"&#10;(수식 {담기(fx)} — 칸에 적으면 그 값이 우선, 지우면 다시 수식)"
+           if fx else "") + "'>"
         f"{html.escape(표시)}</td>"
     )
 
@@ -205,7 +213,7 @@ def 표열(registry_=None) -> list[str]:
 
 #: 열 이름별 너비 등급. 값이 짧은 열에 넓은 자리를 주면 정작 긴 글이 잘린다.
 _넓은열 = {
-    "경력_요약", "검토_사유", "연구분야_키워드", "1저자_해외논문_제출처",
+    "경력_요약", "검토_사유", "연구분야_키워드", "보유기술", "1저자_해외논문_제출처",
     "메일_발송이력", "비고", "채용_비고", "현재_소속_상세", "중복_메모", "원본_파일명",
 }
 _중간열 = {
@@ -253,6 +261,41 @@ def 라벨(열들: list[str]) -> dict[str, str]:
     return store.labels(열들)
 
 
+#: 수식에서 늘 쓸 수 있는 덧열 — 표에는 없지만 줄마다 계산해 넣는다.
+덧열 = ("지원자_ID", "매칭_과제", "매칭_점수", "채용중")
+
+
+def 모든열() -> set[str]:
+    """수식(대시보드·열 수식)에서 쓸 수 있는 열 이름 전부."""
+    return set(지원자열()) | set(RECRUIT_COLUMNS) | set(store.field_names()) | set(덧열)
+
+
+def 덧값(행: dict, cid: str, 시작한사람, 상위매칭: dict,
+       채용중열: bool | None = None) -> None:
+    """`채용중` · `매칭_과제` · `매칭_점수` 를 줄에 넣는다.
+
+    `채용중` 이라는 **추가 열**을 만들어 두었으면 그쪽이 이긴다 (사람이 수식을
+    걸어 두려고 만든 것이다).
+    """
+    m = 상위매칭.get(cid)
+    행["매칭_과제"] = (m or {}).get("과제명", "") if isinstance(m, dict) else ""
+    행["매칭_점수"] = str((m or {}).get("점수", "") or "") if isinstance(m, dict) else ""
+    if 채용중열 is None:
+        채용중열 = store.field("채용중") is not None
+    if not 채용중열:
+        행["채용중"] = "Y" if cid in 시작한사람 else ""
+
+
+def 수식열채우기(행: dict, 적은값: dict, 수식들: dict | None = None,
+            빈칸: dict | None = None) -> set[str]:
+    """추가 열에 걸린 수식을 **사람이 안 적은 칸만** 계산해 넣는다."""
+    수식들 = store.field_formulas() if 수식들 is None else 수식들
+    if not 수식들:
+        return set()
+    return colformula.채우기(행, 수식들, 적은값,
+                          빈칸 if 빈칸 is not None else {c: "" for c in 모든열()})
+
+
 def _표값맵() -> dict[str, dict[str, str]]:
     """추출 결과에 없는 열의 값. {지원자_ID: {열: 값}}
 
@@ -281,6 +324,11 @@ def _표값맵() -> dict[str, dict[str, str]]:
     # 두고 (LLM 이 무엇을 확신 못 했는지의 기록이다) 보이는 글만 줄인다.
     끝낸것 = store.review_done_map()
     시작한사람 = recruit.started()
+    수식들 = store.field_formulas()
+    사용자값 = store.custom_map() if 수식들 else {}
+    상위매칭 = store.top_matches() if 수식들 else {}
+    빈칸 = {c: "" for c in 모든열()} if 수식들 else {}
+    채용중열 = store.field("채용중") is not None
     for rec in store.list_all():
         cid = rec.지원자_ID
         칸 = 합침.setdefault(cid, {})
@@ -289,6 +337,12 @@ def _표값맵() -> dict[str, dict[str, str]]:
         칸[STARTED_COLUMN] = "채용 중" if cid in 시작한사람 else "인재 Pool"
         if (rec.검토_사유 or "").strip():
             칸["검토_사유"] = review.display(rec.검토_사유, 끝낸것.get(cid, set()))
+        if 수식들:
+            # 수식은 한 사람의 **모든** 값을 본다 — 추출 값 + 여기서 모은 값.
+            행 = {**rec.to_row(registry), **칸}
+            덧값(행, cid, 시작한사람, 상위매칭, 채용중열)
+            for 열 in 수식열채우기(행, 사용자값.get(cid, {}), 수식들, 빈칸):
+                칸[열] = 행[열]
     return 합침
 
 

@@ -94,6 +94,14 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 """
 
+def 수식정리(수식: str | None) -> str:
+    """열 수식을 저장할 모양으로. `IF(…)` 처럼 = 를 빼고 적어도 받는다."""
+    글 = (수식 or "").strip()
+    if 글 and not 글.startswith("="):
+        글 = "=" + 글
+    return 글
+
+
 #: 사용자 정의 열이 가질 수 있는 유형
 CUSTOM_TYPES = ("텍스트", "선택", "연월", "숫자")
 
@@ -481,7 +489,7 @@ class CandidateStore:
     @atomic
     def add_field(
         self, 이름: str, 유형: str = "텍스트", 선택지: str = "", 만든이: str = "",
-        구분: str = "지원자 정보",
+        구분: str = "지원자 정보", 수식: str = "",
     ) -> None:
         """관리자가 웹에서 표에 열을 추가한다.
 
@@ -506,10 +514,10 @@ class CandidateStore:
             "SELECT COALESCE(MAX(순서), 0) + 1 AS n FROM custom_fields"
         ).fetchone()["n"]
         self._conn.execute(
-            "INSERT INTO custom_fields (이름, 유형, 선택지, 순서, 만든이, 만든일시, 구분)"
-            " VALUES (?,?,?,?,?,?,?)",
+            "INSERT INTO custom_fields (이름, 유형, 선택지, 순서, 만든이, 만든일시, 구분, 수식)"
+            " VALUES (?,?,?,?,?,?,?,?)",
             (이름, 유형, (선택지 or "").strip(), 순서, 만든이,
-             now_kst().strftime("%Y-%m-%d %H:%M:%S"), 구분),
+             now_kst().strftime("%Y-%m-%d %H:%M:%S"), 구분, 수식정리(수식)),
         )
         self._conn.commit()
 
@@ -523,6 +531,10 @@ class CandidateStore:
                 "ALTER TABLE custom_fields ADD COLUMN 구분 TEXT DEFAULT '지원자 정보'"
             )
             self._conn.execute("UPDATE custom_fields SET 구분='지원자 정보' WHERE 구분 IS NULL")
+        if "수식" not in 있는열:
+            # 칸을 비워 두면 이 수식으로 채운다 (`=IF(과제<>"","Y","N")`).
+            # 사람이 칸에 적은 값이 있으면 그 값이 이긴다.
+            self._conn.execute("ALTER TABLE custom_fields ADD COLUMN 수식 TEXT DEFAULT ''")
         self._conn.commit()
 
     def _matches_columns(self) -> None:
@@ -678,6 +690,10 @@ class CandidateStore:
         ).fetchone()
         return dict(row) if row else None
 
+    def field_formulas(self) -> dict[str, str]:
+        """수식이 걸린 추가 열 {이름: 수식}. 표 항목 순서대로 (앞 열을 뒤 열이 쓸 수 있다)."""
+        return {f["이름"]: f["수식"] for f in self.fields() if (f.get("수식") or "").strip()}
+
     def field_names(self, 구분: str | None = None) -> list[str]:
         """추가한 열 이름. 구분을 주면 그 묶음만."""
         return [f["이름"] for f in self.fields()
@@ -686,7 +702,7 @@ class CandidateStore:
     @atomic
     def update_field(self, 이름: str, *, 새이름: str | None = None,
                      유형: str | None = None, 선택지: str | None = None,
-                     구분: str | None = None) -> dict:
+                     구분: str | None = None, 수식: str | None = None) -> dict:
         """추가한 열의 이름·유형·선택지·구분을 고치고 **이전 내용**을 돌려준다.
 
         형식 검사를 건드리지 않는 선에서만 허용한다:
@@ -713,6 +729,8 @@ class CandidateStore:
             if 구분 not in CUSTOM_SCOPES:
                 raise ValueError(f"구분은 {'/'.join(CUSTOM_SCOPES)} 중 하나여야 합니다")
             새것["구분"] = 구분
+        if 수식 is not None:
+            새것["수식"] = 수식정리(수식)
         if 새것["유형"] == "선택" and not 새것["선택지"]:
             raise ValueError("'선택' 유형은 선택지를 하나 이상 적어야 합니다")
 
@@ -743,10 +761,24 @@ class CandidateStore:
                 raise ValueError(f"이미 있는 기본 열입니다: {옮길이름}")
             if self.field(옮길이름):
                 raise ValueError(f"이미 있는 열입니다: {옮길이름}")
+            from . import expr as E
+
+            쓰는열 = []
+            for 다른, 식 in self.field_formulas().items():
+                try:
+                    if 이름 in E.columns(식):
+                        쓰는열.append(다른)
+                except E.ExprError:
+                    pass
+            if 쓰는열:
+                raise ValueError(
+                    f"«{', '.join(쓰는열)}» 수식이 이 열({이름})을 씁니다 — "
+                    "그 수식을 먼저 고친 뒤 이름을 바꾸세요.")
 
         self._conn.execute(
-            "UPDATE custom_fields SET 이름=?, 유형=?, 선택지=?, 구분=? WHERE 이름=?",
-            (옮길이름, 새것["유형"], 새것["선택지"], 새것["구분"], 이름),
+            "UPDATE custom_fields SET 이름=?, 유형=?, 선택지=?, 구분=?, 수식=? WHERE 이름=?",
+            (옮길이름, 새것["유형"], 새것["선택지"], 새것["구분"],
+             새것.get("수식") or "", 이름),
         )
         if 옮길이름 != 이름:
             self._conn.execute(

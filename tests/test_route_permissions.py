@@ -119,6 +119,7 @@ POST_정책 = {
     "/fields/columns": 거부,
     "/fields/delete": 거부,
     "/fields/choices": 거부,
+    "/fields/formula": 거부,
     "/mail/attachment/add": 거부,
     "/mail/image/add": 거부,
     "/mail/image/delete": 거부,

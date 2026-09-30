@@ -30,6 +30,7 @@ from ...schemas import (
 from ...store import SUPPORTED_SUFFIXES
 from ...timeutil import now_kst
 from ...xlsx_read import XlsxError
+from .dashboard import _프로필값
 from .match import _등급이름, _점수색
 
 from ..state import audit, auth, CONTENT_TYPES, mailing, recruit, registry, store
@@ -129,14 +130,19 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
                 continue
             if c in 사용자열정의:
                 값 = 사용자값맵.get(cid, {}).get(c, "")
+                # 수식 열: 사람이 안 적었으면 수식 값을 보인다 (`_표값맵` 이 계산해 뒀다).
+                fx = 사용자열정의[c].get("수식") or ""
+                수식값 = bool(fx) and not 값.strip()
+                보임 = 표값.get(cid, {}).get(c, "") if 수식값 else 값
                 if 수정가능:
-                    cells.append(_cell(cid, c, 값, 값,
+                    cells.append(_cell(cid, c, 보임, 값,
                                        custom_field_spec(사용자열정의[c],
                                                          c in 긴글열),
-                                       scope="사용자", cls=" " + 폭))
+                                       scope="사용자", cls=" " + 폭,
+                                       fx=fx, 수식값=수식값))
                 else:
-                    cells.append(f"<td class='{폭}' title='{html.escape(값)}'>"
-                                 f"{html.escape(값)}</td>")
+                    cells.append(f"<td class='{폭}{' fxcol' if 수식값 else ''}'"
+                                 f" title='{html.escape(보임)}'>{html.escape(보임)}</td>")
                 continue
             표시 = str(row.get(c, "") or "")
             cls = " flag" if c == "검토_필요" and 표시 == "Y" else ""
@@ -490,20 +496,32 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
     사용자열 = store.fields()
     사용자값 = store.custom_values(지원자_ID)
     사용자행 = []
+    # 수식이 걸린 열은 비워 두면 수식 값이 나온다 — 그 값을 보여 준다.
+    계산값 = (_프로필값(지원자_ID)
+             if any((f.get("수식") or "").strip() for f in 사용자열) else {})
     for f in 사용자열:
         이름, 값 = f["이름"], 사용자값.get(f["이름"], "")
+        fx = (f.get("수식") or "").strip()
+        수식값 = 계산값.get(이름, "") if fx and not 값.strip() else ""
+        수식안내 = (f"<br><span class='muted' title='칸에 적으면 그 값이 우선, 지우면 다시 수식'>"
+                 f"수식 <code>{html.escape(fx)}</code></span>" if fx else "")
         if not 수정가능:
+            보임 = (html.escape(값) or (f"<i class='muted'>{html.escape(수식값)}</i>" if 수식값
+                                      else "<span class=muted>-</span>"))
             사용자행.append(
-                f"<tr><th style='width:180px'>{html.escape(이름)}</th>"
-                f"<td>{html.escape(값) or '<span class=muted>-</span>'}</td></tr>"
+                f"<tr><th style='width:180px'>{html.escape(이름)}{수식안내}</th>"
+                f"<td>{보임}</td></tr>"
             )
             continue
         번호 += 1
         spec = custom_field_spec(f, 이름 in 긴글열)
+        안내 = (f"비워 두면 수식 값 ({수식값})" if fx and 수식값
+                else "비워 두면 수식 값" if fx else spec.도움말)
         if spec.입력 == "select":
             opts = "".join(
                 f"<option value='{html.escape(o)}'{' selected' if o == 값 else ''}>"
-                f"{html.escape(o) or '(빈칸)'}</option>" for o in spec.선택지
+                f"{html.escape(o) or (f'(수식: {수식값})' if fx else '(빈칸)')}</option>"
+                for o in spec.선택지
             )
             칸 = (f"<select form='saveform' name='값_{번호}' onchange='markDirty(this)'"
                  f" data-orig='{html.escape(값)}'>{opts}</select>")
@@ -512,14 +530,14 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
                 f"<textarea form='saveform' name='값_{번호}' rows='4'"
                 f" style='width:100%;max-width:640px'"
                 f" data-orig='{html.escape(값)}' oninput='markDirty(this)'"
-                f" placeholder='{html.escape(spec.도움말)}'>{html.escape(값)}</textarea>"
+                f" placeholder='{html.escape(안내)}'>{html.escape(값)}</textarea>"
             )
         else:
             칸 = (
                 f"<input type='text' form='saveform' name='값_{번호}'"
                 f" value='{html.escape(값)}' style='width:100%;max-width:420px'"
                 f" data-orig='{html.escape(값)}' oninput='markDirty(this)'"
-                f" placeholder='{html.escape(spec.도움말)}'>"
+                f" placeholder='{html.escape(안내)}'>"
             )
         숨은칸.append(
             f"<input type='hidden' form='saveform' name='항목_{번호}'"
@@ -530,7 +548,7 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
         )
         사용자행.append(
             f"<tr><th style='width:180px'>{html.escape(이름)}"
-            f"<br><span class='muted'>{html.escape(f['유형'])}</span></th>"
+            f"<br><span class='muted'>{html.escape(f['유형'])}</span>{수식안내}</th>"
             f"<td>{칸}</td></tr>"
         )
 
@@ -1325,7 +1343,10 @@ def post_api_cell(self, me, path):
         if 이전 != 저장값:
             audit.record(me.아이디, "지원자", cid, 항목=항목,
                          이전값=이전, 새값=저장값, 비고="표에서 수정")
-        return self._json({"ok": True, "raw": 저장값, "표시": 저장값})
+        # 수식 열을 비웠으면 다시 수식 값이 보여야 한다.
+        수식값 = bool((field.get("수식") or "").strip()) and not 저장값.strip()
+        표시 = _프로필값(cid).get(항목, "") if 수식값 else 저장값
+        return self._json({"ok": True, "raw": 저장값, "표시": 표시, "수식": 수식값})
 
     rec = store.get(cid)
     if rec is None:

@@ -21,6 +21,7 @@ from ...schemas import columns as table_columns
 
 from ..state import audit, auth, CONTENT_TYPES, mailing, recruit, registry, store
 
+from ..columns import 덧값, 수식열채우기
 from ..mail_targets import _안보낸것, _안보낸수
 from ..layout import _page, _알림, _없는주소, _정적JS
 from ..router import 라우트
@@ -132,6 +133,10 @@ def _mail_vars(rec, 진행맵=None) -> dict[str, str]:
     값.setdefault("부서", "")
     값.setdefault("과제", "")
     값.setdefault("최종상태", "")
+    if store.field_formulas():
+        # 표에 보이는 값 그대로 — 수식 열의 빈칸은 수식 값으로.
+        덧값(값, rec.지원자_ID, recruit.started(), store.top_matches())
+        수식열채우기(값, store.custom_values(rec.지원자_ID))
     값["이름"] = 값.get("한글_이름") or 값.get("영문_이름", "")
     return 값
 
@@ -212,7 +217,7 @@ def _mail_var_groups() -> list[tuple[str, list[str]]]:
     기본 = ["이름", "한글_이름", "영문_이름", "생년월일", "전화번호", "이메일"]
     학력 = [c for c in 모든열 if c.startswith(("현재_", "박사_", "석사_", "학사_"))]
     연구 = [c for c in 모든열
-           if c.startswith("1저자_") or c in ("연구분야_키워드", "경력_요약")]
+           if c.startswith("1저자_") or c in ("연구분야_키워드", "보유기술", "경력_요약")]
     쓴것 = set(기본) | set(학력) | set(연구)
     나머지 = [c for c in 모든열 if c not in 쓴것]
     묶음 = [

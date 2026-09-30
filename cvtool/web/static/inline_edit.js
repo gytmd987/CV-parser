@@ -101,6 +101,10 @@ function openCell(td){
     el.type = 'text'; el.value = raw;
     if(td.dataset.help) el.placeholder = td.dataset.help;
   }
+  /* 수식 열: 비워 두면 수식 값이 나온다. 적으면 그 값이 이긴다. */
+  if(td.dataset.fx && el.tagName !== 'SELECT')
+    el.placeholder = '비워 두면 수식 값' +
+      (td.classList.contains('fxcol') ? ' (' + td.textContent + ')' : '');
   var before = td.textContent, done = false;
   td.textContent = ''; td.appendChild(el);
   if(kind === '긴글'){
@@ -132,6 +136,7 @@ function openCell(td){
      .then(function(d){
        if(d.ok){
          td.dataset.raw = d.raw; td.textContent = d.표시; td.title = d.표시;
+         if(td.dataset.fx) td.classList.toggle('fxcol', !!d.수식);
          td.classList.add('saved');
          setTimeout(function(){ td.classList.remove('saved'); }, 1200);
        } else {

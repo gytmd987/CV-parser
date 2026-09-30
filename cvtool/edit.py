@@ -77,7 +77,7 @@ _EMAIL_FIELDS = {"이메일"}
 _PHONE_FIELDS = {"전화번호"}
 _MAJOR_FIELDS = {"박사_전공", "석사_전공", "학사_전공"}
 #: 여러 값을 넣을 수 있는 항목 (구분자 통일 대상)
-_MULTI_FIELDS = {"연구분야_키워드"}
+_MULTI_FIELDS = {"연구분야_키워드", "보유기술"}
 
 
 class ValidationError(ValueError):

@@ -15,7 +15,7 @@ from ...recruit import STAGES
 from ...timeutil import now_kst
 
 from ..state import audit, auth, recruit, registry, store
-from ..columns import MANAGE_COLUMNS, 라벨, 머리글, 열목록, 열폭
+from ..columns import _표값맵, MANAGE_COLUMNS, 라벨, 머리글, 열목록, 열폭
 from ..layout import _page, _알림, _없는주소, _정적JS
 from ..router import 라우트, 로그인만
 
@@ -47,8 +47,11 @@ def _recruit_rows(me: User, sort: str = ""):
     사용자값맵 = store.custom_map()
     사용자열이름 = set(store.field_names())
     관리값맵 = store.meta_map()
+    수식들 = store.field_formulas()
+    수식표값 = _표값맵() if 수식들 else {}
 
-    def 값(rec, col: str) -> str:
+    def 값(rec, col: str, 보임: bool = True) -> str:
+        """칸 값. `보임` 이면 수식 열의 빈칸은 수식 값으로 (고치는 칸에는 False)."""
         p = 진행맵.get(rec.지원자_ID)
         if col in MANAGE_COLUMNS:
             return 관리값맵.get(rec.지원자_ID, {}).get(col, "")
@@ -63,7 +66,10 @@ def _recruit_rows(me: User, sort: str = ""):
         if col in STAGES:
             return (p.단계상태.get(col, "") if p else "")
         if col in 사용자열이름:
-            return 사용자값맵.get(rec.지원자_ID, {}).get(col, "")
+            v = 사용자값맵.get(rec.지원자_ID, {}).get(col, "")
+            if 보임 and col in 수식들 and not v.strip():
+                v = 수식표값.get(rec.지원자_ID, {}).get(col, "")
+            return v
         return str(rec.to_row(registry).get(col, "") or "")
 
     def 정렬키(rec):
@@ -89,6 +95,7 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
         고칠 일이 있으면 인재 Pool 이나 상세 화면에서 한다.
     """
     records, 진행맵, 값 = _recruit_rows(me, sort)
+    수식들 = store.field_formulas()
     보이는과제 = auth.visible_project_ids(me)
     depts = auth.departments()
     projects = auth.projects()
@@ -177,10 +184,17 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
             elif col in 채용사용자열 and 수정가능:
                 spec = custom_field_spec(채용사용자열[col], col in 긴글열)
                 이름 = f"사용자_{열번호[col]}_{html.escape(cid)}"
+                # 고치는 칸에는 **사람이 적은 값**만. 수식 값은 흐린 안내로.
+                원 = 값(rec, col, 보임=False)
+                수식값 = 값(rec, col) if col in 수식들 and not 원.strip() else ""
+                v = html.escape(원)
+                안내 = html.escape(f"비워 두면 수식 값 ({수식값})" if col in 수식들
+                                 else spec.도움말)
                 if spec.입력 == "select":
                     옵션 = "".join(
-                        f"<option{' selected' if o == 값(rec, col) else ''}>"
-                        f"{html.escape(o)}</option>" for o in spec.선택지
+                        f"<option{' selected' if o == 원 else ''}>"
+                        f"{html.escape(o) or (f'(수식: {수식값})' if col in 수식들 else '')}"
+                        "</option>" for o in spec.선택지
                     )
                     칸 = (f"<select form='recruitform' name='{이름}' data-orig='{v}'"
                          f" onchange='markDirty(this)'>{옵션}</select>")
@@ -188,12 +202,12 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
                     칸 = (f"<textarea form='recruitform' name='{이름}' rows='2'"
                          f" style='width:140px;resize:vertical' data-orig='{v}'"
                          f" oninput='markDirty(this)'"
-                         f" title='{html.escape(spec.도움말)}'>{v}</textarea>")
+                         f" title='{안내}' placeholder='{안내}'>{v}</textarea>")
                 else:
                     칸 = (f"<input type='text' form='recruitform' name='{이름}'"
                          f" value='{v}' style='width:140px' data-orig='{v}'"
                          f" oninput='markDirty(this)'"
-                         f" title='{html.escape(spec.도움말)}'>")
+                         f" title='{안내}' placeholder='{안내}'>")
                 cells.append(f"<td class='ctl'>{칸}</td>")
             elif col == "최종상태":
                 cls = " class='flag'" if p and p.탈락 else ""

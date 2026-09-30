@@ -18,12 +18,12 @@ from ...dashboards import (
 )
 from ...edit import CHOICE_FIELDS
 from ...export import build_sheet_xlsx, col_letter
-from ...recruit import RECRUIT_COLUMNS, STAGES
+from ...recruit import STAGES
 from ...sheet import SheetError, 계산 as 수식계산
 from ...timeutil import now_kst
 
 from ..state import audit, auth, boards, mailing, recruit, registry, store
-from ..columns import MAIL_COLUMN, 머리글, 열폭, 지원자열
+from ..columns import MAIL_COLUMN, 덧값, 머리글, 모든열, 수식열채우기, 열폭
 from ..layout import _page, _알림, _없는주소, _정적JS
 from ..router import 라우트
 
@@ -50,6 +50,8 @@ def 대시보드_행() -> F.Rows:
     # 화면에는 빈칸 대신 `?` 가 뜬다. 자동완성·저장 검사가 쓰는 그 목록으로
     # 빈칸을 먼저 깔아 두면 목록과 줄이 어긋날 수가 없다.
     빈칸 = {c: "" for c in 대시보드_열()}
+    수식들 = store.field_formulas()
+    채용중열 = store.field("채용중") is not None
 
     지원자행, 채용행 = [], []
     for rec in store.list_all():
@@ -67,12 +69,10 @@ def 대시보드_행() -> F.Rows:
         행["채용_비고"] = p.채용_비고 if p else ""
         for 단계 in STAGES:
             행[단계] = (p.단계상태.get(단계, "") if p else "")
-        m = 상위매칭.get(cid)
-        행["매칭_과제"] = (m or {}).get("과제명", "") if isinstance(m, dict) else ""
-        행["매칭_점수"] = str((m or {}).get("점수", "")) if isinstance(m, dict) else ""
         행[MAIL_COLUMN] = 보낸것맵.get(cid, "")
         # 엑셀 모양 수식에서 «채용 중인 사람만» 을 거는 열 (`COUNTIFS(채용중, "Y", …)`)
-        행["채용중"] = "Y" if cid in 시작한사람 else ""
+        덧값(행, cid, 시작한사람, 상위매칭, 채용중열)
+        수식열채우기(행, 사용자값.get(cid, {}), 수식들, 빈칸)
         지원자행.append(행)
         if cid in 시작한사람:
             채용행.append(행)
@@ -102,9 +102,7 @@ def 대시보드_행_잠깐() -> F.Rows:
 
 def 대시보드_열() -> set[str]:
     """수식·문장 틀에서 쓸 수 있는 열 이름 전부."""
-    이름 = set(지원자열()) | set(RECRUIT_COLUMNS) | set(store.field_names())
-    이름 |= {"지원자_ID", "매칭_과제", "매칭_점수", "채용중"}
-    return 이름
+    return 모든열()
 
 
 def 대시보드_축() -> dict[str, list[str]]:
@@ -168,10 +166,9 @@ def _프로필값(cid: str) -> dict[str, str]:
     행["채용_비고"] = p.채용_비고
     for 단계 in STAGES:
         행[단계] = p.단계상태.get(단계, "")
-    m = store.top_matches().get(cid) or {}
-    행["매칭_과제"] = m.get("과제명", "")
-    행["매칭_점수"] = str(m.get("점수", "") or "")
     행[MAIL_COLUMN] = mailing.sent_summary().get(cid, "")
+    덧값(행, cid, recruit.started(), store.top_matches())
+    수식열채우기(행, store.custom_values(cid))
     return 행
 
 
@@ -1100,6 +1097,8 @@ _수식보기: list[tuple[str, str, str]] = [
     ('=TEXT(박사_졸업,"\'yy.mm")', "'26.02", "mm 은 두 자리"),
     ('=TEXT(박사_졸업,"yyyy.mm")', "2026.02", "연도를 네 자리로"),
     ('=TEXT(박사_졸업,"yyyy년 m월")', "2026년 2월", "서식 밖의 글자는 그대로"),
+    ('=TEXT(저널_수/학회_수,"0.0")', "1.5", "<b>숫자 서식</b>도 엑셀과 같습니다"),
+    ('=TEXT(0.355,"0.0%")', "35.5%", "% · <code>#,##0</code> · <code>000</code> 도 됩니다"),
     ('=TEXT(박사_시작,"\'yy.m") & "~" & TEXT(박사_졸업,"\'yy.m")',
      "'22.2~'26.2", "기간은 두 번 써서 잇습니다"),
     ('=IF(석사_학교="","",석사_학교)', "(석사가 없으면 빈칸)", "IF 로 갈라 씁니다"),

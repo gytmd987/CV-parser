@@ -10,10 +10,11 @@ from ...auth import User
 from ...edit import CHOICE_FIELDS, field_spec, REGISTRY_FIELDS
 from ...recruit import FIXED_STATUSES, STAGES
 from ...schemas import is_tier_venue, NAME_COLUMNS, TIER_COLUMN_PREFIX
-from ...store import CUSTOM_SCOPES, CUSTOM_TYPES, DEFAULT_LONG_COLUMNS as store_DEFAULT_LONG
+from ... import colformula
+from ...store import CUSTOM_SCOPES, CUSTOM_TYPES, DEFAULT_LONG_COLUMNS as store_DEFAULT_LONG, 수식정리
 
 from ..state import audit, recruit, store
-from ..columns import _긴글가능, 기본숨김, 열목록, 표열
+from ..columns import _긴글가능, 기본숨김, 모든열, 열목록, 표열
 from ..layout import _page, _알림, _없는주소, _정적JS
 from ..router import 라우트
 
@@ -47,6 +48,18 @@ def _선택지편집(col: str, 지금: list[str], action: str, 고정: tuple[str
         "<button type='submit' class='sec'>선택지 저장</button>"
         + (f"<span class='muted'>{도움말}</span>" if 도움말 else "")
         + f"</form>{잠긴것}"
+    )
+
+
+def _수식편집(col: str, 수식: str) -> str:
+    """추가한 열에 거는 수식을 그 자리에서 고치는 작은 폼."""
+    return (
+        "<form method='post' action='/fields/formula' style='display:flex;gap:6px;"
+        "align-items:center;flex-wrap:wrap;margin-top:4px'>"
+        f"<input type='hidden' name='col' value='{html.escape(col)}'>"
+        f"<input type='text' name='formula' value='{html.escape(수식)}'"
+        " style='width:230px' placeholder='수식 (없으면 비움) 예: =IF(과제&lt;&gt;&quot;&quot;,&quot;Y&quot;,&quot;N&quot;)'>"
+        "<button type='submit' class='sec'>수식 저장</button></form>"
     )
 
 
@@ -85,10 +98,11 @@ def _fields_page(me: User, error: str = "", msg: str = "") -> bytes:
             꼬리 = (f"<br><span class='muted'>{html.escape(f['만든일시'])}"
                   + (f" ({html.escape(f['만든이'])})" if f["만든이"] else "")
                   + "</span>")
+            수식칸 = _수식편집(col, f.get("수식") or "")
             if f["유형"] == "선택":
                 고를것 = [o.strip() for o in (f["선택지"] or "").split("|") if o.strip()]
-                return 머리 + _선택지편집(col, 고를것, "/fields/choices") + 꼬리
-            return 머리 + 꼬리
+                return 머리 + _선택지편집(col, 고를것, "/fields/choices") + 수식칸 + 꼬리
+            return 머리 + 수식칸 + 꼬리
         if 구분 == "관리 정보":
             return "<span class='muted'>자동 기록 (고치려면 지원자 상세 화면)</span>"
         if 구분 == "채용 현황":
@@ -214,11 +228,19 @@ def _fields_page(me: User, error: str = "", msg: str = "") -> bytes:
         f"<select name='type'>{유형옵션}</select>"
         "<input type='text' name='choices' placeholder=\"선택지 (선택 유형만, | 로 구분)\""
         " style='width:280px'>"
+        "<input type='text' name='formula' style='width:260px'"
+        " placeholder='수식 (선택) 예: =IF(과제&lt;&gt;\"\",\"Y\",\"N\")'>"
         "<button type='submit'>추가</button></form>"
         "<p class='muted'><b>구분</b>을 고르면 그 표에 붙습니다 — "
         "<b>지원자 정보</b>는 인재 Pool·엑셀에, <b>채용 현황</b>은 채용 현황 표에. "
         "유형에 따라 입력칸이 달라지고 형식이 강제됩니다. "
-        "<b>값은 사람이 채웁니다</b> — LLM 이 자동으로 채우지 않습니다.</p></div>"
+        "<b>값은 사람이 채웁니다</b> — LLM 이 자동으로 채우지 않습니다.</p>"
+        "<p class='muted'><b>수식</b>을 걸면 칸이 비어 있는 사람은 수식 값이 나옵니다 "
+        "(표에는 <i>기울인 글씨</i>로). 예: <code>=IF(과제&lt;&gt;\"\",\"Y\",\"N\")</code> · "
+        "<code>=IF(저널_수&gt;=3,\"상\",\"하\")</code> · "
+        "<code>=TEXT(박사_졸업,\"yyyy.mm\")</code>. "
+        "<b>칸에 직접 적으면 그 값이 우선</b>이고, 칸을 지우면 다시 수식 값이 나옵니다. "
+        "다른 열 이름을 그대로 씁니다 (대시보드 목록과 같은 문법).</p></div>"
 
         + "<div class='card'><h2>표에 나갈 열 "
         f"<span class='muted'>{html.escape(묶음요약)}</span></h2>"
@@ -261,12 +283,15 @@ def post_fields_add(self, me, path):
     이름 = (data.get("name") or [""])[0]
     try:
         구분 = (data.get("scope") or ["지원자 정보"])[0]
+        수식 = 수식정리((data.get("formula") or [""])[0])
+        colformula.검사(이름.strip(), 수식, 모든열(), store.field_formulas())
         store.add_field(
             이름,
             (data.get("type") or ["텍스트"])[0],
             (data.get("choices") or [""])[0],
             만든이=me.아이디,
             구분=구분,
+            수식=수식,
         )
     except ValueError as exc:
         return self._redirect("/fields?err=" + urllib.parse.quote(str(exc)))
@@ -293,6 +318,30 @@ def post_fields_choices(self, me, path):
                  이전값=(옛것 or {}).get("선택지", ""), 새값=새선택지.strip())
     return self._redirect("/fields?msg=" + urllib.parse.quote(
         f"'{col}' 선택지를 바꿨습니다."))
+    return _없는주소(self)
+
+
+@라우트("POST", '/fields/formula', 권한='열_구성', 거부말='표 항목 설정은 관리자만 바꿀 수 있습니다.')
+def post_fields_formula(self, me, path):
+    # 추가한 열의 수식. 칸이 빈 사람만 이 수식 값이 나온다 (사람이 적은 값이 이긴다).
+    data = urllib.parse.parse_qs(
+        self._read_body().decode("utf-8", "replace"), keep_blank_values=True
+    )
+    col = (data.get("col") or [""])[0]
+    수식 = 수식정리((data.get("formula") or [""])[0])
+    옛것 = store.field(col)
+    if 옛것 is None:
+        return self._redirect("/fields?err=" + urllib.parse.quote(f"없는 열입니다: {col}"))
+    try:
+        다른것 = {k: v for k, v in store.field_formulas().items() if k != col}
+        colformula.검사(col, 수식, 모든열(), 다른것)
+        store.update_field(col, 수식=수식)
+    except ValueError as exc:
+        return self._redirect("/fields?err=" + urllib.parse.quote(str(exc)))
+    audit.record(me.아이디, "표항목", col, 항목="수식",
+                 이전값=옛것.get("수식") or "", 새값=수식)
+    return self._redirect("/fields?msg=" + urllib.parse.quote(
+        f"'{col}' 수식을 {'바꿨습니다' if 수식 else '뺐습니다'}."))
     return _없는주소(self)
 
 
