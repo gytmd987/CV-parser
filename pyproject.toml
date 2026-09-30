@@ -29,5 +29,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 include = ["cvtool*"]
 
+# 화면에 심는 JavaScript (cvtool/web/static/*.js) 도 같이 설치한다.
+[tool.setuptools.package-data]
+"cvtool.web" = ["static/*.js"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
