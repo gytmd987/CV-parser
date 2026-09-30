@@ -162,7 +162,7 @@ def _routes() -> tuple[set[str], set[str]]:
     """`@라우트("GET", "/주소", 권한=…)` 로 등록한 주소들. 소스를 읽어서 찾는다 —
     앱을 불러오면 DB 가 만들어지므로 여기서는 글자만 본다."""
     찾은것: dict[str, set[str]] = {"GET": set(), "POST": set()}
-    for 파일 in WEB.glob("*.py"):
+    for 파일 in WEB.rglob("*.py"):
         for 방법, 주소 in re.findall(r"""@라우트\(\s*"(GET|POST)",\s*["']([^"']+)["']""",
                                    파일.read_text(encoding="utf-8")):
             찾은것[방법].add(주소)

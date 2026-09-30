@@ -38,6 +38,6 @@ def test_화면에_심어도_script_가_안_끊긴다(파일):
 
 def test_안_쓰는_JS_파일이_없다():
     """파일은 있는데 아무도 안 불러오면, 고쳐도 화면에 안 나타나 헤맨다."""
-    파이썬 = "".join(p.read_text(encoding="utf-8") for p in WEB.glob("*.py"))
+    파이썬 = "".join(p.read_text(encoding="utf-8") for p in WEB.rglob("*.py"))
     불러옴 = set(re.findall(r'_정적JS\("([^"]+)"\)', 파이썬))
     assert {p.name for p in JS들} == 불러옴

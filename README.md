@@ -2087,7 +2087,15 @@ cvtool/
   clients/mail.py      사내 메일 API (JSON 문자열 본문 + URL 에 userId 직접)
   clients/embedding.py TEI 임베딩 (32개씩 배치)   ← 매칭 슬라이스에서 사용
   clients/reranker.py  TEI 리랭커                  ← 매칭 슬라이스에서 사용
-  web/app.py           웹 앱 (로그인·업로드탭·표 인라인 편집·명칭/채용/계정/표항목)
+  web/app.py           조립 — 요청을 받아 주소표에서 찾아 부르고, 서버를 띄운다
+  web/state.py         데이터 폴더 · 저장소(DB)들 · 최초 관리자
+  web/jobs.py          CV 분석 대기열 · 과제 매칭 실행
+  web/columns.py       표의 열 (머리글 · 너비 · 값 · 칸 편집 모양)
+  web/mail_targets.py  아직 메일을 안 보낸 사람 (탭 숫자 · 메일 화면)
+  web/layout.py        화면 틀 (CSS · 탭 · 알림 · `_page`)
+  web/pages/*.py       화면별 처리 — 파일 하나가 탭 하나
+                       (candidates · recruit · mail · dashboard · names · fields ·
+                        match · org · login)
   web/static/*.js      화면에 심는 JavaScript (시트 편집기·표·메일 편집기·자동완성 등).
                        파이썬 문자열이 아니라 파일이라 `node --check` 로 문법을 본다.
   web/router.py        주소표 — `@라우트("GET", "/주소", 권한="…")` 로 등록. 권한을 안

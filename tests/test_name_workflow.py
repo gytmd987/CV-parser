@@ -301,9 +301,11 @@ def test_merge_names_in_the_name_view(web):
 
 
 def test_resume_puts_pending_jobs_back(web, monkeypatch):
+    from cvtool.web import jobs
+
     mod = web.module
     q: queue.Queue = queue.Queue()
-    monkeypatch.setattr(mod, "_jobs", q)             # 진짜 워커가 집어 가지 않게
+    monkeypatch.setattr(jobs, "_jobs", q)            # 진짜 워커가 집어 가지 않게
     저장명 = mod.store.store_file("CV-RESUME", "이력서.pdf", b"x")
     mod.store.add_job("CV-RESUME", "이력서.pdf", 저장명)
     try:
@@ -318,9 +320,11 @@ def test_resume_puts_pending_jobs_back(web, monkeypatch):
 
 
 def test_enqueue_writes_to_db_first(web, monkeypatch):
+    from cvtool.web import jobs
+
     mod = web.module
     q: queue.Queue = queue.Queue()
-    monkeypatch.setattr(mod, "_jobs", q)
+    monkeypatch.setattr(jobs, "_jobs", q)
     mod._enqueue("b.pdf", "CV-ENQ", "CV-ENQ.pdf")
     try:
         assert any(j["지원자_ID"] == "CV-ENQ" for j in mod.store.pending_jobs())
