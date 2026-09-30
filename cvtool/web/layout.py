@@ -321,7 +321,12 @@ table.sheet.editing td.filling{outline:2px dashed #2f6fd0;outline-offset:-2px;
 .sheetbar button,.sheetbar select,.sheetbar input{font-size:13px}
 .sheetbar input[type=color]{width:34px;height:26px;padding:0;border:1px solid #ccd3dd}
 .sheetbar .sep{width:1px;height:20px;background:#dde2ea;margin:0 2px}
-.sheetfx{width:100%;font-family:'D2Coding','Consolas',monospace}
+.sheetfx{width:100%;font-family:'D2Coding','Consolas',monospace;resize:none;
+  overflow:hidden;line-height:1.45;min-height:34px;display:block}
+/* 칸만 고른 동안(옮기는 중) — 수식칸이 키보드를 받지만 고른 글이 파랗게 보이면
+   «적는 중» 처럼 보인다. 칠과 커서를 감춘다. 치기 시작하면 원래대로. */
+.sheetfx.nav{caret-color:transparent}
+.sheetfx.nav::selection{background:transparent}
 table.dtbl.zebra tr:nth-child(even) td{background:#fafbfc}
 /* 조건서식으로 칠한 칸은 얼룩말도 hover 도 덮지 않는다 — 일부러 칠한 것이다.
    (인라인 스타일이라 이 규칙들보다 우선하지만, 명시해 두어야 나중에 규칙을

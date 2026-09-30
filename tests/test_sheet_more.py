@@ -253,3 +253,45 @@ def test_격자를_숨긴_보기는_행_번호_칸이_폭에_안_들어간다(we
     b = Block(1, 1, 0, "시트", "", {"행수": 1, "열수": 2, "격자숨김": True})
     표, _ = _시트표(b, 빈줄, set())
     assert "style='width:180px'" in 표
+
+
+# --- 칸 안 줄바꿈 · 병합 칸에 적기 · 밖에서 붙여넣기 ---------------------------------
+def test_병합에_덮인_자리의_글은_주인_칸으로_옮긴다():
+    """예전 편집기는 A1·A2 를 합친 뒤 A2 에 적을 수 있었다 — 그 글은 안 보였다."""
+    d = 시트_다듬기({"행수": 3, "열수": 1, "칸": {"A1": {"세로병합": 2}, "A2": {"글": "숨은 글"}}})
+    assert d["시트칸"] == {"A1": {"세로병합": 2, "글": "숨은 글"}}
+    d = 시트_다듬기({"행수": 3, "열수": 1, "칸": {"A1": {"글": "주인", "세로병합": 2},
+                                           "A2": {"글": "x"}}})
+    assert d["시트칸"] == {"A1": {"글": "주인", "세로병합": 2}}      # 주인이 있으면 버린다
+
+
+def test_칸_안_줄바꿈은_줄을_바꿔_보인다():
+    from cvtool.web.app import _시트표
+
+    b = Block(1, 1, 0, "시트", "", {"행수": 1, "열수": 1, "시트칸": {"A1": {"글": "첫줄\n둘째줄"}}})
+    표, _ = _시트표(b, 빈줄, set())
+    assert "첫줄<br>둘째줄" in 표
+
+
+def test_편집기_키보드와_클립보드():
+    from cvtool.web.app import _SHEET_JS
+
+    # Alt+Enter 는 칸 안 줄바꿈
+    assert "if(e.key === 'Enter' && e.altKey){" in _SHEET_JS
+    # 덮인 자리를 고르거나 옮기면 병합의 주인 칸으로 간다
+    assert "function 주인(a)" in _SHEET_JS and "기준 = 주인(가);" in _SHEET_JS
+    # 키보드는 수식칸이 받는다 — 한글 조합이 되게
+    assert "compositionstart" in _SHEET_JS and "function 칸에초점()" in _SHEET_JS
+    # 클립보드는 copy·paste 이벤트로 (https 가 아니어도 된다), 밖의 HTML 표는
+    # 스크립트가 막힌 틀에서 읽는다
+    assert "addEventListener('paste', 칸붙이기)" in _SHEET_JS
+    assert "setAttribute('sandbox', 'allow-same-origin')" in _SHEET_JS
+    assert "navigator.clipboard.readText" not in _SHEET_JS
+
+
+def test_수식칸은_여러_줄을_담는다(web_client):
+    m = web_client.module
+    did = m.boards.add("시트 줄바꿈", "admin")
+    m.boards.add_block(did, "시트", 제목="S")
+    쪽 = web_client.get(f"/dash/edit?id={did}")
+    assert "<textarea class='sheetfx fx'" in 쪽 and "Alt+Enter" in 쪽

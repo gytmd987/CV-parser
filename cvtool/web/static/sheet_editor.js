@@ -1,6 +1,7 @@
 
 function 시트편집기(칸){
   var 숨은 = 칸.querySelector('input.sheetdata');
+  var 격자 = 칸.querySelector('.sheetgrid');
   var 수식칸 = 칸.querySelector('.sheetfx');
   var 폼 = 칸.querySelector('form.sheetform');
   var 상태 = 칸.querySelector('.sheetstate');
@@ -151,8 +152,22 @@ function 시트편집기(칸){
     var 가 = 주소(n.r0,n.c0), 나 = 주소(n.r1,n.c1);
     return 가 === 나 ? 가 : (가 + ':' + 나);
   }
+  /* 병합에 **덮인 자리**면 그 병합의 왼쪽 위 칸(주인)을 돌려준다. 아니면 그대로.
+     덮인 자리는 화면에 칸이 없다 — 거기 적으면 안 보이는 곳에 글이 들어갔다
+     (A1·A2 를 합치고 A1 에서 Enter 로 내려가 A2 에 적으면 사라지던 것). */
+  function 주인(a){
+    var x = 자리(a), 찾은 = a;
+    Object.keys(모델.칸).some(function(k){
+      var v = 모델.칸[k], h = +v.세로병합 || 1, w = +v.가로병합 || 1;
+      if(h === 1 && w === 1) return false;
+      var y = 자리(k);
+      if(x.r >= y.r && x.r < y.r + h && x.c >= y.c && x.c < y.c + w){ 찾은 = k; return true; }
+      return false;
+    });
+    return 찾은;
+  }
   function 고르기(가, 나){
-    기준 = 가; 끝 = 나 || 가;
+    기준 = 주인(가); 끝 = 나 || 기준;
     var n = 테두리네모();
     고른것 = 네모(주소(n.r0, n.c0), 주소(n.r1, n.c1));
     고른것칠하기();
@@ -170,8 +185,10 @@ function 시트편집기(칸){
         td.appendChild(g);
       }else if(td.dataset.cell !== 손잡이 && 그립){ 그립.remove(); }
     });
-    if(document.activeElement !== 수식칸){
+    if(document.activeElement !== 수식칸 || 이동중){
       수식칸.value = 기준 ? ((모델.칸[기준]||{}).글 || '') : '';
+      높이맞추기();
+      if(이동중 && document.activeElement === 수식칸) 수식칸.select();
     }
     수식칸.disabled = !기준;
     var 표시 = 칸.querySelector('.sheetat');
@@ -179,10 +196,16 @@ function 시트편집기(칸){
   }
   function 옮기기(dr, dc, 넓히기){
     if(!기준) return;
-    var n = 자리(넓히기 ? (끝 || 기준) : 기준);
-    var r = Math.max(0, Math.min((+모델.행수||1)-1, n.r+dr));
-    var c = Math.max(0, Math.min((+모델.열수||1)-1, n.c+dc));
-    if(넓히기) 고르기(기준, 주소(r,c)); else 고르기(주소(r,c));
+    /* 병합된 칸에서 옮기면 **그 병합을 건너뛴다** (엑셀과 같다) — A1:A2 가
+       합쳐져 있으면 A1 에서 아래로 가면 A3 다. 덮인 A2 에 멈추지 않는다. */
+    var 지금 = 주인(넓히기 ? (끝 || 기준) : 기준);
+    var n = 자리(지금), v = 모델.칸[지금] || {};
+    var h = +v.세로병합 || 1, w = +v.가로병합 || 1;
+    var r = dr > 0 ? n.r + h : (dr < 0 ? n.r - 1 : n.r);
+    var c = dc > 0 ? n.c + w : (dc < 0 ? n.c - 1 : n.c);
+    r = Math.max(0, Math.min((+모델.행수||1)-1, r));
+    c = Math.max(0, Math.min((+모델.열수||1)-1, c));
+    if(넓히기) 고르기(기준, 주인(주소(r,c))); else 고르기(주소(r,c));
     var td = 칸태그(넓히기 ? 끝 : 기준);
     if(td && td.scrollIntoView) td.scrollIntoView({block:'nearest', inline:'nearest'});
   }
@@ -241,17 +264,47 @@ function 시트편집기(칸){
     });
     바뀜(); 다시계산();
   }
+  /* 키보드는 늘 **수식칸**이 받는다. 칸을 고르기만 한 동안은 «옮기는 중»
+     (이동중) 이라 방향키·Enter·Tab·Delete 가 칸을 옮기고 지우고, 글자를 치면
+     그때부터 «적는 중» 이다.
+
+     격자(편집 안 되는 div)가 키를 받으면 **한글이 안 쳐졌다** — 입력기가 글자를
+     조합할 곳이 없어서 첫 글자가 사라지거나 아예 안 들어간다. 수식칸은 글을
+     받는 칸이라 조합이 된다. 옮기는 중에는 칸의 글을 (안 보이게) 통째로 골라
+     두어서, 치면 엑셀처럼 **새 글로 바뀐다**. */
+  var 이동중 = true;
+  function 칸에초점(){
+    이동중 = true; 편집전 = null; 넣은참조 = null;
+    수식칸.classList.add('nav');
+    if(!기준) return;
+    수식칸.value = (모델.칸[기준]||{}).글 || '';
+    높이맞추기();
+    수식칸.focus({preventScroll:true});
+    수식칸.select();
+  }
+  function 적기모드(){
+    if(!이동중) return;
+    이동중 = false;
+    편집전 = (모델.칸[기준]||{}).글 || '';
+    수식칸.classList.remove('nav');
+  }
   function 적기시작(첫글){
     if(!기준) return;
-    편집전 = (모델.칸[기준]||{}).글 || '';
-    수식칸.focus();
+    수식칸.focus({preventScroll:true});
+    적기모드();
     if(첫글 !== undefined){ 수식칸.value = 첫글; }
     var n = 수식칸.value.length; 수식칸.setSelectionRange(n, n);
     수식칸.dispatchEvent(new Event('input', {bubbles:true}));
   }
-  function 적는중인가(){ return document.activeElement === 수식칸; }
+  function 적는중인가(){ return document.activeElement === 수식칸 && !이동중; }
+  /* 수식칸은 적은 줄 수만큼 늘어난다 (Alt+Enter 줄바꿈). 너무 길면 멈추고 넘긴다. */
+  function 높이맞추기(){
+    수식칸.style.height = 'auto';
+    수식칸.style.height = Math.min(수식칸.scrollHeight + 2, 180) + 'px';
+    수식칸.style.overflowY = 수식칸.scrollHeight > 178 ? 'auto' : 'hidden';
+  }
   function 참조넣을때인가(){
-    if(!적는중인가()) return false;
+    if(!적는중인가()) return false;           /* 옮기는 중이면 칸을 고르는 것이다 */
     var v = 수식칸.value, i = 수식칸.selectionStart;
     if(v.charAt(0) !== '=') return false;
     if(넣은참조 && 넣은참조.e === i) return true;
@@ -299,6 +352,8 @@ function 시트편집기(칸){
     }
     var td = e.target.closest && e.target.closest('td[data-cell]');
     if(!td || !칸.contains(td)) return;
+    /* 칸이 초점을 가져가지 못하게 한다 — 키보드는 수식칸이 받아야 한다 (한글) */
+    e.preventDefault();
     /* 수식을 적는 중이면 누른 칸을 **참조로 넣는다** (엑셀과 같다). */
     if(참조넣을때인가()){
       e.preventDefault();
@@ -319,8 +374,8 @@ function 시트편집기(칸){
     else 고르기(td.dataset.cell);
     끄는중 = null;
     고르는중 = true;
-    /* 격자에 초점을 둔다 — 그래야 방향키·바로 적기가 된다 */
-    칸.querySelector('.sheetgrid').focus({preventScroll:true});
+    /* 키보드를 받을 자리로 (방향키·바로 적기·한글 조합이 된다) */
+    칸에초점();
   });
   var 고르는중 = false;
   /* 너비·높이 끌기는 **문서 전체**에서 따라간다 — 끄는 중에 마우스가 편집기
@@ -398,105 +453,298 @@ function 시트편집기(칸){
     다시계산({'행열': 무엇, '위치': 위치, '개수': 개수});
   }
 
-  /* -- 키보드: 격자 --------------------------------------------------------- */
-  var 복사한것 = '';
-  칸.querySelector('.sheetgrid').addEventListener('keydown', function(e){
-    if(!기준) return;
+  /* -- 키보드 ---------------------------------------------------------------
+     옮기는 중(칸만 고른 상태)의 키. 격자에 초점이 있을 때도, 수식칸이 옮기는
+     중일 때도 같은 규칙이다. 처리했으면 true. */
+  function 옮기는키(e){
+    if(!기준) return false;
     var 컨트롤 = e.ctrlKey || e.metaKey, 키 = e.key;
     if(컨트롤){
       var k = 키.toLowerCase();
-      if(k === 'z'){ e.preventDefault(); 되감기(e.shiftKey); return; }
-      if(k === 'y'){ e.preventDefault(); 되감기(true); return; }
-      if(k === 's'){ e.preventDefault(); 저장(); return; }
-      if(k === 'b'){ e.preventDefault(); 껐다켜기('굵게'); return; }
-      if(k === 'i'){ e.preventDefault(); 껐다켜기('기울임'); return; }
-      if(k === 'u'){ e.preventDefault(); 껐다켜기('밑줄'); return; }
-      if(k === 'c'){ 복사(); return; }
-      if(k === 'v'){ e.preventDefault(); 붙이기(); return; }
+      if(k === 'z'){ e.preventDefault(); 되감기(e.shiftKey); return true; }
+      if(k === 'y'){ e.preventDefault(); 되감기(true); return true; }
+      if(k === 's'){ e.preventDefault(); 저장(); return true; }
+      if(k === 'b'){ e.preventDefault(); 껐다켜기('굵게'); return true; }
+      if(k === 'i'){ e.preventDefault(); 껐다켜기('기울임'); return true; }
+      if(k === 'u'){ e.preventDefault(); 껐다켜기('밑줄'); return true; }
+      if(k === 'a'){ e.preventDefault(); 고르기('A1', 주소((+모델.행수||1)-1, (+모델.열수||1)-1)); return true; }
+      /* Ctrl+C · Ctrl+V 는 여기서 안 잡는다. 브라우저가 copy · paste 이벤트를
+         내게 두어야 클립보드를 **직접** 읽고 쓸 수 있다 (아래). */
       if(k === 'd' || k === 'r'){
         e.preventDefault();
         var n = 테두리네모();
-        if(n.r0 === n.r1 && n.c0 === n.c1) return;
+        if(n.r0 === n.r1 && n.c0 === n.c1) return true;
         var 원본 = k === 'd' ? 주소(n.r0,n.c0) + ':' + 주소(n.r0,n.c1)
                             : 주소(n.r0,n.c0) + ':' + 주소(n.r1,n.c0);
         채우기(원본, 네모글());
+        return true;
       }
-      return;
+      return false;
     }
     var 방향 = {ArrowUp:[-1,0], ArrowDown:[1,0], ArrowLeft:[0,-1], ArrowRight:[0,1]}[키];
-    if(방향){ e.preventDefault(); 옮기기(방향[0], 방향[1], e.shiftKey); return; }
-    if(키 === 'Enter'){ e.preventDefault(); 옮기기(e.shiftKey ? -1 : 1, 0); return; }
-    if(키 === 'Tab'){ e.preventDefault(); 옮기기(0, e.shiftKey ? -1 : 1); return; }
-    if(키 === 'F2'){ e.preventDefault(); 적기시작(); return; }
-    if(키 === 'Delete' || 키 === 'Backspace'){ e.preventDefault(); 지우기(); return; }
-    if(키.length === 1 && !e.altKey){ e.preventDefault(); 적기시작(키); }
+    if(방향){ e.preventDefault(); 옮기기(방향[0], 방향[1], e.shiftKey); return true; }
+    if(키 === 'Enter' && !e.altKey){ e.preventDefault(); 옮기기(e.shiftKey ? -1 : 1, 0); return true; }
+    if(키 === 'Tab'){ e.preventDefault(); 옮기기(0, e.shiftKey ? -1 : 1); return true; }
+    if(키 === 'F2'){ e.preventDefault(); 적기시작(); return true; }
+    if(키 === 'Delete' || 키 === 'Backspace'){ e.preventDefault(); 지우기(); return true; }
+    if(키 === 'Escape'){ e.preventDefault(); return true; }
+    return false;
+  }
+  /* 격자에 초점이 오면 키보드 자리(수식칸)로 넘긴다 */
+  격자.addEventListener('focusin', function(){ if(기준) 칸에초점(); });
+  격자.addEventListener('keydown', function(e){
+    if(옮기는키(e)) return;
+    if(e.key.length === 1 && !e.altKey && !e.ctrlKey && !e.metaKey){ e.preventDefault(); 적기시작(e.key); }
   });
 
-  /* -- 키보드: 수식칸 ------------------------------------------------------- */
   수식칸.addEventListener('keydown', function(e){
     if(e.defaultPrevented) return;          /* 자동완성이 먼저 가져갔다 (Tab·Esc) */
+    if(이동중){
+      if(e.isComposing || e.keyCode === 229) return;   /* 한글 조합 시작 — 적기로 넘어간다 */
+      if(옮기는키(e)) return;
+      if(e.key === 'Enter' && e.altKey){ e.preventDefault(); return; }
+      return;                              /* 글자 — 그대로 들어가고 input 에서 적기로 */
+    }
+    if(e.key === 'Enter' && e.altKey){
+      /* 칸 안 줄바꿈 (엑셀과 같다). 적은 자리에 줄바꿈을 끼운다. */
+      e.preventDefault();
+      var 앞 = 수식칸.selectionStart, 뒤 = 수식칸.selectionEnd, v = 수식칸.value;
+      수식칸.value = v.slice(0, 앞) + '\n' + v.slice(뒤);
+      수식칸.setSelectionRange(앞 + 1, 앞 + 1);
+      높이맞추기();
+      return;
+    }
     if(e.key === 'Enter' && !e.altKey){
       if(document.getElementById('fxdrop')) return;
+      if(e.isComposing) return;            /* 한글 조합을 끝내는 Enter */
       e.preventDefault(); 글넣기();
-      칸.querySelector('.sheetgrid').focus({preventScroll:true});
       옮기기(e.shiftKey ? -1 : 1, 0);
+      칸에초점();
     }else if(e.key === 'Tab'){
       e.preventDefault(); 글넣기();
-      칸.querySelector('.sheetgrid').focus({preventScroll:true});
       옮기기(0, e.shiftKey ? -1 : 1);
+      칸에초점();
     }else if(e.key === 'Escape'){
       e.preventDefault();
-      if(편집전 !== null) 수식칸.value = 편집전;
-      편집전 = null; 넣은참조 = null;
-      칸.querySelector('.sheetgrid').focus({preventScroll:true});
-    }else if(편집전 === null){
-      편집전 = (모델.칸[기준]||{}).글 || '';
+      칸에초점();                          /* 적던 것을 버리고 칸 글로 되돌린다 */
     }
   });
-  수식칸.addEventListener('input', function(){ 넣은참조 = null; });
+  수식칸.addEventListener('compositionstart', function(){ 적기모드(); });
+  수식칸.addEventListener('input', function(){ 적기모드(); 넣은참조 = null; 높이맞추기(); });
   /* 다른 데로 초점이 나가면 적은 것을 넣는다 (칸 참조를 누를 때는 안 나간다) */
   수식칸.addEventListener('blur', function(){ setTimeout(function(){
-    if(!적는중인가() && 편집전 !== null) 글넣기(); }, 150); });
+    if(document.activeElement !== 수식칸 && !이동중 && 편집전 !== null){ 글넣기(); 이동중 = true; 수식칸.classList.add('nav'); }
+  }, 150); });
 
-  /* -- 복사·붙여넣기 --------------------------------------------------------- */
-  function 복사(){
-    복사한것 = 네모글();
-    if(!navigator.clipboard) return;
-    var n = 테두리네모(), 줄들 = [];
-    for(var r=n.r0; r<=n.r1; r++){
-      var 줄 = [];
-      for(var c=n.c0; c<=n.c1; c++){
-        var td = 칸태그(주소(r,c)); 줄.push(td ? td.textContent.trim() : '');
-      }
-      줄들.push(줄.join('\t'));
-    }
-    navigator.clipboard.writeText(줄들.join('\n')).catch(function(){});
+  /* -- 복사·붙여넣기 ---------------------------------------------------------
+     키보드 Ctrl+C·V 를 가로채지 않고 **copy·paste 이벤트**를 쓴다. 그래야
+     클립보드를 바로 읽고 쓸 수 있다 — `navigator.clipboard` 는 https 가 아닌
+     사내망 주소에서 막혀 있어서, 밖에서 복사한 표가 안 붙었다.
+
+     클립보드에는 글(TSV)과 **HTML 표**가 같이 들어간다. 엑셀·구글 시트·웹 페이지는
+     HTML 표에 병합(colspan·rowspan)과 서식을 싣는다 — 그걸 읽어 병합·굵기·색·
+     테두리까지 옮긴다. 여기서 복사할 때도 같은 모양으로 싣으므로 엑셀에 붙이면
+     병합·서식이 따라간다. */
+  var 복사한것 = null;              /* {영역, 표식} — 이 시트 안에서 복사한 것 */
+
+  function 이스케이프(글){
+    return String(글).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+                     .replace(/"/g,'&quot;');
   }
-  function 붙이기(){
-    if(복사한것){
-      var 원 = 복사한것.split(':'), 가 = 자리(원[0]), 나 = 자리(원[원.length-1]);
+  function TSV칸(글){
+    글 = String(글 == null ? '' : 글);
+    return /[\t\n"]/.test(글) ? '"' + 글.replace(/"/g, '""') + '"' : 글;
+  }
+  function 칸복사(e){
+    if(!기준 || !e.clipboardData) return;
+    e.preventDefault();
+    var n = 테두리네모(), 표식 = String(Date.now()) + Math.random().toString(36).slice(2, 7);
+    복사한것 = {영역: 네모글(), 표식: 표식};
+    var 줄들 = [], 표줄 = [], 덮인 = {};
+    for(var r=n.r0; r<=n.r1; r++){
+      var 글줄 = [], 칸줄 = [];
+      for(var c=n.c0; c<=n.c1; c++){
+        var a = 주소(r,c), td = 칸태그(a);
+        var 보임 = td ? td.innerText.replace(/\n$/, '') : '';
+        글줄.push(TSV칸(덮인[a] ? '' : 보임));
+        if(덮인[a] || !td) continue;
+        var v = 모델.칸[a] || {}, h = +v.세로병합 || 1, w = +v.가로병합 || 1;
+        for(var rr=r; rr<r+h; rr++) for(var cc=c; cc<c+w; cc++) if(rr!==r || cc!==c) 덮인[주소(rr,cc)] = 1;
+        var 속 = 보임.split('\n').map(이스케이프).join('<br style="mso-data-placement:same-cell;">');
+        칸줄.push('<td' + (w > 1 ? ' colspan="' + w + '"' : '') + (h > 1 ? ' rowspan="' + h + '"' : '')
+          + ' style="' + 이스케이프(td.style.cssText) + '"'
+          + " data-raw='" + 이스케이프(JSON.stringify(v)).replace(/'/g, '&#39;') + "'>" + 속 + '</td>');
+      }
+      줄들.push(글줄.join('\t'));
+      표줄.push('<tr>' + 칸줄.join('') + '</tr>');
+    }
+    e.clipboardData.setData('text/plain', 줄들.join('\r\n'));
+    e.clipboardData.setData('text/html', '<meta charset="utf-8"><table data-cvsheet="' + bid + '|'
+      + 표식 + '" style="border-collapse:collapse">' + 표줄.join('') + '</table>');
+  }
+
+  function 칸붙이기(e){
+    if(!기준 || !e.clipboardData) return;
+    e.preventDefault();
+    var html = e.clipboardData.getData('text/html') || '';
+    var 글 = e.clipboardData.getData('text/plain') || '';
+    /* 이 시트에서 방금 복사한 것 — 수식의 칸 참조를 옮긴 만큼 밀어야 하므로 서버에 맡긴다 */
+    if(복사한것 && html.indexOf('data-cvsheet="' + bid + '|' + 복사한것.표식 + '"') >= 0){
+      var 원 = 복사한것.영역.split(':'), 가 = 자리(원[0]), 나 = 자리(원[원.length-1]);
       var n = 테두리네모(), 대상;
       if(n.r0 !== n.r1 || n.c0 !== n.c1) 대상 = 네모글();
       else 대상 = 주소(n.r0,n.c0) + ':' + 주소(n.r0 + Math.abs(나.r-가.r), n.c0 + Math.abs(나.c-가.c));
-      채우기(복사한것, 대상);
+      채우기(복사한것.영역, 대상);
       return;
     }
-    /* 밖(엑셀 등)에서 복사한 글: 탭·줄바꿈으로 나눠 칸마다 넣는다 */
-    if(!navigator.clipboard || !navigator.clipboard.readText) return;
-    navigator.clipboard.readText().then(function(글){
-      if(!글) return;
-      var 시작 = 자리(기준);
-      기록();
-      글.replace(/\r/g,'').replace(/\n$/,'').split('\n').forEach(function(줄, i){
-        줄.split('\t').forEach(function(v, j){
-          var r = 시작.r + i, c = 시작.c + j;
-          if(r >= 모델.행수 || c >= 모델.열수) return;
-          var a = 주소(r,c);
-          if(v) 칸값(a).글 = v; else if(모델.칸[a]){ delete 모델.칸[a].글; if(비었나(a)) delete 모델.칸[a]; }
+    var 표 = /<table[\s>]/i.test(html) ? HTML표읽기(html) : null;
+    if(!표 || !표.칸들.length) 표 = TSV읽기(글);
+    if(표 && 표.칸들.length) 깔기(표);
+  }
+  격자.addEventListener('copy', 칸복사);
+  격자.addEventListener('paste', 칸붙이기);
+  /* 수식칸이 옮기는 중이면 복사·붙여넣기는 **칸**의 것이다. 적는 중이면 글자의 것. */
+  수식칸.addEventListener('copy', function(e){ if(이동중) 칸복사(e); });
+  수식칸.addEventListener('paste', function(e){ if(이동중) 칸붙이기(e); });
+
+  /* 따옴표로 감싼 칸(칸 안 줄바꿈·탭) 까지 읽는 TSV. 엑셀이 이렇게 준다. */
+  function TSV읽기(글){
+    글 = 글.replace(/\r\n?/g, '\n').replace(/\n$/, '');
+    if(!글) return null;
+    var 줄들 = [[]], 지금 = '', i = 0, 따옴 = false;
+    while(i < 글.length){
+      var ch = 글.charAt(i);
+      if(따옴){
+        if(ch === '"' && 글.charAt(i+1) === '"'){ 지금 += '"'; i += 2; continue; }
+        if(ch === '"'){ 따옴 = false; i++; continue; }
+        지금 += ch; i++; continue;
+      }
+      if(ch === '"' && 지금 === ''){ 따옴 = true; i++; continue; }
+      if(ch === '\t'){ 줄들[줄들.length-1].push(지금); 지금 = ''; i++; continue; }
+      if(ch === '\n'){ 줄들[줄들.length-1].push(지금); 지금 = ''; 줄들.push([]); i++; continue; }
+      지금 += ch; i++;
+    }
+    줄들[줄들.length-1].push(지금);
+    var 칸들 = [], 너비 = 0;
+    줄들.forEach(function(줄, r){
+      너비 = Math.max(너비, 줄.length);
+      줄.forEach(function(v, c){ 칸들.push({r: r, c: c, 칸: v ? {글: v} : {}}); });
+    });
+    return {높이: 줄들.length, 너비: 너비, 칸들: 칸들};
+  }
+
+  /* 밖에서 온 HTML 표. 계산된 스타일을 읽으려고 **스크립트가 막힌** 숨은 틀에
+     그려 본다 (엑셀은 서식을 <style> 의 클래스로 준다 — 글만 봐서는 모른다). */
+  function HTML표읽기(html){
+    var 문서 = new DOMParser().parseFromString(html, 'text/html');
+    문서.querySelectorAll('script,iframe,object,embed,link,img,meta,base,form').forEach(function(x){ x.remove(); });
+    var 틀 = document.createElement('iframe');
+    틀.setAttribute('sandbox', 'allow-same-origin');        /* 스크립트는 안 돈다 */
+    틀.style.cssText = 'position:absolute;left:-10000px;top:0;width:1600px;height:900px;visibility:hidden';
+    document.body.appendChild(틀);
+    try{
+      var d = 틀.contentDocument;
+      d.open(); d.write('<!doctype html>' + 문서.documentElement.outerHTML); d.close();
+      var 표 = d.querySelector('table');
+      if(!표) return null;
+      var 창 = 틀.contentWindow, 칸들 = [], 찬 = {}, 높이 = 0, 너비 = 0, 크기들 = {};
+      var 줄목록 = Array.prototype.filter.call(표.rows, function(tr){ return tr.closest('table') === 표; });
+      줄목록.forEach(function(tr, r){
+        var c = 0;
+        Array.prototype.forEach.call(tr.cells, function(td){
+          while(찬[r + ',' + c]) c++;
+          var w = Math.max(1, td.colSpan || 1), h = Math.max(1, td.rowSpan || 1);
+          for(var rr=r; rr<r+h; rr++) for(var cc=c; cc<c+w; cc++) 찬[rr + ',' + cc] = 1;
+          var 칸 = 스타일읽기(td, 창, 크기들);
+          var 글 = (td.innerText || td.textContent || '').replace(/ /g, ' ').replace(/\n+$/, '');
+          if(글) 칸.글 = 글;
+          if(w > 1) 칸.가로병합 = w;
+          if(h > 1) 칸.세로병합 = h;
+          칸들.push({r: r, c: c, 칸: 칸});
+          높이 = Math.max(높이, r + h); 너비 = Math.max(너비, c + w);
+          c += w;
         });
       });
-      바뀜(); 다시계산();
-    }).catch(function(){});
+      /* 가장 흔한 글자 크기는 «기본» 으로 본다 — 안 그러면 모든 칸이 11pt 로 박힌다 */
+      var 흔한 = null, 최다 = 0;
+      Object.keys(크기들).forEach(function(k){ if(크기들[k] > 최다){ 최다 = 크기들[k]; 흔한 = +k; } });
+      칸들.forEach(function(x){ if(x.칸.크기 === 흔한) delete x.칸.크기; });
+      return {높이: 높이, 너비: 너비, 칸들: 칸들};
+    } finally { 틀.remove(); }
+  }
+  function 색(v){
+    var m = /rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)(?:[,\s/]+([\d.]+))?/.exec(v || '');
+    if(!m || (m[4] !== undefined && +m[4] === 0)) return '';
+    return '#' + [m[1], m[2], m[3]].map(function(x){ return ('0' + (+x).toString(16)).slice(-2); }).join('');
+  }
+  function 스타일읽기(td, 창, 크기들){
+    var cs = 창.getComputedStyle(td), 칸 = {};
+    if(parseInt(cs.fontWeight, 10) >= 600) 칸.굵게 = 1;
+    if(cs.fontStyle === 'italic') 칸.기울임 = 1;
+    if((cs.textDecorationLine || cs.textDecoration || '').indexOf('underline') >= 0) 칸.밑줄 = 1;
+    var 글자 = 색(cs.color);
+    if(글자 && 글자 !== '#000000') 칸.글자 = 글자;
+    /* 배경은 칸에 없으면 줄·표에 있을 수 있다 */
+    for(var el = td; el && el.tagName !== 'BODY'; el = el.parentElement){
+      var 배경 = 색(창.getComputedStyle(el).backgroundColor);
+      if(배경){ if(배경 !== '#ffffff') 칸.배경 = 배경; break; }
+      if(el.tagName === 'TABLE') break;
+    }
+    var 맞춤 = cs.textAlign;
+    if(맞춤 === 'center' || 맞춤 === '-webkit-center') 칸.정렬 = 'center';
+    else if(맞춤 === 'right' || 맞춤 === 'end' || 맞춤 === '-webkit-right') 칸.정렬 = 'right';
+    var 크기 = Math.round(parseFloat(cs.fontSize) || 0);
+    if(크기 >= 8 && 크기 <= 48){ 칸.크기 = 크기; 크기들[크기] = (크기들[크기] || 0) + 1; }
+    var 테 = {}, 선색 = '';
+    [['위','Top'],['아래','Bottom'],['왼쪽','Left'],['오른쪽','Right']].forEach(function(x){
+      var 모양 = cs['border' + x[1] + 'Style'], 두께 = parseFloat(cs['border' + x[1] + 'Width']) || 0;
+      if(!모양 || 모양 === 'none' || 모양 === 'hidden' || 두께 <= 0) return;
+      var 이것 = 색(cs['border' + x[1] + 'Color']);
+      if(!이것) return;                       /* 투명한 선은 선이 아니다 */
+      테[x[0]] = 모양 === 'double' ? '이중'
+               : (모양 === 'dashed' || 모양 === 'dotted') ? '점선'
+               : (두께 >= 1.5 ? '굵게' : '얇게');
+      선색 = 선색 || 이것;
+    });
+    if(Object.keys(테).length){ 칸.테두리 = 테; 칸.테두리색 = 선색 || '#222222'; }
+    /* 이 앱에서 복사한 표 (다른 시트) — 수식·서식을 그대로 가져온다 */
+    if(td.getAttribute('data-raw')){
+      try{
+        var 날것 = JSON.parse(td.getAttribute('data-raw'));
+        if(날것 && typeof 날것 === 'object'){ delete 날것.가로병합; delete 날것.세로병합; return 날것; }
+      }catch(_){}
+    }
+    return 칸;
+  }
+
+  /* 읽은 표를 고른 칸부터 깐다. 그 넓이의 옛 칸·병합은 걷어 낸다 (엑셀과 같다). */
+  function 깔기(표){
+    var 시작 = 자리(기준);
+    var 행끝 = Math.min(100, 시작.r + 표.높이), 열끝 = Math.min(26, 시작.c + 표.너비);
+    기록();
+    모델.행수 = Math.max(+모델.행수 || 1, 행끝);
+    모델.열수 = Math.max(+모델.열수 || 1, 열끝);
+    var n = {r0: 시작.r, c0: 시작.c, r1: 행끝 - 1, c1: 열끝 - 1};
+    Object.keys(모델.칸).forEach(function(k){
+      var x = 자리(k), v = 모델.칸[k], h = +v.세로병합 || 1, w = +v.가로병합 || 1;
+      var 안 = x.r >= n.r0 && x.r <= n.r1 && x.c >= n.c0 && x.c <= n.c1;
+      var 걸침 = x.r <= n.r1 && x.r + h - 1 >= n.r0 && x.c <= n.c1 && x.c + w - 1 >= n.c0;
+      if(안) delete 모델.칸[k];
+      else if(걸침){ delete v.세로병합; delete v.가로병합; if(비었나(k)) delete 모델.칸[k]; }
+    });
+    표.칸들.forEach(function(x){
+      var r = 시작.r + x.r, c = 시작.c + x.c;
+      if(r > n.r1 || c > n.c1 || !Object.keys(x.칸).length) return;
+      var 칸 = JSON.parse(JSON.stringify(x.칸));
+      if(칸.세로병합) 칸.세로병합 = Math.min(칸.세로병합, n.r1 - r + 1);
+      if(칸.가로병합) 칸.가로병합 = Math.min(칸.가로병합, n.c1 - c + 1);
+      if(칸.세로병합 === 1) delete 칸.세로병합;
+      if(칸.가로병합 === 1) delete 칸.가로병합;
+      모델.칸[주소(r, c)] = 칸;
+    });
+    바뀜();
+    고르기(주소(n.r0, n.c0), 주소(n.r1, n.c1));
+    다시계산();
   }
 
   /* -- 서식 ------------------------------------------------------------------ */
@@ -631,7 +879,7 @@ function 시트편집기(칸){
       else if(무엇 === '병합해제') 해제();
       else if(무엇 === '테두리'){ if(el.value){ 테두리(el.value); el.value = ''; } }
       else 서식먹이기(무엇, el.value || null);
-      칸.querySelector('.sheetgrid').focus({preventScroll:true});
+      칸에초점();
     });
   });
 
