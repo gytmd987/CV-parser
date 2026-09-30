@@ -173,3 +173,61 @@ def test_보기에서_격자를_숨기면_머리글이_없다(web_client):
     편집 = web.get(f"/dash/edit?id={did}")
     assert "data-col='A'" in 편집 and "data-sheet='테두리'" in 편집
     assert bid
+
+
+# --- 병합 칸 테두리 ----------------------------------------------------------------
+def _그린것(b) -> dict:
+    결과 = render_sheet(b, 빈줄)
+    return {주소글: 스타일 for 줄 in 결과.행 for 주소글, _v, 스타일, _w, _h in 줄}
+
+
+def test_위_왼쪽_테두리는_이웃도_같은_선을_그린다():
+    """표는 겹친 선에서 왼쪽·위 칸의 것을 쓴다. 이웃이 연한 격자선만 가지면
+    오른쪽·아래 칸에 그은 위·왼쪽 테두리가 져서 사라졌다."""
+    b = Block(1, 1, 0, "시트", "", {"행수": 3, "열수": 3, "시트칸": {
+        "B2": {"테두리": {"위": "얇게", "왼쪽": "얇게"}, "테두리색": "#123456"}}})
+    그림 = _그린것(b)
+    assert "border-top:1px solid #123456" in 그림["B2"]
+    assert "border-bottom:1px solid #123456" in 그림["B1"]      # 위 이웃
+    assert "border-right:1px solid #123456" in 그림["A2"]       # 왼쪽 이웃
+
+
+def test_병합_칸의_둘레를_이웃_칸들이_같이_그린다():
+    b = Block(1, 1, 0, "시트", "", {"행수": 4, "열수": 4, "시트칸": {
+        "B2": {"글": "x", "가로병합": 2, "세로병합": 2,
+               "테두리": {"위": "굵게", "아래": "굵게", "왼쪽": "굵게", "오른쪽": "굵게"}}}})
+    그림 = _그린것(b)
+    for 변 in ("top", "bottom", "left", "right"):
+        assert f"border-{변}:2px solid" in 그림["B2"]
+    assert "border-bottom:2px solid" in 그림["B1"] and "border-bottom:2px solid" in 그림["C1"]
+    assert "border-right:2px solid" in 그림["A2"] and "border-right:2px solid" in 그림["A3"]
+    assert "border-left:2px solid" in 그림["D2"] and "border-top:2px solid" in 그림["C4"]
+
+
+def test_두_칸이_한_선을_다르게_그으면_센_쪽():
+    b = Block(1, 1, 0, "시트", "", {"행수": 1, "열수": 2, "시트칸": {
+        "A1": {"테두리": {"오른쪽": "얇게"}}, "B1": {"테두리": {"왼쪽": "이중"}}}})
+    그림 = _그린것(b)
+    assert "border-right:3px double" in 그림["A1"] and "border-left:3px double" in 그림["B1"]
+
+
+def test_엑셀은_병합에_덮인_칸에도_테두리를_준다():
+    b = Block(1, 1, 0, "시트", "t", {"행수": 3, "열수": 3, "시트칸": {
+        "A1": {"글": "x", "가로병합": 2, "세로병합": 2,
+               "테두리": {"위": "얇게", "아래": "얇게", "왼쪽": "얇게", "오른쪽": "얇게"}}}})
+    with zipfile.ZipFile(io.BytesIO(build_sheet_xlsx(render_sheet(b, 빈줄)))) as z:
+        시트xml = z.read("xl/worksheets/sheet1.xml").decode()
+        ElementTree.fromstring(시트xml)
+        ElementTree.fromstring(z.read("xl/styles.xml"))
+    for 칸 in ("A1", "B1", "A2", "B2"):
+        assert f'r="{칸}"' in 시트xml
+    # 한 줄 안의 칸은 열 순서대로 (엑셀이 그래야 연다)
+    줄1 = 시트xml.split('<row r="1">')[1].split("</row>")[0]
+    assert 줄1.index('r="A1"') < 줄1.index('r="B1"')
+
+
+def test_편집기는_병합에_걸친_선택을_넓힌다():
+    from cvtool.web.app import _SHEET_JS
+
+    assert "function 테두리네모()" in _SHEET_JS and "if(!넓힘) break;" in _SHEET_JS
+    assert "function 선모으기()" in _SHEET_JS          # 화면에서도 선 단위로 그린다

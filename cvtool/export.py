@@ -213,7 +213,14 @@ def build_sheet_xlsx(결과, 이름: str = "시트") -> bytes:
     # 0 = 테두리 없음, 1 = 연한 격자(예전 기본). 칸에 그은 테두리는 2번부터.
     테두리들: list = [None, "격자"]
 
-    def 모양번호(칸: dict) -> int:
+    def 선들(r: int, c: int) -> tuple:
+        """(r, c) 자리의 네 변 — 칸이 아니라 **경계선**에서 읽는다 (화면과 같다)."""
+        가로, 세로 = getattr(결과, "가로선", {}) or {}, getattr(결과, "세로선", {}) or {}
+        변들 = {"위": 가로.get((r, c)), "아래": 가로.get((r + 1, c)),
+               "왼쪽": 세로.get((r, c)), "오른쪽": 세로.get((r, c + 1))}
+        return tuple(sorted((변, x[0], x[1]) for 변, x in 변들.items() if x))
+
+    def 모양번호(칸: dict, 선=()) -> int:
         글꼴 = (_시트_글꼴.get(칸.get("글꼴") or "", ""),
               int(칸.get("크기") or 11),
               bool(칸.get("굵게")), bool(칸.get("기울임")),
@@ -223,9 +230,7 @@ def build_sheet_xlsx(결과, 이름: str = "시트") -> bytes:
         채움 = 칸.get("배경") or ""
         if 채움 not in 채움들:
             채움들.append(채움)
-        테 = 칸.get("테두리") or {}
-        if 테:
-            선 = (tuple(sorted(테.items())), 칸.get("테두리색") or "#222222")
+        if 선:
             if 선 not in 테두리들:
                 테두리들.append(선)
             테번호 = 테두리들.index(선)
@@ -236,11 +241,29 @@ def build_sheet_xlsx(결과, 이름: str = "시트") -> bytes:
             모양들.append(모양)
         return 모양들.index(모양)
 
+    def 자리(주소글: str) -> tuple[int, int]:
+        글자 = "".join(ch for ch in 주소글 if ch.isalpha())
+        return int("".join(ch for ch in 주소글 if ch.isdigit())) - 1, col_index_local(글자)
+
     # 칸마다 모양 번호를 미리 매긴다 (styles.xml 을 먼저 만들어야 해서).
+    # 병합에 **덮인 칸**도 테두리가 있으면 내보낸다 — 엑셀은 병합된 넓이의
+    # 테두리를 그 안의 칸들에서 그린다. 왼쪽 위 칸에만 주면 테두리가 그 칸
+    # 크기만큼만 그려졌다.
     번호 = {}
+    덮인칸들: list[str] = []
     for 줄 in 결과.행:
-        for 주소글, _값, _스타일, _가로, _세로 in 줄:
-            번호[주소글] = 모양번호(결과.칸서식.get(주소글) or {})
+        for 주소글, _값, _스타일, 가로, 세로 in 줄:
+            r, c = 자리(주소글)
+            번호[주소글] = 모양번호(결과.칸서식.get(주소글) or {}, 선들(r, c))
+            for rr in range(r, r + 세로):
+                for cc in range(c, c + 가로):
+                    if (rr, cc) == (r, c):
+                        continue
+                    선 = 선들(rr, cc)
+                    if 선:
+                        덮인 = f"{col_letter(cc)}{rr + 1}"
+                        번호[덮인] = 모양번호(결과.칸서식.get(주소글) or {}, 선)
+                        덮인칸들.append(덮인)
 
     def 글꼴XML(f) -> str:
         이름, 크기, 굵게, 기울임, 밑줄, 색 = f
@@ -272,12 +295,13 @@ def build_sheet_xlsx(결과, 이름: str = "시트") -> bytes:
                     '<right style="thin"><color rgb="FFD6DBE3"/></right>'
                     '<top style="thin"><color rgb="FFD6DBE3"/></top>'
                     '<bottom style="thin"><color rgb="FFD6DBE3"/></bottom><diagonal/></border>')
-        변들, 색 = dict(선[0]), 선[1]
+        변들 = {변: (모양, 색) for 변, 모양, 색 in 선}
         속 = ""
         for 변, 태그 in (("왼쪽", "left"), ("오른쪽", "right"), ("위", "top"), ("아래", "bottom")):
-            모양 = _엑셀선.get(변들.get(변, ""))
-            속 += (f'<{태그} style="{모양}"><color rgb="{_argb(색)}"/></{태그}>'
-                  if 모양 else f"<{태그}/>")
+            모양, 색 = 변들.get(변, ("", ""))
+            엑셀 = _엑셀선.get(모양)
+            속 += (f'<{태그} style="{엑셀}"><color rgb="{_argb(색)}"/></{태그}>'
+                  if 엑셀 else f"<{태그}/>")
         return f"<border>{속}<diagonal/></border>"
 
     def 모양XML(m) -> str:
@@ -323,14 +347,22 @@ def build_sheet_xlsx(결과, 이름: str = "시트") -> bytes:
                 글자 = "".join(ch for ch in 주소글 if ch.isalpha())
                 끝 = f"{col_letter(col_index_local(글자) + 가로 - 1)}{r + 세로 - 1}"
                 병합.append(f'<mergeCell ref="{주소글}:{끝}"/>')
+    for 덮인 in 덮인칸들:                 # 값은 없고 테두리만 가진 칸
+        r = int("".join(ch for ch in 덮인 if ch.isdigit()))
+        칸XML.setdefault(r, []).append(f'<c r="{덮인}" s="{번호[덮인]}"/>')
 
     폭 = "".join(
         f'<col min="{col_index_local(글자) + 1}" max="{col_index_local(글자) + 1}"'
         f' width="{max(4, int(int(px) / 7))}" customWidth="1"/>'
         for 글자, px in sorted(결과.열너비.items())
     )
+    def 열순서(xml: str) -> int:
+        주소글 = xml.split('r="', 1)[1].split('"', 1)[0]
+        return col_index_local("".join(ch for ch in 주소글 if ch.isalpha()))
+
+    # 엑셀은 한 줄 안의 칸이 **열 순서대로** 와야 연다 (덮인 칸을 뒤에 붙였다).
     본문 = "".join(
-        f'<row r="{r}">' + "".join(칸들) + "</row>"
+        f'<row r="{r}">' + "".join(sorted(칸들, key=열순서)) + "</row>"
         for r, 칸들 in sorted(칸XML.items())
     )
     sheet = (

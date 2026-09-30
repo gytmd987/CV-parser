@@ -1126,8 +1126,89 @@ def _네모(범위: str) -> tuple[int, int, int, int]:
             max(a[0], b[0]), max(a[1], b[1]))
 
 
-def 시트_칸스타일(칸: dict) -> str:
-    """칸 하나의 인라인 스타일. **다듬기를 거친 값만** 들어온다고 본다."""
+#: 한 변에 테두리가 둘 겹치면 더 센 것을 쓴다 (엑셀도 두꺼운 쪽이 보인다).
+_선세기 = {"점선": 1, "얇게": 2, "굵게": 3, "이중": 4}
+
+
+def 시트_테두리선(칸들: dict, 행수: int, 열수: int) -> tuple[dict, dict]:
+    """칸마다 적힌 테두리를 **선(칸과 칸 사이 경계)** 으로 바꾼다. (가로선, 세로선)
+
+        가로선[(r, c)] = r-1 행과 r 행 사이, c 열 자리의 선 → (모양, 색)
+        세로선[(r, c)] = c-1 열과 c 열 사이, r 행 자리의 선
+
+    테두리는 칸의 것이 아니라 **두 칸이 나눠 가진 경계**의 것이다. 칸마다 제
+    테두리만 그리면, 표가 이웃한 두 칸의 선이 겹칠 때 **왼쪽·위쪽 칸의 선**을
+    쓰기 때문에 오른쪽·아래 칸에 그은 위·왼쪽 테두리가 연한 격자선에 져서
+    사라졌다. 선으로 모아 두고 양쪽 칸이 같은 선을 그리면 누가 이기든 같다.
+
+    병합된 칸은 덮는 넓이 전체의 둘레에 선을 긋는다.
+    """
+    from .sheet import 자리
+
+    가로: dict = {}
+    세로: dict = {}
+
+    def 긋기(판: dict, 열쇠, 모양: str, 색: str) -> None:
+        옛 = 판.get(열쇠)
+        if 옛 is None or _선세기.get(모양, 0) >= _선세기.get(옛[0], 0):
+            판[열쇠] = (모양, 색)
+
+    for 주소글, 칸 in (칸들 or {}).items():
+        테 = (칸 or {}).get("테두리") or {}
+        if not isinstance(테, dict) or not 테:
+            continue
+        try:
+            r0, c0 = 자리(주소글)
+        except ValueError:
+            continue
+        h = max(1, int(칸.get("세로병합", 1) or 1))
+        w = max(1, int(칸.get("가로병합", 1) or 1))
+        색 = 칸.get("테두리색") or "#222222"
+        for 변, 모양 in 테.items():
+            if 모양 not in _선CSS:
+                continue
+            if 변 == "위":
+                for c in range(c0, c0 + w):
+                    긋기(가로, (r0, c), 모양, 색)
+            elif 변 == "아래":
+                for c in range(c0, c0 + w):
+                    긋기(가로, (r0 + h, c), 모양, 색)
+            elif 변 == "왼쪽":
+                for r in range(r0, r0 + h):
+                    긋기(세로, (r, c0), 모양, 색)
+            elif 변 == "오른쪽":
+                for r in range(r0, r0 + h):
+                    긋기(세로, (r, c0 + w), 모양, 색)
+    return 가로, 세로
+
+
+def 시트_칸테두리(가로: dict, 세로: dict, r: int, c: int, h: int = 1,
+              w: int = 1) -> dict[str, tuple[str, str]]:
+    """(r, c) 에서 h×w 를 덮는 칸이 그릴 네 변. 병합 칸의 한 변이 부분만 그어져
+    있으면 가장 센 조각을 쓴다 (HTML 은 변을 쪼개 그릴 수 없다)."""
+    def 센것(조각들):
+        있는 = [x for x in 조각들 if x]
+        return max(있는, key=lambda x: _선세기.get(x[0], 0)) if 있는 else None
+
+    나온것 = {}
+    for 변, 조각들 in (
+        ("위", [가로.get((r, cc)) for cc in range(c, c + w)]),
+        ("아래", [가로.get((r + h, cc)) for cc in range(c, c + w)]),
+        ("왼쪽", [세로.get((rr, c)) for rr in range(r, r + h)]),
+        ("오른쪽", [세로.get((rr, c + w)) for rr in range(r, r + h)]),
+    ):
+        x = 센것(조각들)
+        if x:
+            나온것[변] = x
+    return 나온것
+
+
+def 시트_칸스타일(칸: dict, 테두리: dict | None = None) -> str:
+    """칸 하나의 인라인 스타일. **다듬기를 거친 값만** 들어온다고 본다.
+
+    `테두리` 는 `시트_칸테두리` 가 선에서 모아 준 네 변 {변: (모양, 색)}.
+    안 주면 칸에 적힌 것만 그린다 (칸 하나만 볼 때).
+    """
     조각 = [_색스타일(칸.get("배경", ""), 칸.get("글자", ""))]
     if 칸.get("굵게"):
         조각.append("font-weight:700")
@@ -1142,11 +1223,15 @@ def 시트_칸스타일(칸: dict) -> str:
         조각.append(f"font-family:{_글꼴스택[글꼴]}")
     if 칸.get("정렬"):
         조각.append(f"text-align:{칸['정렬']}")
-    테 = 칸.get("테두리") or {}
-    if isinstance(테, dict):
+    if 테두리 is None:
+        테 = 칸.get("테두리") or {}
         색 = 칸.get("테두리색") or "#222222"
-        for 변, 모양 in 테.items():
-            if 변 in _변CSS and 모양 in _선CSS:
+        테두리 = ({변: (모양, 색) for 변, 모양 in 테.items()}
+               if isinstance(테, dict) else {})
+    for 변 in SHEET_BORDER_SIDES:
+        if 변 in 테두리:
+            모양, 색 = 테두리[변]
+            if 모양 in _선CSS:
                 조각.append(f"border-{_변CSS[변]}:{_선CSS[모양]} {색}")
     return ";".join(x for x in 조각 if x)
 
@@ -1253,6 +1338,9 @@ class RenderedSheet:
     #: {주소: 다듬어진 서식 dict}. 엑셀로 내보낼 때 쓴다 — 화면은 스타일 글자를
     #: 쓰지만 엑슬은 값이 하나하나 필요하다.
     칸서식: dict = field(default_factory=dict)
+    #: 테두리 선 (`시트_테두리선`). 엑셀로 내보낼 때 병합에 덮인 칸까지 선을 준다.
+    가로선: dict = field(default_factory=dict)
+    세로선: dict = field(default_factory=dict)
 
 
 def render_sheet(b: Block, rows, 아는열: set[str] | None = None) -> RenderedSheet:
@@ -1267,6 +1355,7 @@ def render_sheet(b: Block, rows, 아는열: set[str] | None = None) -> RenderedS
     행수, 열수 = b.시트행수, b.시트열수
     계산값, 오류 = 값들(칸들, rows, 아는열, 행수=행수, 열수=열수)
     덮인 = set(덮인칸(칸들, 행수, 열수))
+    가로선, 세로선 = 시트_테두리선(칸들, 행수, 열수)
 
     나온행 = []
     for r in range(행수):
@@ -1276,9 +1365,11 @@ def render_sheet(b: Block, rows, 아는열: set[str] | None = None) -> RenderedS
             if 주소글 in 덮인:
                 continue
             칸 = 칸들.get(주소글) or {}
-            줄.append((주소글, 계산값.get(주소글, ""), 시트_칸스타일(칸),
-                      int(칸.get("가로병합", 1)), int(칸.get("세로병합", 1))))
+            h, w = int(칸.get("세로병합", 1)), int(칸.get("가로병합", 1))
+            줄.append((주소글, 계산값.get(주소글, ""),
+                      시트_칸스타일(칸, 시트_칸테두리(가로선, 세로선, r, c, h, w)),
+                      w, h))
         나온행.append(줄)
     return RenderedSheet(제목=b.제목, 행수=행수, 열수=열수, 행=나온행,
                          열너비=b.시트열너비, 행높이=b.시트행높이, 오류=오류,
-                         칸서식=칸들)
+                         칸서식=칸들, 가로선=가로선, 세로선=세로선)

@@ -616,7 +616,7 @@ table.sheet th,table.sheet td{border:1px solid #d6dbe3;padding:4px 6px;
   max-width:none;white-space:normal;vertical-align:middle}
 table.sheet th{background:#f1f4f8;color:#5b6472;font-weight:600;text-align:center;
   font-size:12px;width:44px;min-width:44px;user-select:none}
-table.sheet td{min-width:90px}
+table.sheet td{min-width:90px;height:26px}
 table.sheet th.corner{width:44px}
 /* 보기에서 격자 숨김 — 내가 그은 테두리(인라인 style)만 남는다 */
 table.sheet.plain td{border:1px solid transparent}
@@ -6752,7 +6752,48 @@ function 시트편집기(칸){
               '고정폭':"'D2Coding','Consolas',monospace"};
   var 선표 = {'얇게':'1px solid','굵게':'2px solid','점선':'1px dashed','이중':'3px double'};
   var 변표 = {'위':'Top','아래':'Bottom','왼쪽':'Left','오른쪽':'Right'};
-  function 칠하기한칸(a){
+  /* 테두리는 **두 칸 사이의 선**이다 (서버의 `시트_테두리선` 과 같은 규칙).
+     칸마다 제 테두리만 그리면 겹친 선에서 왼쪽·위 칸이 이겨, 오른쪽·아래 칸에
+     그은 위·왼쪽 테두리가 연한 격자선에 가려 사라졌다. 선으로 모아 두고 양쪽
+     칸이 같은 선을 그린다. 병합된 칸은 덮는 넓이 전체의 둘레다. */
+  var 선세기 = {'점선':1,'얇게':2,'굵게':3,'이중':4};
+  function 선모으기(){
+    var 가로 = {}, 세로 = {};
+    function 긋기(판, k, 모양, 색){
+      var 옛 = 판[k];
+      if(!옛 || (선세기[모양]||0) >= (선세기[옛[0]]||0)) 판[k] = [모양, 색];
+    }
+    Object.keys(모델.칸).forEach(function(a){
+      var v = 모델.칸[a], 테 = v.테두리; if(!테) return;
+      var x = 자리(a), h = +v.세로병합 || 1, w = +v.가로병합 || 1, 색 = v.테두리색 || '#222222';
+      Object.keys(테).forEach(function(변){
+        var 모양 = 테[변]; if(!선표[모양]) return;
+        var i;
+        if(변 === '위')    for(i=x.c;i<x.c+w;i++) 긋기(가로, x.r+','+i, 모양, 색);
+        if(변 === '아래')  for(i=x.c;i<x.c+w;i++) 긋기(가로, (x.r+h)+','+i, 모양, 색);
+        if(변 === '왼쪽')  for(i=x.r;i<x.r+h;i++) 긋기(세로, i+','+x.c, 모양, 색);
+        if(변 === '오른쪽') for(i=x.r;i<x.r+h;i++) 긋기(세로, i+','+(x.c+w), 모양, 색);
+      });
+    });
+    return {가로: 가로, 세로: 세로};
+  }
+  function 칸선(선, a){
+    var x = 자리(a), v = 모델.칸[a] || {}, h = +v.세로병합 || 1, w = +v.가로병합 || 1, i;
+    function 센것(목록){
+      var 고른 = null;
+      목록.forEach(function(y){ if(y && (!고른 || (선세기[y[0]]||0) > (선세기[고른[0]]||0))) 고른 = y; });
+      return 고른;
+    }
+    var 위=[], 아래=[], 왼=[], 오른=[];
+    for(i=x.c;i<x.c+w;i++){ 위.push(선.가로[x.r+','+i]); 아래.push(선.가로[(x.r+h)+','+i]); }
+    for(i=x.r;i<x.r+h;i++){ 왼.push(선.세로[i+','+x.c]); 오른.push(선.세로[i+','+(x.c+w)]); }
+    return {'위': 센것(위), '아래': 센것(아래), '왼쪽': 센것(왼), '오른쪽': 센것(오른)};
+  }
+  function 칠하기전부(){
+    var 선 = 선모으기();
+    표().querySelectorAll('td[data-cell]').forEach(function(td){ 칠하기한칸(td.dataset.cell, 선); });
+  }
+  function 칠하기한칸(a, 선){
     var td = 칸태그(a); if(!td) return;
     var v = 모델.칸[a] || {};
     td.style.background = v.배경 || '';
@@ -6763,9 +6804,10 @@ function 시트편집기(칸){
     td.style.fontSize = v.크기 ? (v.크기 + 'px') : '';
     td.style.fontFamily = 글꼴표[v.글꼴] || '';
     td.style.textAlign = v.정렬 || '';
-    var 테 = v.테두리 || {}, 색 = v.테두리색 || '#222222';
+    var 네변 = 칸선(선 || 선모으기(), a);
     Object.keys(변표).forEach(function(변){
-      td.style['border' + 변표[변]] = 선표[테[변]] ? (선표[테[변]] + ' ' + 색) : '';
+      var x = 네변[변];
+      td.style['border' + 변표[변]] = x ? (선표[x[0]] + ' ' + x[1]) : '';
     });
   }
 
@@ -6777,11 +6819,29 @@ function 시트편집기(칸){
         목록.push(주소(r,c));
     return 목록;
   }
+  /* 고른 네모. **병합된 칸에 걸치면 그 칸을 다 덮도록 넓힌다** (엑셀과 같다).
+     안 넓히면 병합 칸 절반만 고른 채 «바깥 테두리» 를 그을 때, 병합 칸은 제
+     둘레에, 나머지 칸은 고른 네모 둘레에 선을 그어 선이 두 군데로 갈라졌다. */
   function 테두리네모(){
     if(!기준) return null;
     var a = 자리(기준), b = 자리(끝 || 기준);
-    return {r0: Math.min(a.r,b.r), c0: Math.min(a.c,b.c),
-            r1: Math.max(a.r,b.r), c1: Math.max(a.c,b.c)};
+    var n = {r0: Math.min(a.r,b.r), c0: Math.min(a.c,b.c),
+             r1: Math.max(a.r,b.r), c1: Math.max(a.c,b.c)};
+    for(var 번=0; 번<50; 번++){
+      var 넓힘 = false;
+      Object.keys(모델.칸).forEach(function(k){
+        var v = 모델.칸[k], h = +v.세로병합 || 1, w = +v.가로병합 || 1;
+        if(h === 1 && w === 1) return;
+        var x = 자리(k), r9 = x.r + h - 1, c9 = x.c + w - 1;
+        if(x.r > n.r1 || r9 < n.r0 || x.c > n.c1 || c9 < n.c0) return;   /* 안 걸친다 */
+        if(x.r < n.r0){ n.r0 = x.r; 넓힘 = true; }
+        if(x.c < n.c0){ n.c0 = x.c; 넓힘 = true; }
+        if(r9 > n.r1){ n.r1 = r9; 넓힘 = true; }
+        if(c9 > n.c1){ n.c1 = c9; 넓힘 = true; }
+      });
+      if(!넓힘) break;
+    }
+    return n;
   }
   function 네모글(){
     var n = 테두리네모(); if(!n) return '';
@@ -6790,7 +6850,8 @@ function 시트편집기(칸){
   }
   function 고르기(가, 나){
     기준 = 가; 끝 = 나 || 가;
-    고른것 = 네모(기준, 끝);
+    var n = 테두리네모();
+    고른것 = 네모(주소(n.r0, n.c0), 주소(n.r1, n.c1));
     고른것칠하기();
   }
   function 고른것칠하기(){
@@ -7128,9 +7189,8 @@ function 시트편집기(칸){
       if(값 === null){ if(모델.칸[a]) delete 모델.칸[a][이름]; }
       else 칸값(a)[이름] = 값;
       if(비었나(a)) delete 모델.칸[a];
-      칠하기한칸(a);
     });
-    담기(); 바뀜();
+    칠하기전부(); 담기(); 바뀜();
   }
   function 껐다켜기(이름){
     var 켤까 = !고른것.every(function(a){ return (모델.칸[a]||{})[이름]; });
@@ -7145,9 +7205,8 @@ function 시트편집기(칸){
       if(병.가로병합) 남길.가로병합 = 병.가로병합;
       if(병.세로병합) 남길.세로병합 = 병.세로병합;
       if(Object.keys(남길).length) 모델.칸[a] = 남길; else delete 모델.칸[a];
-      칠하기한칸(a);
     });
-    담기(); 바뀜();
+    칠하기전부(); 담기(); 바뀜();
   }
   /* 테두리. 엑셀의 «테두리» 단추와 같은 묶음들. 병합된 칸은 덮는 넓이로 본다. */
   function 테두리(방식){
@@ -7163,7 +7222,7 @@ function 시트편집기(칸){
       if(방식 === '없음'){
         if(모델.칸[a]){ delete 모델.칸[a].테두리; delete 모델.칸[a].테두리색;
                       if(비었나(a)) delete 모델.칸[a]; }
-        칠하기한칸(a); return;
+        return;
       }
       var 변들 = [];
       if(방식 === '모두') 변들 = ['위','아래','왼쪽','오른쪽'];
@@ -7185,9 +7244,24 @@ function 시트편집기(칸){
       var 칸하나 = 칸값(a); 칸하나.테두리 = 칸하나.테두리 || {};
       변들.forEach(function(변){ 칸하나.테두리[변] = 모양; });
       칸하나.테두리색 = 색;
-      칠하기한칸(a);
     });
-    담기(); 바뀜();
+    /* «없음» 은 고른 네모 **바깥 이웃**이 이쪽으로 그어 둔 선도 지운다.
+       선은 두 칸이 나눠 가지므로, 안 지우면 이웃의 선이 계속 보인다. */
+    if(방식 === '없음'){
+      var 반대 = {'위':'아래','아래':'위','왼쪽':'오른쪽','오른쪽':'왼쪽'};
+      Object.keys(모델.칸).forEach(function(k){
+        var v = 모델.칸[k]; if(!v.테두리) return;
+        var x = 자리(k), h = +v.세로병합 || 1, w = +v.가로병합 || 1;
+        var 겹가로 = x.c <= n.c1 && x.c + w - 1 >= n.c0, 겹세로 = x.r <= n.r1 && x.r + h - 1 >= n.r0;
+        if(겹가로 && x.r + h === n.r0) delete v.테두리['아래'];
+        if(겹가로 && x.r === n.r1 + 1) delete v.테두리['위'];
+        if(겹세로 && x.c + w === n.c0) delete v.테두리['오른쪽'];
+        if(겹세로 && x.c === n.c1 + 1) delete v.테두리['왼쪽'];
+        if(!Object.keys(v.테두리).length){ delete v.테두리; delete v.테두리색; }
+        if(비었나(k)) delete 모델.칸[k];
+      });
+    }
+    칠하기전부(); 담기(); 바뀜();
   }
   function 병합(){
     var n = 테두리네모();
