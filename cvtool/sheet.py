@@ -344,6 +344,47 @@ def 범위펼치기(글: str) -> str:
     return _따옴표_밖에서(글, 한번)
 
 
+def 범위묶기(글: str) -> str:
+    """`A1:B3` 을 `_범위(3,2,A1,B1,…)` 로. 칸들을 **범위 하나**로 넘긴다.
+
+    `범위펼치기` 처럼 칸들로 흩어 넘기면 `COUNTIF(A1:A10, ">3")` 의 인자 수가
+    달라져 어디까지가 범위인지 알 수 없다. 범위로 묶어 두면 SUM 처럼 칸들이
+    필요한 함수는 알아서 펼쳐 받는다 (`expr._부르기`).
+    """
+    def 한번(조각: str) -> str:
+        def 묶기(m: re.Match) -> str:
+            r1, c1 = 자리(m.group(1))
+            r2, c2 = 자리(m.group(2))
+            h, w = abs(r2 - r1) + 1, abs(c2 - c1) + 1
+            if h * w > MAX_ROWS * MAX_COLS:
+                raise SheetError(f"범위가 너무 넓습니다: {m.group(0)}")
+            칸 = [주소(r, c) for r in range(min(r1, r2), max(r1, r2) + 1)
+                 for c in range(min(c1, c2), max(c1, c2) + 1)]
+            return f"_범위({h},{w},{','.join(칸)})"
+        return _범위_RE.sub(묶기, 조각)
+    return _따옴표_밖에서(글, 한번)
+
+
+#: 엑셀 모양(범위, 조건, …)으로 부를 수 있는 이름. 예전 모양
+#: (`COUNTIFS(지원자, 부서="A")`) 과 이름이 같아서, 인자 모양으로 가른다.
+_엑셀조건함수 = ("COUNTIF", "COUNTIFS", "SUMIF", "SUMIFS", "AVERAGEIF", "AVERAGEIFS")
+
+
+def _옛조건인가(조각: str, 아는열) -> bool:
+    """`부서="A"` · `저널_수>2` 처럼 **열 이름 연산자 값** 한 덩어리인가 (예전 모양)."""
+    m = F._COND_RE.match(조각)
+    if not m:
+        return False
+    이름 = m.group(1).strip()
+    if 이름 != F._unquote(이름):
+        return False                          # "…" 로 시작한다 (엑셀 모양의 조건 값)
+    if _주소하나_RE.fullmatch(이름) and not (아는열 and 이름 in 아는열):
+        return False                          # 칸 주소 (그런 이름의 열이 없으면)
+    if not E._이름_RE.fullmatch(이름) and not 이름.startswith("["):
+        return False
+    return 아는열 is None or 이름.strip("[]") in 아는열
+
+
 def _집계인가(함수: str, 인자: list[str], 아는열) -> bool:
     """이 호출이 **사람을 세는 집계**인가, 칸을 셈하는 함수인가.
 
@@ -353,8 +394,12 @@ def _집계인가(함수: str, 인자: list[str], 아는열) -> bool:
         return 함수 not in E.FUNC_NAMES
     if F._unquote(인자[0]) in F.TARGETS:
         return True                          # =COUNT(지원자, ...)
+    if 함수 in _엑셀조건함수:
+        # 예전 모양은 조건이 `열=값` 한 덩어리다. 엑셀 모양은 범위와 조건이
+        # 따로 온다 — `COUNTIFS(부서, "A")`. 그건 계산기(expr)가 한다.
+        return any(_옛조건인가(x, 아는열) for x in 인자)
     if 함수 not in E.FUNC_NAMES:
-        return True                          # 집계에만 있는 이름 (PCT·LIST·COUNTIF…)
+        return True                          # 집계에만 있는 이름 (PCT·LIST…)
 
     첫 = 인자[0].strip()
     if (not F._COND_RE.match(첫) and 첫 == F._unquote(첫)
@@ -597,14 +642,83 @@ def 계산(수식: str, rows, 아는열=None, 값찾기=None,
     else:
         return F.run(_칸값넣기(글, 값찾기), rows, 아는열)
     try:
-        식 = 집계먼저(범위펼치기(글), rows, 아는열, 값찾기)
+        식 = 집계먼저(범위묶기(글), rows, 아는열, 값찾기)
         묶음 = ({a: 값찾기(a) for a in 참조들(식)} if 값찾기 is not None else {})
-        값 = E.evaluate(식, 묶음)
+        값 = E.evaluate(식, 집계문맥(묶음, rows, 아는열))
     except (E.ExprError, SheetError, ValueError):
         if 집계오류 is not None:
             raise 집계오류
         raise
     return 값, 값
+
+
+class 집계문맥(dict):
+    """시트·숫자·축표 칸의 계산 문맥. 칸 값은 그대로, **열 이름은 범위**다.
+
+    `부서` 는 지원자 전원의 부서 값 (줄 순서대로). 그래서 엑셀처럼
+    `COUNTIFS(부서, "소재분석", 최종상태, "*합격")` · `SUMIFS(저널_수, 부서, A1)` ·
+    `TEXTJOIN(", ", TRUE, FILTER(한글_이름, 부서="소재분석"))` 가 된다.
+    채용 중인 사람만 보려면 `채용중` 열을 조건으로 건다 (`채용중, "Y"`).
+    """
+
+    def __init__(self, 칸값: dict, rows, 아는열) -> None:
+        super().__init__(칸값)
+        self._줄 = list(getattr(rows, "지원자", []) or []) if rows is not None else []
+        self._아는열 = set(아는열 or ()) | ({"채용중"} if self._줄 else set())
+        self._열 = {}
+
+    def __contains__(self, 이름) -> bool:
+        return dict.__contains__(self, 이름) or 이름 in self._아는열
+
+    def get(self, 이름, 없으면=None):
+        if dict.__contains__(self, 이름):
+            return dict.get(self, 이름)
+        if 이름 in self._아는열:
+            if 이름 not in self._열:
+                self._열[이름] = E.범위([r.get(이름, "") for r in self._줄])
+            return self._열[이름]
+        return 없으면
+
+
+def 조건집계짜임(수식: str):
+    """수식이 **통째로** 엑셀 모양 조건 집계 하나면 (나무, 범위·조건 짝들), 아니면 None.
+
+    범위 자리는 열 이름이어야 한다 (`부서`). 칸 범위(`A1:A5`)는 사람이 아니라서 None.
+    """
+    글 = 위치함수풀기(고정떼기((수식 or "").strip()))
+    if not E.is_formula(글):
+        return None
+    try:
+        나무 = E.parse(글)
+    except E.ExprError:
+        return None
+    if not (isinstance(나무, E.Call) and 나무.이름 in _엑셀조건함수):
+        return None
+    인자 = 나무.인자
+    짝 = 인자 if 나무.이름 in ("COUNTIF", "COUNTIFS") else (
+        인자[1:] if 나무.이름 in ("SUMIFS", "AVERAGEIFS") else 인자[:2])
+    if len(짝) < 2 or len(짝) % 2 or not all(isinstance(짝[i], E.Col) for i in range(0, len(짝), 2)):
+        return None
+    return 나무, 짝
+
+
+def 조건줄(수식: str, rows, 아는열=None) -> list[dict] | None:
+    """엑셀 모양 조건 집계 하나(`=COUNTIFS(부서, "A", …)`)가 **센 사람들**. 아니면 None.
+
+    대시보드에서 숫자를 누르면 누구인지 보여줄 때 쓴다. 조건 값에 함수·칸이
+    있어도 된다 — 계산해서 쓴다. 섞은 식(`=COUNTIFS(…)/2`)은 None.
+    """
+    짜임 = 조건집계짜임(수식)
+    if 짜임 is None:
+        return None
+    나무, 짝 = 짜임
+    문맥 = 집계문맥({}, rows, 아는열)
+    try:
+        값들 = [E._계산(x, 문맥) for x in 짝]
+        맞음 = E._조건짝(값들, 나무.이름)
+    except E.ExprError:
+        return None
+    return [r for r, m in zip(문맥._줄, 맞음) if m]
 
 
 def 덮인칸(칸들: dict, 행수: int = MAX_ROWS,

@@ -9,7 +9,7 @@ import json
 import threading
 import urllib.parse
 
-from ... import dash_draft, expr, formula as F, profile_form as P, review
+from ... import dash_draft, expr, formula as F, profile_form as P, review, sheet as S
 from ...auth import can, User
 from ...dashboards import (
     AXIS_SOURCES, BLOCK_KINDS, CELL_FORMATS, format_cell, render_list, render_profile,
@@ -71,6 +71,8 @@ def 대시보드_행() -> F.Rows:
         행["매칭_과제"] = (m or {}).get("과제명", "") if isinstance(m, dict) else ""
         행["매칭_점수"] = str((m or {}).get("점수", "")) if isinstance(m, dict) else ""
         행[MAIL_COLUMN] = 보낸것맵.get(cid, "")
+        # 엑셀 모양 수식에서 «채용 중인 사람만» 을 거는 열 (`COUNTIFS(채용중, "Y", …)`)
+        행["채용중"] = "Y" if cid in 시작한사람 else ""
         지원자행.append(행)
         if cid in 시작한사람:
             채용행.append(행)
@@ -101,7 +103,7 @@ def 대시보드_행_잠깐() -> F.Rows:
 def 대시보드_열() -> set[str]:
     """수식·문장 틀에서 쓸 수 있는 열 이름 전부."""
     이름 = set(지원자열()) | set(RECRUIT_COLUMNS) | set(store.field_names())
-    이름 |= {"지원자_ID", "매칭_과제", "매칭_점수"}
+    이름 |= {"지원자_ID", "매칭_과제", "매칭_점수", "채용중"}
     return 이름
 
 
@@ -763,8 +765,11 @@ def _드릴대상(수식: str):
     try:
         f = F.parse(_칸값넣기(고정떼기(글), None))
     except (F.FormulaError, expr.ExprError, SheetError, ValueError):
-        return None
-    return f if f.함수 in _드릴함수 else None
+        f = None
+    if f is not None:
+        return f if f.함수 in _드릴함수 else None
+    # 엑셀 모양 `=COUNTIFS(부서, "A", 과제, "B")` — 센 사람이 분명하다.
+    return 글 if S.조건집계짜임(글) is not None else None
 
 
 def _드릴주소(b, 수식: str, 행: str = "", 열: str = "") -> str:
@@ -803,10 +808,19 @@ def _dash_who_page(me: User, params: dict) -> bytes:
         몸 = "<p class='muted'>이 칸은 사람을 세는 집계 하나가 아니라서 누구인지 보여줄 수 없습니다.</p>"
         사람 = []
     else:
-        사람 = [r for r in rows.of(f.대상) if all(c.matches(r) for c in f.조건)]
         보일열 = ["한글_이름", "현재_소속", "부서", "과제", "최종상태"]
-        if f.열 and f.열 not in 보일열 and f.열 != "지원자_ID":
-            보일열.append(f.열)
+        if isinstance(f, str):
+            사람 = S.조건줄(f, rows, set(대시보드_열())) or []
+            나무, _짝 = S.조건집계짜임(f)
+            if 나무.이름 in ("SUMIF", "SUMIFS", "AVERAGEIF", "AVERAGEIFS"):
+                값열 = 나무.인자[0] if 나무.이름.endswith("S") else (
+                    나무.인자[2] if len(나무.인자) > 2 else 나무.인자[0])
+                if isinstance(값열, expr.Col) and 값열.이름 not in 보일열:
+                    보일열.append(값열.이름)
+        else:
+            사람 = [r for r in rows.of(f.대상) if all(c.matches(r) for c in f.조건)]
+            if f.열 and f.열 not in 보일열 and f.열 != "지원자_ID":
+                보일열.append(f.열)
         줄 = "".join(
             "<tr>" + "".join(
                 (f"<td><a href='/candidate?id={urllib.parse.quote(r.get('지원자_ID', ''))}'>"
@@ -833,7 +847,7 @@ def _dash_who_page(me: User, params: dict) -> bytes:
            if 거르개 else "")
         + "</p>"
         + ("<p class='muted'>비율(PCT)은 <b>조건에 맞은 사람</b>(분자)을 보여 줍니다.</p>"
-           if f is not None and f.함수 == "PCT" else "")
+           if f is not None and not isinstance(f, str) and f.함수 == "PCT" else "")
         + 몸 + "</div>",
         me=me,
     )
@@ -1027,12 +1041,28 @@ def _수식도움() -> str:
         "<code>=COUNT(지원자, 부서=\"소재분석\") / COUNT(지원자) * 100</code> · "
         "<code>=ROUND(AVG(지원자, 저널_수), 1)</code> · "
         "<code>=\"합계 \"&COUNT(지원자)&\"명\"</code></div>"
-        "<p class='muted'><b>엑셀에서 쓰던 이름</b>도 됩니다 — "
-        "<code>COUNTIF</code> <code>COUNTIFS</code> <code>SUMIF</code> "
-        "<code>SUMIFS</code> <code>AVERAGE</code> <code>AVERAGEIFS</code>. "
-        "<code>=COUNTIFS(지원자, 부서=\"A\", 최종상태=\"합격\")</code> 는 "
-        "<code>=COUNT(지원자, 부서=\"A\", 최종상태=\"합격\")</code> 와 같습니다 — "
-        "원래부터 조건을 여러 개 받았습니다.</p>"
+        "<div class='warn' style='background:#eef5ff;border-color:#c9dcf5'>"
+        "<b>엑셀과 같은 모양으로도 씁니다.</b> 열 이름이 곧 엑셀의 <b>범위</b>(열 하나 통째)입니다.<br>"
+        "<code>=COUNTIFS(부서,\"소재분석\",최종상태,\"합격\")</code> · "
+        "<code>=COUNTIF(저널_수,\"&gt;=3\")</code> · "
+        "<code>=SUMIFS(저널_수,부서,\"A\")</code> · "
+        "<code>=AVERAGEIFS(저널_수,부서,A3)</code><br>"
+        "쓸 수 있는 것: <code>COUNTIF(S)</code> <code>SUMIF(S)</code> <code>AVERAGEIF(S)</code> "
+        "<code>MAXIFS</code> <code>MINIFS</code> <code>COUNTBLANK</code> "
+        "<code>SUMPRODUCT</code> <code>FILTER</code> <code>UNIQUE</code>.<br>"
+        "<b>조건</b>은 엑셀과 같습니다 — <code>\"abc\"</code>(같다, 대소문자 안 가림) "
+        "<code>\"&gt;3\"</code> <code>\"&lt;&gt;합격\"</code> <code>\"*합격\"</code>(와일드카드) "
+        "<code>\"\"</code>(빈칸) <code>\"&gt;\"&amp;A2</code>(칸 값과 잇기).<br>"
+        "<b>함수 안에 함수</b>를 마음대로 넣습니다 — "
+        "<code>=IF(COUNTIFS(부서,A3)&gt;0,\"있음\",\"없음\")</code> · "
+        "<code>=ROUND(AVERAGEIFS(저널_수,부서,A3),1)</code> · "
+        "<code>=TEXTJOIN(\", \",TRUE,FILTER(한글_이름,부서=\"A\"))</code> · "
+        "<code>=COUNTA(UNIQUE(부서))</code> · "
+        "<code>=SUMPRODUCT((부서=\"A\")*(저널_수&gt;2))</code><br>"
+        "<b>채용 중인 사람만</b> 세려면 조건에 <code>채용중,\"Y\"</code> 를 더합니다 — "
+        "<code>=COUNTIFS(채용중,\"Y\",부서,\"A\")</code>.<br>"
+        "시트 칸 범위도 됩니다 — <code>=COUNTIF(A1:A10,\"합격\")</code>. "
+        "<b>아래의 예전 모양</b>(<code>=COUNT(지원자, 부서=\"A\")</code>)도 그대로 됩니다.</div>"
         "<div class='warn' style='background:#eef5ff;border-color:#c9dcf5'>"
         "<b>대상을 안 적으면 «지원자»</b>(인재 Pool 전체)입니다. "
         "<code>=COUNTIF(부서=\"소재분석\")</code> 처럼 짧게 써도 됩니다. "

@@ -61,6 +61,20 @@ def _글(v) -> str:
     return str(v)
 
 
+class 범위(list):
+    """칸 여러 개, 또는 **한 열의 값 전부** (지원자마다 하나). 엑셀의 범위와 같다.
+
+    시트에서 `A1:B3` 이나 `부서` 처럼 적으면 이것이 된다. `COUNTIFS(부서, "A")` 의
+    `부서` 가 «부서 열 전체» 인 것처럼 — 함수가 받아 세고 거르고 더한다. `부서="A"`
+    처럼 비교하면 칸마다 TRUE/FALSE 인 범위가 된다 (`SUMPRODUCT`·`FILTER` 에 쓴다).
+    """
+
+    def __init__(self, 값들=(), 높이: int = 0, 너비: int = 1) -> None:
+        super().__init__(값들)
+        self.너비 = max(1, 너비)
+        self.높이 = 높이 or (len(self) // self.너비 if self.너비 else len(self))
+
+
 def _수(v, 어디: str = "") -> float:
     """숫자로 본다. 못 보면 말해 준다 (조용히 0 으로 두면 틀린 값이 조용히 퍼진다)."""
     if isinstance(v, (int, float)):
@@ -68,6 +82,8 @@ def _수(v, 어디: str = "") -> float:
     글 = str(v or "").strip().replace(",", "")
     if not 글:
         return 0.0
+    if 글 in (TRUE, FALSE):                 # 엑셀처럼 셈에서는 TRUE=1, FALSE=0
+        return 1.0 if 글 == TRUE else 0.0
     try:
         return float(글)
     except ValueError:
@@ -400,6 +416,167 @@ def _f_datedif(a: list):
     return float(개월) if 단위 == "M" else float(개월 // 12)
 
 
+# -- 조건으로 세고 더하기 (엑셀과 같은 모양) -------------------------------------
+#   COUNTIFS(부서, "소재분석", 최종상태, "*합격")      부서가 소재분석이고 …
+#   SUMIFS(저널_수, 부서, "소재분석")                  그 사람들의 저널_수 합
+#   COUNTIF(A1:A10, ">3") · COUNTIFS(입사월, MONTH(TODAY())) · ">"&A1
+_조건연산 = ("<=", ">=", "<>", "=", "<", ">")
+
+
+def _숫자면(v):
+    글 = _글(v).strip().replace(",", "")
+    if not 글:
+        return None
+    try:
+        return float(글)
+    except ValueError:
+        return None
+
+
+def 조건맞나(값, 조건) -> bool:
+    """엑셀 COUNTIF 의 조건 규칙.
+
+    `"abc"` 같음(대소문자 무시, `*`·`?` 와일드카드, `~*` 는 별표 글자) · `">3"` ·
+    `"<>x"` 다름 · `""` 빈 칸 · `"<>"` 빈 칸 아님 · 숫자는 숫자로 견준다.
+    """
+    if isinstance(조건, float):
+        n = _숫자면(값)
+        return n is not None and n == 조건
+    글 = _글(조건)
+    op = "="
+    for 후보 in _조건연산:
+        if 글.startswith(후보):
+            op, 글 = 후보, 글[len(후보):]
+            break
+    기준 = 글
+    실제 = _글(값).strip()
+    if op in ("=", "<>"):
+        if 기준 == "":
+            맞 = 실제 == ""
+        else:
+            a, b = _숫자면(실제), _숫자면(기준)
+            if a is not None and b is not None:
+                맞 = a == b
+            elif _와일드카드있나(기준):
+                맞 = _패턴맞나(실제.lower(), 기준.lower())
+            else:
+                맞 = 실제.lower() == 기준.lower()
+        return 맞 if op == "=" else not 맞
+    a, b = _숫자면(실제), _숫자면(기준)
+    if a is not None and b is not None:
+        x, y = a, b
+    elif a is None and b is None and 실제:
+        x, y = 실제.lower(), 기준.lower()
+    else:
+        return False                         # 글자와 숫자는 크기를 견주지 않는다
+    return {"<": x < y, ">": x > y, "<=": x <= y, ">=": x >= y}[op]
+
+
+def _범위로(v) -> 범위:
+    return v if isinstance(v, 범위) else 범위([v])
+
+
+def _조건짝(a: list, 어디: str) -> list[bool]:
+    """(범위, 조건, 범위, 조건 …) → 줄마다 모두 맞나."""
+    if len(a) < 2 or len(a) % 2:
+        raise ExprError(f"{어디} 는 범위와 조건을 짝으로 받습니다 — {어디}(부서, \"소재분석\", …)")
+    범위들 = [_범위로(a[i]) for i in range(0, len(a), 2)]
+    길이 = len(범위들[0])
+    if any(len(x) != 길이 for x in 범위들):
+        raise ExprError(f"{어디} 의 범위들은 크기가 같아야 합니다")
+    맞음 = [True] * 길이
+    for i in range(0, len(a), 2):
+        조건 = a[i + 1]
+        for j, v in enumerate(_범위로(a[i])):
+            if 맞음[j] and not 조건맞나(v, 조건):
+                맞음[j] = False
+    return 맞음
+
+
+def _고른수(값들: 범위, 맞음: list[bool], 어디: str) -> list[float]:
+    if len(값들) != len(맞음):
+        raise ExprError(f"{어디} 의 범위들은 크기가 같아야 합니다")
+    return [n for v, m in zip(값들, 맞음) if m and (n := _숫자면(v)) is not None]
+
+
+def _f_countifs(a: list):
+    return float(sum(_조건짝(a, "COUNTIFS")))
+
+
+def _f_countif(a: list):
+    if len(a) != 2:
+        raise ExprError('COUNTIF 는 COUNTIF(범위, 조건) 입니다 — 조건이 여럿이면 COUNTIFS')
+    return float(sum(_조건짝(a, "COUNTIF")))
+
+
+def _f_sumifs(a: list):
+    return sum(_고른수(_범위로(a[0]), _조건짝(a[1:], "SUMIFS"), "SUMIFS"))
+
+
+def _f_sumif(a: list):
+    합할 = _범위로(a[2]) if len(a) > 2 else _범위로(a[0])
+    return sum(_고른수(합할, _조건짝(a[:2], "SUMIF"), "SUMIF"))
+
+
+def _f_averageifs(a: list):
+    수 = _고른수(_범위로(a[0]), _조건짝(a[1:], "AVERAGEIFS"), "AVERAGEIFS")
+    if not 수:
+        raise ExprError("AVERAGEIFS 조건에 맞는 숫자가 없습니다")
+    return sum(수) / len(수)
+
+
+def _f_averageif(a: list):
+    볼 = _범위로(a[2]) if len(a) > 2 else _범위로(a[0])
+    수 = _고른수(볼, _조건짝(a[:2], "AVERAGEIF"), "AVERAGEIF")
+    if not 수:
+        raise ExprError("AVERAGEIF 조건에 맞는 숫자가 없습니다")
+    return sum(수) / len(수)
+
+
+def _f_maxifs(a: list, 큰: bool):
+    수 = _고른수(_범위로(a[0]), _조건짝(a[1:], "MAXIFS" if 큰 else "MINIFS"), "MAXIFS")
+    return (max(수) if 큰 else min(수)) if 수 else 0.0
+
+
+def _f_sumproduct(a: list):
+    범위들 = [_범위로(x) for x in a]
+    if any(len(x) != len(범위들[0]) for x in 범위들):
+        raise ExprError("SUMPRODUCT 의 범위들은 크기가 같아야 합니다")
+    합 = 0.0
+    for 줄 in zip(*범위들):
+        곱 = 1.0
+        for v in 줄:
+            곱 *= _수(v, "SUMPRODUCT")
+        합 += 곱
+    return 합
+
+
+def _f_filter(a: list):
+    """FILTER(범위, 조건범위) — `FILTER(한글_이름, 부서="소재분석")`."""
+    값들, 조건 = _범위로(a[0]), _범위로(a[1])
+    if len(값들) != len(조건):
+        raise ExprError("FILTER 의 두 범위는 크기가 같아야 합니다")
+    나온 = 범위([v for v, c in zip(값들, 조건) if _참인가(c)])
+    if not 나온 and len(a) > 2:
+        return a[2]
+    return 나온
+
+
+def _f_unique(a: list):
+    본, 나온 = set(), []
+    for v in _범위로(a[0]):
+        k = _글(v)
+        if k not in 본:
+            본.add(k)
+            나온.append(v)
+    return 범위(나온)
+
+
+def _f_범위(a: list):
+    """_범위(높이, 너비, 칸…) — 시트가 `A1:B3` 을 바꿔 넣는다 (모양을 잃지 않게)."""
+    return 범위(a[2:], int(_수(a[0])), int(_수(a[1])))
+
+
 def _f_round(a: list):
     자리 = int(_수(a[1], "ROUND 자릿수")) if len(a) > 1 else 0
     return round(_수(a[0], "ROUND"), 자리)
@@ -698,6 +875,19 @@ FUNCS: dict[str, tuple[int, Callable[[list], object]]] = {
     "VLOOKUP": (1, lambda a: _시트전용("VLOOKUP")),
     "ROWS": (1, lambda a: _시트전용("ROWS")),
     "COLUMNS": (1, lambda a: _시트전용("COLUMNS")),
+    "COUNTIF": (2, _f_countif),
+    "COUNTIFS": (2, _f_countifs),
+    "SUMIF": (2, _f_sumif),
+    "SUMIFS": (3, _f_sumifs),
+    "AVERAGEIF": (2, _f_averageif),
+    "AVERAGEIFS": (3, _f_averageifs),
+    "MAXIFS": (3, lambda a: _f_maxifs(a, True)),
+    "MINIFS": (3, lambda a: _f_maxifs(a, False)),
+    "COUNTBLANK": (1, lambda a: float(sum(1 for v in _범위로(a[0]) if not _글(v).strip()))),
+    "SUMPRODUCT": (1, _f_sumproduct),
+    "FILTER": (2, _f_filter),
+    "UNIQUE": (1, _f_unique),
+    "_범위": (2, _f_범위),
     "_INDEX": (3, _f_index),
     "_MATCH": (2, _f_match),
     "_VLOOKUP": (4, _f_vlookup),
@@ -767,59 +957,91 @@ def _계산(나무, 값들: dict) -> object:
             raise ExprError(f"모르는 열입니다: {이름}")
         return 값들.get(이름, "")
     if isinstance(나무, Neg):
-        return -_수(_계산(나무.안, 값들), "-")
+        안 = _계산(나무.안, 값들)
+        if isinstance(안, 범위):
+            return 범위([-_수(v, "-") for v in 안], 안.높이, 안.너비)
+        return -_수(안, "-")
     if isinstance(나무, Bin):
         op = 나무.연산
-        if op == "&":
-            return _글(_계산(나무.왼, 값들)) + _글(_계산(나무.오, 값들))
         왼, 오 = _계산(나무.왼, 값들), _계산(나무.오, 값들)
-        if op in ("=", "<>", "<", ">", "<=", ">="):
-            return _비교(op, 왼, 오)
-        a, b = _수(왼, op), _수(오, op)
-        if op == "+":
-            return a + b
-        if op == "-":
-            return a - b
-        if op == "*":
-            return a * b
-        if b == 0:
-            raise ExprError("0 으로 나눌 수 없습니다")
-        return a / b
+        if isinstance(왼, 범위) or isinstance(오, 범위):
+            # 범위끼리·범위와 값 — **칸마다** 계산한다 (엑셀의 배열 계산).
+            # `부서="A"` 는 칸마다 TRUE/FALSE, `(부서="A")*(저널_수>2)` 는 1/0.
+            모양 = 왼 if isinstance(왼, 범위) else 오
+            ls = 왼 if isinstance(왼, 범위) else [왼] * len(모양)
+            rs = 오 if isinstance(오, 범위) else [오] * len(모양)
+            if len(ls) != len(rs):
+                raise ExprError("크기가 다른 범위끼리 계산할 수 없습니다")
+            return 범위([_두값(op, x, y) for x, y in zip(ls, rs)], 모양.높이, 모양.너비)
+        return _두값(op, 왼, 오)
     if isinstance(나무, Call):
-        이름 = 나무.이름
-        if 이름 in ("ROW", "COLUMN"):
-            # 몇 번째 줄·열인가. 목록 표가 **정렬·자르기를 끝낸 뒤** 넣어 주므로
-            # 화면에 보이는 순서와 늘 같다. 행 고르기·정렬은 번호가 정해지기
-            # 전에 도는 수식이라 여기서 걸린다. 시트는 이 자리에 오기 전에
-            # 칸 주소로 바꿔 넣는다 (`sheet.계산`).
-            if 나무.인자:
-                raise ExprError(f"{이름}(칸) 은 시트에서만 씁니다 — 목록에서는 {이름}()")
-            키 = 줄번호_키 if 이름 == "ROW" else 열번호_키
-            if 키 not in 값들:
-                raise ExprError(
-                    f"{이름}() 는 목록 표의 열에서만 쓸 수 있습니다 (시트 칸에서도 됩니다) "
-                    "— 자리가 정해진 뒤에야 번호가 생깁니다."
-                )
-            return float(값들[키])
-        if 이름 == "IFERROR":
-            # 인자를 미리 계산하면 안 된다. 첫 인자가 터지는 게 요점이다.
-            if len(나무.인자) < 2:
-                raise ExprError("IFERROR 는 IFERROR(수식, 틀렸을 때) 입니다")
-            try:
-                return _계산(나무.인자[0], 값들)
-            except ExprError:
-                return _계산(나무.인자[1], 값들)
-        if 이름 not in FUNCS:
-            raise ExprError(
-                f"모르는 함수입니다: {이름} "
-                f"(쓸 수 있는 것: {', '.join(sorted(set(FUNCS) | set(_LAZY)))})"
-            )
-        최소, 계산 = FUNCS[이름]
-        인자 = [_계산(x, 값들) for x in 나무.인자]
-        if len(인자) < 최소:
-            raise ExprError(f"{이름} 에 인자가 모자랍니다 ({최소}개 이상)")
-        return 계산(인자)
+        return _부르기(나무, 값들)
     raise ExprError("계산할 수 없는 수식입니다")
+
+
+def _두값(op: str, 왼, 오):
+    """값 두 개의 연산."""
+    if op == "&":
+        return _글(왼) + _글(오)
+    if op in ("=", "<>", "<", ">", "<=", ">="):
+        return _비교(op, 왼, 오)
+    a, b = _수(왼, op), _수(오, op)
+    if op == "+":
+        return a + b
+    if op == "-":
+        return a - b
+    if op == "*":
+        return a * b
+    if b == 0:
+        raise ExprError("0 으로 나눌 수 없습니다")
+    return a / b
+
+
+#: 범위를 **그대로** 받는 함수. 나머지는 범위를 칸들로 펼쳐 받는다
+#: (`SUM(A1:A3)` = `SUM(A1, A2, A3)`, `TEXTJOIN(", ", TRUE, FILTER(…))`).
+_범위그대로 = {"COUNTIF", "COUNTIFS", "SUMIF", "SUMIFS", "AVERAGEIF", "AVERAGEIFS",
+             "MAXIFS", "MINIFS", "COUNTBLANK", "SUMPRODUCT", "FILTER", "UNIQUE"}
+
+
+def _부르기(나무, 값들: dict):
+    이름 = 나무.이름
+    if 이름 in ("ROW", "COLUMN"):
+        # 몇 번째 줄·열인가. 목록 표가 **정렬·자르기를 끝낸 뒤** 넣어 주므로
+        # 화면에 보이는 순서와 늘 같다. 행 고르기·정렬은 번호가 정해지기
+        # 전에 도는 수식이라 여기서 걸린다. 시트는 이 자리에 오기 전에
+        # 칸 주소로 바꿔 넣는다 (`sheet.계산`).
+        if 나무.인자:
+            raise ExprError(f"{이름}(칸) 은 시트에서만 씁니다 — 목록에서는 {이름}()")
+        키 = 줄번호_키 if 이름 == "ROW" else 열번호_키
+        if 키 not in 값들:
+            raise ExprError(
+                f"{이름}() 는 목록 표의 열에서만 쓸 수 있습니다 (시트 칸에서도 됩니다) "
+                "— 자리가 정해진 뒤에야 번호가 생깁니다."
+            )
+        return float(값들[키])
+    if 이름 == "IFERROR":
+        # 인자를 미리 계산하면 안 된다. 첫 인자가 터지는 게 요점이다.
+        if len(나무.인자) < 2:
+            raise ExprError("IFERROR 는 IFERROR(수식, 틀렸을 때) 입니다")
+        try:
+            return _계산(나무.인자[0], 값들)
+        except ExprError:
+            return _계산(나무.인자[1], 값들)
+    if 이름 not in FUNCS:
+        raise ExprError(
+            f"모르는 함수입니다: {이름} "
+            f"(쓸 수 있는 것: {', '.join(sorted(set(FUNCS) | set(_LAZY)))})"
+        )
+    최소, 계산 = FUNCS[이름]
+    인자 = [_계산(x, 값들) for x in 나무.인자]
+    if 이름 not in _범위그대로:
+        펼친 = []
+        for x in 인자:
+            펼친.extend(x) if isinstance(x, 범위) else 펼친.append(x)
+        인자 = 펼친
+    if len(인자) < 최소:
+        raise ExprError(f"{이름} 에 인자가 모자랍니다 ({최소}개 이상)")
+    return 계산(인자)
 
 
 # ---------------------------------------------------------------------------
@@ -878,7 +1100,17 @@ def validate(수식: str, 아는열) -> list[str]:
 
 def evaluate(수식: str, 값들: dict) -> str:
     """수식 + 한 사람의 값 → 보일 글."""
-    return _글(_계산(parse(수식), 값들))
+    return _글(한값(_계산(parse(수식), 값들)))
+
+
+def 한값(v):
+    """칸 하나에 들어갈 값. 범위가 남으면 한 칸짜리만 받는다."""
+    if isinstance(v, 범위):
+        if len(v) == 1:
+            return v[0]
+        raise ExprError(f"값이 {len(v)}개인 범위입니다 — 한 칸에는 하나만 들어갑니다. "
+                        "COUNTA·SUM·TEXTJOIN 으로 묶으세요")
+    return v
 
 
 def render(수식: str, 값들: dict) -> tuple[str, str]:
