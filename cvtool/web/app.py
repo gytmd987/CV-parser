@@ -127,6 +127,7 @@ from ..recruit import (
     RecruitStore,
 )
 from .multipart import parse_multipart
+from .router import 공개, 라우터, 라우트, 로그인만, 통과
 
 DATA_DIR = Path(os.environ.get("CVTOOL_DATA_DIR", Path.home() / ".cvtool"))
 WEB_PASSWORD = os.environ.get("CVTOOL_WEB_PASSWORD", "")
@@ -8836,6 +8837,2472 @@ function rowDrop(btn){
 # ---------------------------------------------------------------------------
 # HTTP 핸들러
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# 주소별 처리 — `@라우트(방법, 주소, 권한=…)` 로 등록한다 (`router.py`).
+# 로그인·권한 확인은 `Handler._처리` 가 **부르기 전에** 한다. 여기 함수 안의
+# 검사는 그보다 좁은 것(현업은 자기 과제 지원자만 등)뿐이다.
+# `self` 는 요청을 받은 Handler 다 (`self._send` · `self._redirect` …).
+# ---------------------------------------------------------------------------
+def _없는주소(self):
+    return self._send(_page("없음", "<div class='card'>페이지가 없습니다.</div>"), code=404)
+
+
+@라우트("GET", '/login', 권한=공개)
+def get_login(self, me, path):
+    return self._send(_login_page())
+    return _없는주소(self)
+
+
+@라우트("GET", '/logout', 권한=공개)
+def get_logout(self, me, path):
+    auth.end_session(self._token())
+    return self._redirect("/login")
+    return _없는주소(self)
+
+
+@라우트("GET", '/', 권한=로그인만)
+def get_root(self, me, path):
+    if not can(me, "지원자_목록"):
+        return self._redirect(홈(me))    # 현업은 채용 현황으로
+    params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+    return self._send(
+        _dashboard(
+            me,
+            q=(params.get("q") or [""])[0],
+            review_only=bool(params.get("review")),
+            년도=(params.get("year") or [""])[0],
+            msg=(params.get("msg") or [""])[0],
+        )
+    )
+    return _없는주소(self)
+
+
+@라우트("GET", '/upload', 권한='지원자_등록')
+def get_upload(self, me, path):
+    params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+    return self._send(_upload_page(me, (params.get("err") or [""])[0]))
+    return _없는주소(self)
+
+
+@라우트("GET", '/upload/template.xlsx', 권한='지원자_등록')
+def get_upload_template_xlsx(self, me, path):
+    열, 머리 = _엑셀양식열()
+    이름 = urllib.parse.quote(bulk.파일이름)
+    return self._send(
+        bulk.양식(열, 머리),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        extra={"Content-Disposition":
+               'attachment; filename="candidate_template.xlsx";'
+               f" filename*=UTF-8\'\'{이름}"},
+    )
+    return _없는주소(self)
+
+
+@라우트("GET", '/candidate', 권한=로그인만)
+def get_candidate(self, me, path):
+    params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+    if not _볼수있나(me, (params.get("id") or [""])[0]):
+        return self._deny("배정된 과제의 지원자만 볼 수 있습니다.")
+    cid = (params.get("id") or [""])[0]
+    return self._send(_candidate_page(cid, me, (params.get("err") or [""])[0],
+                                      (params.get("msg") or [""])[0]))
+    return _없는주소(self)
+
+
+@라우트("GET", '/users', 권한='계정_현업추가')
+def get_users(self, me, path):
+    params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+    return self._send(_users_page(me, (params.get("err") or [""])[0]))
+    return _없는주소(self)
+
+
+@라우트("GET", '/org', 권한='부서과제_관리')
+def get_org(self, me, path):
+    params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+    return self._send(_org_hub_page(me))
+    return _없는주소(self)
+
+
+@라우트("GET", '/org/edit', 권한='부서과제_관리')
+def get_org_edit(self, me, path):
+    params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+    return self._send(_org_page(me, (params.get("err") or [""])[0]))
+    return _없는주소(self)
+
+
+@라우트("GET", '/history', 권한='변경이력_조회')
+def get_history(self, me, path):
+    params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+    return self._send(_history_page(me, (params.get("kind") or [""])[0]))
+    return _없는주소(self)
+
+
+@라우트("GET", '/candidate/file', 권한=로그인만)
+def get_candidate_file(self, me, path):
+    if not _볼수있나(
+        me,
+        (urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+         .get("id") or [""])[0],
+    ):
+        return self._deny("배정된 과제의 지원자만 볼 수 있습니다.")
+    params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+    cid = (params.get("id") or [""])[0]
+    fpath = store.file_path(cid) if cid else None
+    if fpath is None:
+        return self._send(
+            _page("없음", "<div class='card'>보관된 원본이 없습니다.</div>"), code=404
+        )
+    meta = store.meta(cid) or {}
+    download_name = meta.get("원본_파일명") or fpath.name
+    ctype = CONTENT_TYPES.get(fpath.suffix.lower(), "application/octet-stream")
+    quoted = urllib.parse.quote(download_name)
+    return self._send(
+        fpath.read_bytes(), ctype,
+        extra={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"},
+    )
+    return _없는주소(self)
+
+
+@라우트("GET", '/recruit', 권한=로그인만)
+def get_recruit(self, me, path):
+    params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+    return self._send(
+        _recruit_page(me, (params.get("sort") or [""])[0],
+                      (params.get("err") or [""])[0],
+                      (params.get("msg") or [""])[0])
+    )
+    return _없는주소(self)
+
+
+@라우트("GET", '/recruit/export.xlsx', 권한=('채용현황_수정', '지원자_조회'))
+def get_recruit_export_xlsx(self, me, path):
+    if not (can(me, "채용현황_수정") or can(me, "지원자_조회")):
+        return self._deny()
+    # 이름을 표열 로 두면 이 함수 안에서 모듈 함수 표열() 을 가린다
+    # (파이썬은 함수 어디서든 대입이 있으면 그 이름을 지역으로 본다).
+    채용열 = store.arrange(recruit.columns())
+    이름표 = 라벨(채용열)
+    records, _진행, 값 = _recruit_rows(me, (urllib.parse.parse_qs(
+        urllib.parse.urlparse(self.path).query).get("sort") or [""])[0])
+    rows = [{이름표[c]: 값(rec, c) for c in 채용열} for rec in records]
+    stamp = now_kst().strftime("%Y%m%d_%H%M")
+    return self._send(
+        build_xlsx(rows, [이름표[c] for c in 채용열]),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        extra={"Content-Disposition": f'attachment; filename="recruit_{stamp}.xlsx"'},
+    )
+    return _없는주소(self)
+
+
+@라우트("GET", '/match/curate', 권한='지원자_등록', 거부말='과제 파일을 다듬는 건 채용담당자 이상만 할 수 있습니다.')
+def get_match_curate(self, me, path):
+    params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+    return self._send(_curate_page(me, (params.get("err") or [""])[0],
+                                   (params.get("msg") or [""])[0]))
+    return _없는주소(self)
+
+
+@라우트("GET", '/match', 권한='과제매칭_조회', 거부말='과제 정보는 채용담당자 이상만 볼 수 있습니다.')
+def get_match(self, me, path):
+    # 과제 정보 관리. 부서·과제 탭 아래 화면이다.
+    params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+    return self._send(_projects_page(me, (params.get("err") or [""])[0],
+                                     (params.get("msg") or [""])[0]))
+    return _없는주소(self)
+
+
+@라우트("GET", '/mail', 권한='메일_템플릿')
+def get_mail(self, me, path):
+    params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+    return self._send(_mail_page(me, (params.get("err") or [""])[0],
+                                 (params.get("msg") or [""])[0]))
+    return _없는주소(self)
+
+
+@라우트("GET", '/mail/template', 권한='메일_템플릿')
+def get_mail_template(self, me, path):
+    params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+    try:
+        tid = int((params.get("id") or ["0"])[0])
+    except ValueError:
+        return self._redirect("/mail")
+    return self._send(_mail_template_page(tid, me, (params.get("err") or [""])[0],
+                                          (params.get("msg") or [""])[0]))
+    return _없는주소(self)
+
+
+@라우트("GET", '/mail/draft', 권한='메일_발송', 거부말='메일 발송 권한이 없습니다.')
+def get_mail_draft(self, me, path):
+    # 메일 한 통을 쓰는 창. 발송 목록에서 새 창으로 띄운다.
+    params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+    try:
+        tid = int((params.get("tpl") or ["0"])[0])
+    except ValueError:
+        return self._redirect("/mail")
+    cid = (params.get("id") or [""])[0]
+    if not _볼수있는지원자(cid, me):
+        return self._deny("이 지원자에게는 보낼 수 없습니다.")
+    return self._send(_mail_draft_page(tid, cid, me,
+                                       (params.get("err") or [""])[0]))
+    return _없는주소(self)
+
+
+@라우트("GET", '/mail/test', 권한='메일_템플릿')
+def get_mail_test(self, me, path):
+    # 메일 탭에서는 **시험 발송까지만** 한다. 실제 발송은 인재 Pool·
+    # 채용 현황에서 대상을 고른 뒤에 한다.
+    params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+    try:
+        tid = int((params.get("id") or ["0"])[0])
+    except ValueError:
+        return self._redirect("/mail")
+    return self._send(_mail_test_page(tid, me, (params.get("err") or [""])[0],
+                                      (params.get("msg") or [""])[0],
+                                      peek=bool(params.get("peek"))))
+    return _없는주소(self)
+
+
+@라우트("GET", '/mail/attachment', 권한='메일_템플릿')
+def get_mail_attachment(self, me, path):
+    params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+    try:
+        att = mailing.attachment(int((params.get("id") or ["0"])[0]))
+    except (ValueError, TypeError):
+        att = None
+    if not att:
+        return self._send(_page("없음", "<div class='card'>첨부를 찾을 수 없습니다.</div>"),
+                          code=404)
+    path_ = mailing.files_dir / att["저장명"]
+    if not path_.is_file():
+        return self._send(_page("없음", "<div class='card'>파일이 없습니다.</div>"),
+                          code=404)
+    이름 = urllib.parse.quote(att["파일명"])
+    return self._send(
+        path_.read_bytes(),
+        CONTENT_TYPES.get(Path(att["저장명"]).suffix.lower(),
+                          "application/octet-stream"),
+        extra={"Content-Disposition":
+               f"attachment; filename=\"file\"; filename*=UTF-8''{이름}"},
+    )
+    return _없는주소(self)
+
+
+@라우트("GET", '/mail/image', 권한='메일_템플릿')
+def get_mail_image(self, me, path):
+    # 본문 그림. 편집기·미리보기·발송 이력이 이 주소로 그림을 본다.
+    params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+    try:
+        img = mailing.body_image(int((params.get("id") or ["0"])[0]))
+    except (ValueError, TypeError):
+        img = None
+    내용 = mailing.body_image_bytes(img["id"]) if img else None
+    if 내용 is None:
+        return self._send(b"", "image/png", code=404)
+    return self._send(
+        내용,
+        CONTENT_TYPES.get(Path(img["저장명"]).suffix.lower(), "image/png"),
+        extra={"Cache-Control": "private, max-age=600"},
+    )
+    return _없는주소(self)
+
+
+@라우트("GET", '/mail/log', 권한='메일_템플릿')
+def get_mail_log(self, me, path):
+    params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+    try:
+        로그tid = int((params.get("tpl") or ["0"])[0])
+    except ValueError:
+        로그tid = 0
+    return self._send(_mail_log_page(me, 로그tid))
+    return _없는주소(self)
+
+
+@라우트("GET", '/dash', 권한='대시보드_조회', 거부말='대시보드는 채용담당자 이상만 볼 수 있습니다.')
+@라우트("GET", '/dash/view', 권한='대시보드_조회', 거부말='대시보드는 채용담당자 이상만 볼 수 있습니다.')
+@라우트("GET", '/dash/edit', 권한='대시보드_조회', 거부말='대시보드는 채용담당자 이상만 볼 수 있습니다.')
+def get_dash(self, me, path):
+    params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+    err = (params.get("err") or [""])[0]
+    msg = (params.get("msg") or [""])[0]
+    if path == "/dash":
+        return self._send(_dash_list_page(me, err, msg))
+    try:
+        did = int((params.get("id") or ["0"])[0])
+    except ValueError:
+        return self._redirect("/dash")
+    if path == "/dash/view":
+        return self._send(_dash_view_page(did, me, _대시거르개(params)))
+    return self._send(_dash_edit_page(did, me, err, msg))
+    return _없는주소(self)
+
+
+@라우트("GET", '/dash/who', 권한='대시보드_조회', 거부말='대시보드는 채용담당자 이상만 볼 수 있습니다.')
+def get_dash_who(self, me, path):
+    params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+    return self._send(_dash_who_page(me, params))
+    return _없는주소(self)
+
+
+@라우트("GET", '/fields', 권한='열_구성', 거부말='표 항목 추가는 관리자만 할 수 있습니다.')
+def get_fields(self, me, path):
+    params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+    return self._send(_fields_page(me, (params.get("err") or [""])[0],
+                                   (params.get("msg") or [""])[0]))
+    return _없는주소(self)
+
+
+@라우트("GET", '/recruit/columns', 권한='열_구성', 거부말='표 열 구성은 관리자만 바꿀 수 있습니다.')
+def get_recruit_columns(self, me, path):
+    return self._send(_recruit_columns_page(me))
+    return _없는주소(self)
+
+
+@라우트("GET", '/attachment', 권한=로그인만)
+def get_attachment(self, me, path):
+    params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+    try:
+        att = store.attachment(int((params.get("id") or ["0"])[0]))
+    except ValueError:
+        att = None
+    if not att:
+        return self._send(_page("없음", "<div class='card'>첨부파일이 없습니다.</div>"),
+                          code=404)
+    if not _볼수있나(me, att["지원자_ID"]):
+        return self._deny("배정된 과제의 지원자만 볼 수 있습니다.")
+    fpath = store.files_dir / att["저장명"]
+    if not fpath.is_file():
+        return self._send(_page("없음", "<div class='card'>파일이 사라졌습니다.</div>"),
+                          code=404)
+    ctype = CONTENT_TYPES.get(fpath.suffix.lower(), "application/octet-stream")
+    quoted = urllib.parse.quote(att["파일명"])
+    return self._send(
+        fpath.read_bytes(), ctype,
+        extra={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"},
+    )
+    return _없는주소(self)
+
+
+@라우트("GET", '/names', 권한='명칭_관리')
+def get_names(self, me, path):
+    params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+    return self._send(_names_page(
+        (params.get("kind") or ["학회"])[0],
+        me,
+        error=(params.get("err") or [""])[0],
+        msg=(params.get("msg") or [""])[0],
+        안본것만=bool((params.get("todo") or [""])[0]),
+        보기="이름" if (params.get("view") or [""])[0] == "name" else "표기",
+    ))
+    return _없는주소(self)
+
+
+@라우트("GET", '/dash/preview', 권한='대시보드_편집')
+def get_dash_preview(self, me, path):
+    # 문장 칸 아래 미리보기. 대시보드와 **같은 계산기**를 써야 믿을 수 있다.
+    params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+    틀 = (params.get("line") or [""])[0]
+    cid = (params.get("id") or [""])[0]
+    # 집계 문맥(=COUNT(...)) 과 행 문맥(=한글_이름) 은 계산기가 다르다.
+    # 화면이 어느 쪽인지 알려 준다 — 글만 보고 맞히려 들면 틀린다.
+    if (params.get("kind") or ["row"])[0] == "agg":
+        # 축표 칸 수식의 {행}{열} 은 그대로는 계산이 안 된다. 그 블록의
+        # **첫 축 값**을 넣어서 한 칸만 미리 계산해 본다.
+        if "{행}" in 틀 or "{열}" in 틀:
+            try:
+                b = boards.block(int((params.get("bid") or ["0"])[0]))
+            except (TypeError, ValueError):
+                b = None
+            if b is None:
+                return self._json(
+                    {"text": "", "error": "{행}{열} 은 축을 정해야 계산됩니다"})
+            축값 = 대시보드_축()
+            첫행 = (축값.get(b.행축) or b.행이름 or ["(행)"])[0]
+            첫열 = (축값.get(b.열축) or b.열이름 or ["(열)"])[0]
+            보임 = 틀.replace("{행}", 첫행).replace("{열}", 첫열)
+            try:
+                글, _값 = 수식계산(보임, 대시보드_행_잠깐(), 대시보드_열())
+            except (F.FormulaError, expr.ExprError, SheetError,
+                    ValueError) as exc:
+                return self._json({"text": "", "error": str(exc)})
+            return self._json(
+                {"text": f"{글}   ({첫행} × {첫열} 칸)", "error": ""})
+        # 블록이 쓰는 계산기(`sheet.계산`)와 **같은 것**으로 미리 본다.
+        # `F.run` 으로 보면 `=COUNT(지원자)/2` 처럼 섞은 식이 미리보기에서만
+        # 틀렸다고 나왔다.
+        try:
+            글, _값 = 수식계산(틀, 대시보드_행_잠깐(), 대시보드_열())
+        except (F.FormulaError, expr.ExprError, SheetError, ValueError) as exc:
+            return self._json({"text": "", "error": str(exc)})
+        return self._json({"text": str(글), "error": ""})
+    # 여기부터는 행 문맥 — 한 사람의 값이 있어야 계산할 수 있다.
+    if not cid or store.get(cid) is None:
+        return self._json({"text": "", "error": "미리볼 지원자가 없습니다"})
+    값들 = _프로필값(cid)
+    if expr.is_formula(틀):
+        글, 오류 = expr.render(틀, 값들)
+        return self._json({"text": 글, "error": 오류})
+    return self._json({"text": P.render_line(틀, 값들), "error": ""})
+    return _없는주소(self)
+
+
+@라우트("GET", '/status/rows', 권한='지원자_등록')
+def get_status_rows(self, me, path):
+    # 현황 표 조각만. 페이지를 통째로 다시 그리면 고르던 파일이 풀린다.
+    return self._send(_status_table().encode("utf-8"))
+    return _없는주소(self)
+
+
+@라우트("GET", '/favicon.ico', 권한=로그인만)
+def get_favicon_ico(self, me, path):
+    return self._send(b"", "image/x-icon", code=204)
+    return _없는주소(self)
+
+
+@라우트("GET", '/dash/sheet.xlsx', 권한='대시보드_조회')
+def get_dash_sheet_xlsx(self, me, path):
+    # 시트는 서버가 직접 만든다. 화면에서 TSV 를 만들어 보내는 길로는
+    # 색도 병합도 못 싣는다 (글자만 옮겨진다).
+    if not can(me, "엑셀_다운로드"):
+        return self._deny()
+    params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+    try:
+        bid = int((params.get("block") or ["0"])[0])
+    except ValueError:
+        bid = 0
+    b = boards.block(bid)
+    if b is None or b.종류 != "시트":
+        return self._send(_page("없음", "<div class='card'>시트를 찾을 수 없습니다.</div>",
+                                me=me), code=404)
+    결과 = render_sheet(b, 대시보드_행(), 대시보드_열())
+    데이터 = build_sheet_xlsx(결과, b.제목 or "시트")
+    이름 = urllib.parse.quote((b.제목 or "시트") + ".xlsx")
+    return self._send(
+        데이터,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        extra={"Content-Disposition":
+               f"attachment; filename*=UTF-8''{이름}"},
+    )
+    return _없는주소(self)
+
+
+@라우트("GET", '/export.xlsx', 권한='엑셀_다운로드')
+def get_export_xlsx(self, me, path):
+    # 화면에 걸어 둔 검색 조건을 **그대로** 따른다. 걸러 놓고 받았는데
+    # 전체가 나오면 엉뚱한 사람에게 자료가 나간다.
+    params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+    records = store.list_filtered(
+        (params.get("q") or [""])[0],
+        bool(params.get("review")),
+        (params.get("year") or [""])[0],
+        registry=registry,
+    )
+    열 = 표열()
+    data = records_to_xlsx(records, registry,
+                           (store.field_names(), _표값맵()),
+                           열=열, 라벨=라벨(열))
+    stamp = now_kst().strftime("%Y%m%d_%H%M")
+    return self._send(
+        data,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        extra={"Content-Disposition": f'attachment; filename="cv_{stamp}.xlsx"'},
+    )
+    return _없는주소(self)
+
+
+@라우트("POST", '/login', 권한=공개)
+def post_login(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    아이디 = (data.get("userid") or [""])[0].strip()
+    pw = (data.get("password") or [""])[0]
+    if not auth.count():
+        return self._send(
+            _login_page("계정이 하나도 없습니다. 서버 콘솔 안내를 확인하세요.")
+        )
+    user = auth.authenticate(아이디, pw)
+    if user is None:
+        audit.record(아이디 or "(빈칸)", "로그인", 아이디 or "-", 비고="로그인 실패")
+        return self._send(_login_page("아이디 또는 비밀번호가 틀렸습니다."))
+    token = auth.start_session(user.아이디)
+    audit.record(user.아이디, "로그인", user.아이디, 비고="로그인")
+    return self._redirect(
+        홈(user),
+        {"Set-Cookie": f"cvsession={token}; HttpOnly; Path=/; SameSite=Strict"},
+    )
+    return _없는주소(self)
+
+
+@라우트("POST", '/upload', 권한='지원자_등록')
+def post_upload(self, me, path):
+    form = parse_multipart(self._read_body(), self.headers.get("Content-Type", ""))
+    if not form.files:
+        return self._redirect("/upload")
+    for f in form.files:
+        safe_name = safe_filename(f.filename)
+        suffix = Path(safe_name).suffix.lower()
+        if suffix not in SUPPORTED_SUFFIXES:
+            _set_status(safe_name, "실패",
+                        f"지원하지 않는 형식: {suffix or '(확장자 없음)'}")
+            continue
+        try:
+            cid = f"CV-{uuid.uuid4().hex[:8].upper()}"
+            저장명 = store.store_file(cid, safe_name, f.content)
+            _enqueue(safe_name, cid, 저장명)
+        except Exception as exc:  # noqa: BLE001
+            _set_status(safe_name, "실패", f"{type(exc).__name__}: {exc}")
+    return self._redirect("/upload")
+    return _없는주소(self)
+
+
+@라우트("POST", '/upload/xlsx', 권한='지원자_등록')
+def post_upload_xlsx(self, me, path):
+    # 결과를 그 자리에서 그린다. 빠진 줄 목록은 주소창에 담을 길이가
+    # 아니라, 리다이렉트하면 "몇 명 등록" 만 남고 이유가 사라진다.
+    form = parse_multipart(self._read_body(), self.headers.get("Content-Type", ""))
+    올린것 = [f for f in form.files if f.content]
+    if not 올린것:
+        return self._redirect("/upload?err=" + urllib.parse.quote(
+            "채운 엑셀 파일을 고른 뒤 올려 주세요."))
+    try:
+        만든것, 빠진것, 모르는것 = _엑셀등록(올린것[0].content, me)
+    except XlsxError as exc:
+        return self._redirect("/upload?err=" + urllib.parse.quote(str(exc)))
+    return self._send(_page(
+        "엑셀로 지원자 추가", _엑셀결과카드(만든것, 빠진것, 모르는것), me=me))
+    return _없는주소(self)
+
+
+@라우트("POST", '/table.xlsx', 권한=로그인만)
+def post_table_xlsx(self, me, path):
+    data = urllib.parse.parse_qs(
+        self._read_body().decode("utf-8", "replace"), keep_blank_values=True
+    )
+    이름 = ((data.get("name") or ["표"])[0] or "표").strip()[:40]
+    stamp = now_kst().strftime("%Y%m%d_%H%M")
+    # 한글 파일명은 RFC 5987 로 따로 보낸다 (옛 브라우저는 ASCII 이름을 쓴다)
+    한글 = urllib.parse.quote(f"{이름}_{stamp}.xlsx")
+    return self._send(
+        _tsv_to_xlsx((data.get("tsv") or [""])[0]),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        extra={"Content-Disposition":
+               f'attachment; filename="table_{stamp}.xlsx";'
+               f" filename*=UTF-8''{한글}"},
+    )
+    return _없는주소(self)
+
+
+@라우트("POST", '/recruit/save', 권한=('채용현황_수정', '지원자_수정'))
+def post_recruit_save(self, me, path):
+    # 표 전체가 한 번에 온다. 실제로 값이 달라진 것만 저장한다.
+    data = urllib.parse.parse_qs(
+        self._read_body().decode("utf-8", "replace"), keep_blank_values=True
+    )
+    보이는 = auth.visible_project_ids(me)
+    바뀐것: list[str] = []
+    긴글열 = store.긴글열()
+    이름맵 = {r.지원자_ID: (r.한글_이름 or r.영문_이름 or r.지원자_ID)
+             for r in store.list_all()}
+
+    def 볼수있나(cid: str) -> bool:
+        return 보이는 is None or recruit.get(cid).project_id in 보이는
+
+    # 1) 단계 상태
+    if can(me, "채용현황_수정"):
+        for key, 값들 in data.items():
+            if not key.startswith("단계_"):
+                continue
+            몸통 = key[len("단계_"):]
+            for 단계 in STAGES:
+                if 몸통.endswith("_" + 단계):
+                    cid = 몸통[: -(len(단계) + 1)]
+                    break
+            else:
+                continue
+            if not 볼수있나(cid):
+                continue
+            try:
+                이전 = recruit.set_stage(cid, 단계, 값들[0], me.아이디)
+            except ValueError as exc:
+                return self._redirect("/recruit?err=" + urllib.parse.quote(str(exc)))
+            if 이전 != 값들[0]:
+                audit.record(me.아이디, "채용현황", cid, 항목=단계,
+                             이전값=이전, 새값=값들[0])
+                바뀐것.append(f"{이름맵.get(cid, cid)} {단계} {값들[0] or '(빈칸)'}")
+
+        # 2) 채용 비고 (지원자 쪽 '비고' 와 다른 값이다)
+        for key, 값들 in data.items():
+            if not key.startswith("채용비고_"):
+                continue
+            cid = key[len("채용비고_"):]
+            if not 볼수있나(cid):
+                continue
+            새비고 = (N.paragraph(값들[0]) if "채용_비고" in 긴글열
+                    else N.text(값들[0]))
+            이전 = recruit.set_note(cid, 새비고, me.아이디)
+            if 이전 != 새비고:
+                audit.record(me.아이디, "채용현황", cid, 항목="채용_비고",
+                             이전값=이전, 새값=새비고)
+                바뀐것.append(f"{이름맵.get(cid, cid)} 채용_비고")
+
+        # 3) '채용 현황' 으로 만든 추가 열
+        for 키, 열이름들 in data.items():
+            if not 키.startswith("사용자열_"):
+                continue
+            n = 키[len("사용자열_"):]
+            열이름 = 열이름들[0]
+            정의 = store.field(열이름)
+            if 정의 is None or (정의.get("구분") or "지원자 정보") != "채용 현황":
+                continue
+            앞머리 = f"사용자_{n}_"
+            for k2, 값들2 in data.items():
+                if not k2.startswith(앞머리):
+                    continue
+                cid = k2[len(앞머리):]
+                if not 볼수있나(cid):
+                    continue
+                try:
+                    새값 = validate_custom(정의, 값들2[0], 열이름 in 긴글열)
+                except ValidationError as exc:
+                    return self._redirect(
+                        "/recruit?err=" + urllib.parse.quote(str(exc)))
+                이전 = store.set_custom(cid, 열이름, 새값)
+                if 이전 != 새값:
+                    audit.record(me.아이디, "채용현황", cid, 항목=열이름,
+                                 이전값=이전, 새값=새값)
+                    바뀐것.append(f"{이름맵.get(cid, cid)} {열이름}")
+
+    # 4) 부서 / 과제 (지원자 수정 권한이 있어야 배정할 수 있다)
+    if can(me, "지원자_수정"):
+        for key, 값들 in data.items():
+            if not key.startswith("부서_"):
+                continue
+            cid = key[len("부서_"):]
+            dept = 값들[0]
+            proj = (data.get(f"과제_{cid}") or [""])[0]
+            부서_id = int(dept) if dept.isdigit() else None
+            project_id = int(proj) if proj.isdigit() else None
+            # 부서를 바꾸면 그 부서에 속하지 않는 과제는 떨어뜨린다
+            if project_id is not None:
+                소속 = {pr["id"] for pr in auth.projects(부서_id)} if 부서_id else set()
+                if project_id not in 소속:
+                    project_id = None
+            옛부서, 옛과제 = recruit.set_assignment(cid, 부서_id, project_id, me.아이디)
+            if (옛부서, 옛과제) != (부서_id, project_id):
+                audit.record(me.아이디, "채용현황", cid, 항목="부서/과제",
+                             이전값=f"{옛부서}/{옛과제}", 새값=f"{부서_id}/{project_id}")
+                바뀐것.append(f"{이름맵.get(cid, cid)} 부서/과제")
+
+    if not 바뀐것:
+        return self._redirect("/recruit?msg=" + urllib.parse.quote("바뀐 내용이 없습니다."))
+    보임 = ", ".join(바뀐것[:5]) + (" 외" if len(바뀐것) > 5 else "")
+    return self._redirect("/recruit?msg=" + urllib.parse.quote(
+        f"{len(바뀐것)}건 저장했습니다 — {보임}"))
+    return _없는주소(self)
+
+
+@라우트("POST", '/match/curate', 권한='지원자_등록')
+def post_match_curate(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    고른키 = set(data.get("keys") or [])
+    고른필드 = set(data.get("fields") or [])
+    if not 고른키:
+        return self._redirect("/match/curate?err=" + urllib.parse.quote(
+            "남길 과제를 하나 이상 고르세요."))
+    try:
+        항목 = projectsmod.raw_items(projectsmod.read_json(settings.projects_json))
+    except projectsmod.ProjectsError as exc:
+        return self._redirect("/match/curate?err="
+                              + urllib.parse.quote(str(exc)))
+    고른것 = projectsmod.curate(항목, 고른키, 고른필드)
+    if not 고른것:
+        return self._redirect("/match/curate?err=" + urllib.parse.quote(
+            "고른 조건으로 남는 과제가 없습니다. 필드를 더 고르세요."))
+    원본 = projectsmod.resolve_path(settings.projects_json)
+    저장위치 = projectsmod.save_curated(
+        다듬은파일(), 고른것, 출처=str(원본 or ""), 만든이=me.아이디,
+    )
+    과제목록(다시=True)
+    audit.record(me.아이디, "과제", str(저장위치), 항목="과제 파일 다듬기",
+                 새값=f"과제 {len(고른것)}개 · 필드 {len(고른필드)}종")
+    return self._redirect("/match/curate?msg=" + urllib.parse.quote(
+        f"과제 {len(고른것)}개를 남겨 저장했습니다. 이제 매칭은 이 파일을 씁니다. "
+        f"이미 맞춰본 지원자는 '과제 매칭' 에서 다시 돌리세요."))
+    return _없는주소(self)
+
+
+@라우트("POST", '/match/curate/reset', 권한='지원자_등록')
+def post_match_curate_reset(self, me, path):
+    다듬 = 다듬은파일()
+    있었나 = 다듬.is_file()
+    다듬.unlink(missing_ok=True)
+    과제목록(다시=True)
+    if 있었나:
+        audit.record(me.아이디, "과제", str(다듬), 비고="다듬은 과제 파일 삭제")
+    return self._redirect("/match/curate?msg=" + urllib.parse.quote(
+        "다듬은 파일을 지웠습니다. 매칭은 다시 원본을 씁니다."
+        if 있었나 else "지울 파일이 없습니다."))
+    return _없는주소(self)
+
+
+@라우트("POST", '/match/one', 권한='지원자_등록')
+def post_match_one(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    cid = (data.get("id") or [""])[0]
+    뒤로 = f"/candidate?id={urllib.parse.quote(cid)}"
+    rec = store.get(cid)
+    if rec is None:
+        return self._redirect("/")
+    개수, 오류 = 매칭실행(rec, 사용자=me.아이디)
+    if 오류:
+        return self._redirect(f"{뒤로}&err=" + urllib.parse.quote(오류))
+    return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(
+        f"과제 {개수}건과 맞춰봤습니다." if 개수 else "맞춰볼 과제가 없습니다."))
+    return _없는주소(self)
+
+
+@라우트("POST", '/match/all', 권한='지원자_등록')
+def post_match_all(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    다시 = bool(data.get("again"))
+    목록, 파일오류 = 과제목록(다시=True)
+    if 파일오류:
+        return self._redirect("/match?err=" + urllib.parse.quote(파일오류))
+    이미 = set() if 다시 else set(store.top_matches())
+    한것, 실패, 첫오류 = 0, 0, ""
+    for rec in store.list_all():
+        if rec.지원자_ID in 이미:
+            continue
+        개수, 오류 = 매칭실행(rec, 사용자=me.아이디)
+        if 오류:
+            실패 += 1
+            첫오류 = 첫오류 or 오류
+        elif 개수:
+            한것 += 1
+    조각 = [f"{한것}명을 과제와 맞춰봤습니다"]
+    if 실패:
+        조각.append(f"{실패}명 실패 ({첫오류[:80]})")
+    if not 한것 and not 실패:
+        조각 = ["새로 맞춰볼 지원자가 없습니다"]
+    return self._redirect("/match?msg=" + urllib.parse.quote(" / ".join(조각)))
+    return _없는주소(self)
+
+
+@라우트("POST", '/mail/template/add', 권한='메일_템플릿')
+def post_mail_template_add(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    이름 = (data.get("name") or [""])[0]
+    탈락 = bool(data.get("reject"))
+    대상 = (data.get("to") or [DEFAULT_RECIPIENT])[0]
+    if 대상 not in RECIPIENT_KINDS:
+        대상 = DEFAULT_RECIPIENT
+    try:
+        tid = mailing.add_template(이름, 탈락메일=탈락, 만든이=me.아이디,
+                                   본문형식="HTML", 받는대상=대상)
+    except ValueError as exc:
+        return self._redirect("/mail?err=" + urllib.parse.quote(str(exc)))
+    audit.record(me.아이디, "메일", 이름,
+                 비고="템플릿 추가" + (" (탈락 메일)" if 탈락 else "")
+                 + (" (내부 메일)" if 대상 == "내부" else ""))
+    return self._redirect(f"/mail/template?id={tid}")
+    return _없는주소(self)
+
+
+@라우트("POST", '/mail/template/save', 권한='메일_템플릿')
+def post_mail_template_save(self, me, path):
+    data = urllib.parse.parse_qs(
+        self._read_body().decode("utf-8", "replace"), keep_blank_values=True
+    )
+    try:
+        tid = int((data.get("id") or ["0"])[0])
+    except ValueError:
+        return self._redirect("/mail")
+    옛 = mailing.template(tid)
+    if 옛 is None:
+        return self._redirect("/mail")
+    try:
+        새것 = mailing.update_template(
+            tid,
+            이름=(data.get("name") or [None])[0],
+            제목=(data.get("subject") or [""])[0],
+            본문=(data.get("body") or [""])[0],
+            탈락메일=bool(data.get("reject")),
+            참조=(data.get("cc") or [""])[0],
+            그림방식=(data.get("imgmode") or [None])[0],
+            받는대상=(data.get("to") or [None])[0],
+            CV첨부=bool(data.get("cvattach")),
+            지원자첨부=bool(data.get("candattach")),
+            발송조건=_고른조건(data.get("when") or []),
+        )
+    except ValueError as exc:
+        return self._redirect(f"/mail/template?id={tid}&err="
+                              + urllib.parse.quote(str(exc)))
+    변경 = [
+        (항목, 옛값, 새값)
+        for 항목, 옛값, 새값 in (
+            ("이름", 옛.이름, 새것.이름),
+            ("참조", 옛.참조, 새것.참조),
+            ("제목", 옛.제목, 새것.제목),
+            ("본문", 옛.본문, 새것.본문),
+            ("탈락메일", "Y" if 옛.탈락메일 else "", "Y" if 새것.탈락메일 else ""),
+            ("받는 사람", 옛.받는대상, 새것.받는대상),
+            ("CV 첨부", "Y" if 옛.CV첨부 else "", "Y" if 새것.CV첨부 else ""),
+            ("지원자 첨부", "Y" if 옛.지원자첨부 else "",
+             "Y" if 새것.지원자첨부 else ""),
+            ("보내야 하는 때", ", ".join(옛.조건들), ", ".join(새것.조건들)),
+        )
+        if 옛값 != 새값
+    ]
+    for 항목, 옛값, 새값 in 변경:
+        # 본문 전체를 이력에 남기면 읽기 어려워서 바뀐 사실만 남긴다
+        if 항목 == "본문":
+            audit.record(me.아이디, "메일", 새것.이름, 항목="본문", 비고="본문 수정")
+        else:
+            audit.record(me.아이디, "메일", 새것.이름, 항목=항목,
+                         이전값=옛값, 새값=새값)
+    메시지 = "저장했습니다." if 변경 else "바뀐 내용이 없습니다."
+    return self._redirect(f"/mail/template?id={tid}&msg="
+                          + urllib.parse.quote(메시지))
+    return _없는주소(self)
+
+
+@라우트("POST", '/mail/template/delete', 권한='메일_템플릿')
+def post_mail_template_delete(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    try:
+        이름 = mailing.delete_template(int((data.get("id") or ["0"])[0]))
+    except ValueError:
+        이름 = ""
+    if 이름:
+        audit.record(me.아이디, "메일", 이름, 비고="템플릿 삭제 (발송 기록은 유지)")
+    return self._redirect("/mail?msg=" + urllib.parse.quote(
+        f"'{이름}' 템플릿을 지웠습니다." if 이름 else "지울 템플릿이 없습니다."))
+    return _없는주소(self)
+
+
+@라우트("POST", '/mail/test', 권한='메일_발송')
+def post_mail_test(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    try:
+        tid = int((data.get("id") or ["0"])[0])
+    except (ValueError, TypeError):
+        return self._redirect("/mail")
+    tpl = mailing.template(tid)
+    if tpl is None:
+        return self._redirect("/mail")
+    주소 = (data.get("to") or [""])[0].strip()
+    뒤로 = f"/mail/test?id={tid}"
+    if not 주소:
+        return self._redirect(뒤로 + "&err=" + urllib.parse.quote(
+            "시험 발송할 주소를 넣으세요."))
+
+    # 실제 지원자 한 명의 값으로 채운다 (없으면 보기용 값)
+    진행맵 = recruit.all()
+    records = store.list_all()
+    값 = _mail_vars(records[0], 진행맵) if records else {}
+    값 = {k: (v or f"(예시){k}") for k, v in 값.items()}
+    for 변수 in _mail_var_names():
+        값.setdefault(변수, f"(예시){변수}")
+    제목, _ = render(tpl.제목, 값)
+    본문, _ = render(tpl.본문, 값)
+    try:
+        결과 = mailapi.send(주소, f"[시험] {제목}", 본문, html=tpl.html,
+                          참조=tpl.cc(),
+                          첨부=mailing.attachment_bytes(tpl.id))
+    except mailapi.MailError as exc:
+        audit.record(me.아이디, "메일", tpl.이름,
+                     비고=f"시험 발송 실패 ({주소})")
+        return self._redirect(뒤로 + "&err=" + urllib.parse.quote(str(exc)))
+    # 시험 발송은 **지원자 발송 기록에 남기지 않는다.**
+    # 남기면 그 지원자에게 진짜로 못 보내게 된다.
+    audit.record(me.아이디, "메일", tpl.이름,
+                 비고=f"시험 발송 {'성공' if 결과.보냄 else '(연습 모드)'} → {주소}")
+    if 결과.보냄:
+        알림 = (f"{주소} 로 보냈습니다. API 응답 HTTP {결과.상태코드}: "
+              f"{결과.응답[:200] or '(본문 없음)'}")
+    else:
+        알림 = ("연습 모드(MAIL_DRY_RUN=1)라 보내지 않았습니다. "
+              "아래 '보낼 요청 내용' 에서 형식을 확인하세요.")
+    return self._redirect(뒤로 + "&msg=" + urllib.parse.quote(알림)
+                          + "&peek=1")
+    return _없는주소(self)
+
+
+@라우트("POST", '/mail/image/add', 권한='메일_템플릿', json=True)
+def post_mail_image_add(self, me, path):
+    # 편집기가 그림을 넣을 때 부른다. 본문에 base64 를 박는 대신
+    # 파일로 보관하고 짧은 참조만 돌려준다.
+    form = parse_multipart(self._read_body(), self.headers.get("Content-Type", ""))
+    try:
+        tid = int(form.fields.get("template", "0"))
+    except (ValueError, TypeError):
+        tid = 0
+    if mailing.template(tid) is None:
+        return self._json({"ok": False, "error": "템플릿을 찾을 수 없습니다."},
+                          code=404)
+    f = form.files[0] if form.files else None
+    if f is None or not f.filename:
+        return self._json({"ok": False, "error": "그림 파일이 없습니다."}, code=400)
+    try:
+        img_id = mailing.add_body_image(tid, f.filename, f.content,
+                                        올린이=me.아이디)
+    except ValueError as exc:
+        return self._json({"ok": False, "error": str(exc)}, code=400)
+    audit.record(me.아이디, "메일", str(tid), 항목="본문 그림 추가",
+                 새값=f.filename)
+    return self._json({"ok": True, "id": img_id,
+                       "src": f"/mail/image?id={img_id}"})
+    return _없는주소(self)
+
+
+@라우트("POST", '/mail/image/delete', 권한='메일_템플릿')
+def post_mail_image_delete(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    tid = (data.get("template") or ["0"])[0]
+    try:
+        이름 = mailing.delete_body_image(int((data.get("id") or ["0"])[0]))
+    except (ValueError, TypeError):
+        이름 = ""
+    if 이름:
+        audit.record(me.아이디, "메일", tid, 항목="본문 그림 삭제", 이전값=이름)
+    return self._redirect(f"/mail/template?id={tid}&msg="
+                          + urllib.parse.quote("본문에서 쓰지 않는 그림을 지웠습니다."
+                                               if 이름 else "그림을 찾을 수 없습니다."))
+    return _없는주소(self)
+
+
+@라우트("POST", '/mail/attachment/add', 권한='메일_템플릿')
+def post_mail_attachment_add(self, me, path):
+    form = parse_multipart(self._read_body(), self.headers.get("Content-Type", ""))
+    try:
+        tid = int(form.fields.get("template", "0"))
+    except (ValueError, TypeError):
+        return self._redirect("/mail")
+    뒤로 = f"/mail/template?id={tid}"
+    if mailing.template(tid) is None:
+        return self._redirect("/mail")
+    붙임, 실패 = [], ""
+    for f in form.files:
+        if not f.filename:
+            continue
+        try:
+            mailing.add_attachment(tid, f.filename, f.content, 올린이=me.아이디)
+            붙임.append(f.filename)
+        except ValueError as exc:
+            실패 = 실패 or str(exc)
+    for 이름 in 붙임:
+        audit.record(me.아이디, "메일", str(tid), 항목="첨부 추가", 새값=이름)
+    if 실패:
+        return self._redirect(f"{뒤로}&err=" + urllib.parse.quote(실패))
+    if not 붙임:
+        return self._redirect(f"{뒤로}&err="
+                              + urllib.parse.quote("붙일 파일을 고르세요."))
+    return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(
+        f"{len(붙임)}개 붙였습니다: {', '.join(붙임)}"))
+    return _없는주소(self)
+
+
+@라우트("POST", '/mail/attachment/delete', 권한='메일_템플릿')
+def post_mail_attachment_delete(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    try:
+        tid = int((data.get("template") or ["0"])[0])
+        이름 = mailing.delete_attachment(int((data.get("id") or ["0"])[0]))
+    except (ValueError, TypeError):
+        return self._redirect("/mail")
+    if 이름:
+        audit.record(me.아이디, "메일", str(tid), 항목="첨부 삭제", 이전값=이름)
+    return self._redirect(f"/mail/template?id={tid}")
+    return _없는주소(self)
+
+
+@라우트("POST", '/mail/compose', 권한='메일_발송', 거부말='메일 발송 권한이 없습니다.')
+def post_mail_compose(self, me, path):
+    # 인재 Pool·채용 현황에서 고른 사람을 데리고 오는 입구.
+    data = urllib.parse.parse_qs(
+        self._read_body().decode("utf-8", "replace"), keep_blank_values=True
+    )
+    ids = [x for x in (data.get("ids") or []) if x.strip()]
+    뒤로 = (data.get("back") or ["/"])[0] or "/"
+    if not 뒤로.startswith("/"):
+        뒤로 = "/"
+    try:
+        tid = int((data.get("template") or ["0"])[0] or 0)
+    except ValueError:
+        tid = 0
+    return self._send(_mail_compose_page(ids, tid, me, 뒤로))
+    return _없는주소(self)
+
+
+@라우트("POST", '/mail/send/one', 권한='메일_발송', 거부말='메일 발송 권한이 없습니다.')
+def post_mail_send_one(self, me, path):
+    # 작성창에서 한 통. 고친 내용 그대로 보내고 그대로 기록한다.
+    data = urllib.parse.parse_qs(
+        self._read_body().decode("utf-8", "replace"), keep_blank_values=True
+    )
+    try:
+        tid = int((data.get("tpl") or ["0"])[0])
+    except ValueError:
+        return self._redirect("/mail")
+    cid = (data.get("id") or [""])[0]
+    tpl = mailing.template(tid)
+    if tpl is None or not _볼수있는지원자(cid, me):
+        return self._deny("보낼 수 없는 요청입니다.")
+    넣은값 = {
+        "to": (data.get("to") or [""])[0].strip(),
+        "cc": (data.get("cc") or [""])[0].strip(),
+        "subject": (data.get("subject") or [""])[0],
+        "body": (data.get("body") or [""])[0],
+        "cv": bool(data.get("cv")),
+        "cand": bool(data.get("cand")),
+    }
+    # 첨부 체크만 바꾼 것 — 보내지 않고 다시 그린다
+    if not data.get("send"):
+        return self._send(_mail_draft_page(tid, cid, me, 넣은값=넣은값))
+
+    rec = store.get(cid)
+    이름 = _mail_vars(rec).get("한글_이름") or cid
+    막힘 = mailing.blocked_reason(cid, tpl)
+    if 막힘:
+        return self._send(_mail_draft_page(tid, cid, me, 막힘, 넣은값))
+    if not 넣은값["to"]:
+        return self._send(_mail_draft_page(
+            tid, cid, me, "받는 사람을 적으세요.", 넣은값))
+
+    자료, 자료오류 = _지원자자료(cid, 넣은값["cv"], 넣은값["cand"])
+    if 자료오류:
+        return self._send(_mail_draft_page(tid, cid, me, 자료오류, 넣은값))
+    참조 = split_addresses(넣은값["cc"])
+    첨부파일 = mailing.attachment_bytes(tpl.id) + 자료
+    보낼본문, 그림첨부 = mailing.prepare_body(넣은값["body"], tpl.그림보내기)
+    첨부이름 = ", ".join([n for n, _ in 첨부파일 + 그림첨부])
+    try:
+        결과 = mailapi.send(넣은값["to"], 넣은값["subject"], 보낼본문,
+                          html=tpl.html, 참조=참조,
+                          첨부=첨부파일 + 그림첨부)
+    except mailapi.MailError as exc:
+        mailing.record(cid, tpl, 넣은값["to"], 넣은값["subject"],
+                       넣은값["body"], "실패", 오류=str(exc),
+                       보낸이=me.아이디, 참조=", ".join(참조), 첨부=첨부이름)
+        return self._send(_mail_draft_page(
+            tid, cid, me, f"보내지 못했습니다: {exc}", 넣은값))
+    상태 = "성공" if 결과.보냄 else "발송안함"
+    메모 = f"HTTP {결과.상태코드} {결과.응답[:300]}".strip()
+    mailing.record(cid, tpl, 넣은값["to"], 넣은값["subject"], 넣은값["body"],
+                   상태, 오류="" if 결과.보냄 else 메모,
+                   보낸이=me.아이디, 참조=", ".join(참조), 첨부=첨부이름)
+    audit.record(me.아이디, "메일", cid, 항목=tpl.이름,
+                 비고=f"{tpl.받는대상} 발송 → {넣은값['to']} ({상태})")
+    글 = "보냈습니다" if 결과.보냄 else "연습 모드라 나가지 않았습니다"
+    return self._send(_mail_sent_window(cid, 이름, 글))
+    return _없는주소(self)
+
+
+@라우트("POST", '/mail/send', 권한='메일_발송')
+def post_mail_send(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    try:
+        tid = int((data.get("template") or data.get("id") or ["0"])[0])
+    except ValueError:
+        return self._redirect("/mail")
+    tpl = mailing.template(tid)
+    if tpl is None:
+        return self._redirect("/mail")
+    돌아갈곳 = (data.get("back") or ["/"])[0] or "/"
+    if not 돌아갈곳.startswith("/"):
+        돌아갈곳 = "/"
+    ids = [x for x in (data.get("ids") or []) if x.strip()]
+    if not ids:
+        return self._send(_mail_compose_page(
+            ids, tid, me, 돌아갈곳, "보낼 지원자를 하나 이상 고르세요."))
+
+    # 안전장치: 보낼 인원수를 사람이 직접 쳐야 한다. 화면을 그린 뒤에
+    # 상황이 바뀌었을 수 있으니 **지금 다시 세어** 그 수와 맞춰 본다.
+    갈사람, _막힌 = _mail_targets(ids, tpl, me)
+    친것 = (data.get("confirm") or [""])[0].strip()
+    if 친것 != str(len(갈사람)):
+        return self._send(_mail_compose_page(
+            ids, tid, me, 돌아갈곳,
+            f"보낼 인원수({len(갈사람)})를 그대로 쳐 넣어야 나갑니다. "
+            f"넣은 값: {친것 or '(빈칸)'}"
+            + ("" if 친것 else "")
+        ))
+    뒤로 = 돌아갈곳
+
+    진행맵 = recruit.all()
+    보이는 = auth.visible_project_ids(me)
+    참조 = tpl.cc()
+    첨부파일 = mailing.attachment_bytes(tpl.id)
+    그림이름 = [f"{i['id']}_{i['파일명']}"
+             for i in mailing.used_body_images(tpl.본문)
+             if tpl.그림보내기 in ("본문+첨부", "첨부만")]
+    # 붙는 파일 이름은 사람마다 달라진다 (지원자 자료). 보낼 때 만든다.
+    성공, 실패, 건너뜀 = 0, 0, 0
+    첫오류 = ""
+    for cid in ids:
+        rec = store.get(cid)
+        if rec is None:
+            건너뜀 += 1
+            continue
+        if 보이는 is not None and recruit.get(cid).project_id not in 보이는:
+            건너뜀 += 1
+            continue
+        # 화면을 그린 뒤에 상황이 바뀌었을 수 있다. 보내기 직전에 다시 본다.
+        막힘 = mailing.blocked_reason(cid, tpl)
+        if 막힘:
+            건너뜀 += 1
+            continue
+        값 = _mail_vars(rec, 진행맵)
+        받는사람 = (값.get("이메일") or "").split(MULTI_SEP)[0].strip()
+        제목, 빈1 = render(tpl.제목, 값)
+        본문, 빈2 = render(tpl.본문, 값)
+        if not 받는사람:
+            건너뜀 += 1
+            continue
+        # 빈 자리표시자는 빈 채로 나간다 (화면에서 이미 알렸다).
+        # 본문 그림을 실제로 실을 모양으로 바꾼다. 이력에는 **참조가 든
+        # 본문**을 남긴다 — 나중에 다시 열어도 우리 DB 로 그림이 보인다.
+        보낼본문, 그림첨부 = mailing.prepare_body(본문, tpl.그림보내기)
+        # 사람마다 다른 파일이라 여기서 읽는다. 너무 크면 그 사람만 건너뛴다.
+        자료, 자료오류 = _지원자자료(cid, tpl.CV첨부, tpl.지원자첨부)
+        if 자료오류:
+            실패 += 1
+            첫오류 = 첫오류 or f"{cid}: {자료오류}"
+            continue
+        이번첨부 = ", ".join([n for n, _ in 첨부파일 + 자료] + 그림이름)
+        try:
+            결과 = mailapi.send(받는사람, 제목, 보낼본문, html=tpl.html,
+                              참조=참조, 첨부=첨부파일 + 자료 + 그림첨부)
+        except mailapi.MailError as exc:
+            실패 += 1
+            첫오류 = 첫오류 or str(exc)
+            mailing.record(cid, tpl, 받는사람, 제목, 본문, "실패",
+                           오류=str(exc), 보낸이=me.아이디,
+                           참조=", ".join(참조), 첨부=이번첨부)
+            continue
+        상태 = "성공" if 결과.보냄 else "발송안함"
+        성공 += 1
+        # API 응답을 그대로 남긴다. HTTP 200 이어도 본문에 실패가 적혀 오는
+        # API 가 있어서, 사람이 눈으로 확인할 수 있어야 한다.
+        메모 = (f"HTTP {결과.상태코드} {결과.응답[:300]}".strip()
+              if 결과.보냄 else 결과.응답)
+        mailing.record(cid, tpl, 받는사람, 제목, 본문, 상태,
+                       오류=메모, 보낸이=me.아이디,
+                       참조=", ".join(참조), 첨부=이번첨부)
+        audit.record(me.아이디, "메일", cid, 항목=tpl.이름,
+                     새값=상태, 비고=f"{받는사람} 로 발송")
+
+    조각 = [f"'{tpl.이름}' 을 {성공}명에게 보냈습니다"]
+    if 실패:
+        조각.append(f"{실패}명 실패 ({첫오류[:80]})")
+    if 건너뜀:
+        조각.append(f"{건너뜀}명은 보낼 수 없어 건너뛰었습니다")
+    이음 = "&" if "?" in 뒤로 else "?"
+    return self._redirect(뒤로 + 이음 + "msg="
+                          + urllib.parse.quote(" / ".join(조각)))
+    return _없는주소(self)
+
+
+@라우트("POST", '/dash/add', 권한='대시보드_조회', 거부말='대시보드는 채용담당자 이상만 다룰 수 있습니다.')
+@라우트("POST", '/dash/rename', 권한='대시보드_조회', 거부말='대시보드는 채용담당자 이상만 다룰 수 있습니다.')
+@라우트("POST", '/dash/copy', 권한='대시보드_조회', 거부말='대시보드는 채용담당자 이상만 다룰 수 있습니다.')
+@라우트("POST", '/dash/delete', 권한='대시보드_조회', 거부말='대시보드는 채용담당자 이상만 다룰 수 있습니다.')
+@라우트("POST", '/dash/restore', 권한='대시보드_조회', 거부말='대시보드는 채용담당자 이상만 다룰 수 있습니다.')
+@라우트("POST", '/dash/purge', 권한='대시보드_조회', 거부말='대시보드는 채용담당자 이상만 다룰 수 있습니다.')
+@라우트("POST", '/dash/block/add', 권한='대시보드_조회', 거부말='대시보드는 채용담당자 이상만 다룰 수 있습니다.')
+@라우트("POST", '/dash/block/move', 권한='대시보드_조회', 거부말='대시보드는 채용담당자 이상만 다룰 수 있습니다.')
+@라우트("POST", '/dash/block/copy', 권한='대시보드_조회', 거부말='대시보드는 채용담당자 이상만 다룰 수 있습니다.')
+@라우트("POST", '/dash/block/delete', 권한='대시보드_조회', 거부말='대시보드는 채용담당자 이상만 다룰 수 있습니다.')
+@라우트("POST", '/dash/block/restore', 권한='대시보드_조회', 거부말='대시보드는 채용담당자 이상만 다룰 수 있습니다.')
+@라우트("POST", '/dash/block/draft', 권한='대시보드_조회', 거부말='대시보드는 채용담당자 이상만 다룰 수 있습니다.')
+@라우트("POST", '/dash/sheet/calc', 권한='대시보드_조회', 거부말='대시보드는 채용담당자 이상만 다룰 수 있습니다.', 읽기전용=True)
+@라우트("POST", '/dash/sheet/save', 권한='대시보드_조회', 거부말='대시보드는 채용담당자 이상만 다룰 수 있습니다.')
+@라우트("POST", '/dash/block/save', 권한='대시보드_조회', 거부말='대시보드는 채용담당자 이상만 다룰 수 있습니다.')
+@라우트("POST", '/dash/block/preview', 권한='대시보드_조회', 거부말='대시보드는 채용담당자 이상만 다룰 수 있습니다.', 읽기전용=True)
+def post_dash_add_묶음(self, me, path):
+    data = urllib.parse.parse_qs(
+        self._read_body().decode("utf-8", "replace"), keep_blank_values=True
+    )
+
+    def 정수(키: str, 기본: int = 0) -> int:
+        try:
+            return int((data.get(키) or [str(기본)])[0])
+        except ValueError:
+            return 기본
+
+    if path == "/dash/add":
+        이름 = (data.get("name") or [""])[0]
+        try:
+            did = boards.add(이름, 만든이=me.아이디,
+                             설명=(data.get("desc") or [""])[0])
+        except ValueError as exc:
+            return self._redirect("/dash?err=" + urllib.parse.quote(str(exc)))
+        if data.get("sample"):
+            _예시블록(did)
+        audit.record(me.아이디, "대시보드", str(did), 항목="만들기", 새값=이름)
+        return self._redirect(f"/dash/edit?id={did}")
+
+    if path == "/dash/rename":
+        did = 정수("id")
+        try:
+            boards.rename(did, (data.get("name") or [""])[0],
+                          (data.get("desc") or [""])[0])
+        except ValueError as exc:
+            return self._redirect(f"/dash/edit?id={did}&err="
+                                  + urllib.parse.quote(str(exc)))
+        boards.set_width(did, (data.get("width") or [""])[0])
+        return self._redirect(f"/dash/edit?id={did}&msg="
+                              + urllib.parse.quote("저장했습니다."))
+
+    if path == "/dash/copy":
+        did = 정수("id")
+        옛 = boards.get(did)
+        if 옛 is None:
+            return self._redirect("/dash")
+        for n in range(2, 50):
+            새이름 = f"{옛.이름} 복사본{'' if n == 2 else n}"
+            if not boards.by_name(새이름):
+                break
+        새id = boards.copy(did, 새이름, 만든이=me.아이디)
+        audit.record(me.아이디, "대시보드", str(새id), 항목="복제", 새값=새이름)
+        return self._redirect(f"/dash/edit?id={새id}")
+
+    if path == "/dash/delete":
+        d = boards.get(정수("id"))
+        if d is not None and not _대시_지울수있나(me, d):
+            return self._redirect("/dash?err=" + urllib.parse.quote(
+                f"'{d.이름}' 은 만든 사람({d.만든이 or '기록 없음'})이나 관리자만 지울 수 있습니다."))
+        이름 = boards.delete(d.id, me.아이디) if d else ""
+        if 이름:
+            audit.record(me.아이디, "대시보드", 이름, 비고="대시보드 휴지통으로")
+        return self._redirect("/dash?msg=" + urllib.parse.quote(
+            f"'{이름}' 을 휴지통으로 보냈습니다. 아래 휴지통에서 되살릴 수 있습니다."
+            if 이름 else "없는 대시보드입니다."))
+
+    if path == "/dash/restore":
+        이름 = boards.restore(정수("id"))
+        if 이름:
+            audit.record(me.아이디, "대시보드", 이름, 비고="휴지통에서 되살림")
+        return self._redirect("/dash?msg=" + urllib.parse.quote(
+            f"'{이름}' 을 되살렸습니다." if 이름 else "휴지통에 없는 대시보드입니다."))
+
+    if path == "/dash/purge":
+        d = boards.get(정수("id"), 지운것도=True)
+        if d is not None and not _대시_지울수있나(me, d):
+            return self._redirect("/dash?err=" + urllib.parse.quote(
+                "만든 사람이나 관리자만 완전히 지울 수 있습니다."))
+        이름 = boards.purge(d.id) if d else ""
+        if 이름:
+            audit.record(me.아이디, "대시보드", 이름, 비고="대시보드 완전 삭제")
+        return self._redirect("/dash?msg=" + urllib.parse.quote(
+            f"'{이름}' 을 완전히 지웠습니다." if 이름 else "휴지통에 없는 대시보드입니다."))
+
+    if path == "/dash/block/add":
+        did = 정수("dash")
+        종류 = (data.get("kind") or [""])[0]
+        try:
+            설정 = {"줄": 기본_프로필틀, "머리": 기본_프로필머리} \
+                if 종류 == "프로필" else {}
+            boards.add_block(did, 종류, 제목=종류, 설정=설정)
+        except ValueError as exc:
+            return self._redirect(f"/dash/edit?id={did}&err="
+                                  + urllib.parse.quote(str(exc)))
+        return self._redirect(f"/dash/edit?id={did}")
+
+    if path == "/dash/block/move":
+        bid = 정수("id")
+        b = boards.block(bid)
+        boards.move_block(bid, 정수("dir", 1))
+        return self._redirect(f"/dash/edit?id={b.dashboard_id if b else 0}")
+
+    if path == "/dash/block/copy":
+        # 블록 하나만 닮은 것으로 하나 더. **저장된 것**을 베낀다 —
+        # 화면에서 고치다 만 것은 아직 DB 에 없다.
+        bid = 정수("id")
+        b = boards.block(bid)
+        did = b.dashboard_id if b else 0
+        if b is not None:
+            boards.copy_block(bid)
+            audit.record(me.아이디, "대시보드", str(did), 항목="블록 복제",
+                         새값=b.제목 or b.종류)
+        return self._redirect(f"/dash/edit?id={did}")
+
+    if path == "/dash/block/delete":
+        bid = 정수("id")
+        b = boards.block(bid)
+        did = b.dashboard_id if b else 0
+        이름 = boards.delete_block(bid)
+        if 이름:
+            audit.record(me.아이디, "대시보드", str(did), 항목="블록 삭제",
+                         이전값=_블록기록(b), 비고=이름)
+        return self._redirect(f"/dash/edit?id={did}&msg=" + urllib.parse.quote(
+            "블록을 지웠습니다. 맨 아래 «지운 블록» 에서 되살릴 수 있습니다."))
+
+    if path == "/dash/block/restore":
+        did = boards.restore_block(정수("id"))
+        if did:
+            audit.record(me.아이디, "대시보드", str(did), 항목="블록 되살림")
+        return self._redirect(f"/dash/edit?id={did}" if did else "/dash")
+
+    if path == "/dash/block/draft":
+        # 말 -> 블록 정의 초안. **LLM 은 값을 만들지 않는다** — 정의만
+        # 내고, 표는 언제나 우리 계산기가 그린다.
+        bid = 정수("id")
+        b = boards.block(bid)
+        if b is None:
+            return self._redirect("/dash")
+        말 = (data.get("말") or [""])[0]
+        설정, 메모 = dash_draft.draft(
+            말, 대시보드_열(), 종류=b.종류,
+            축목록=[a for a in AXIS_SOURCES if a != "직접 입력"],
+            예시표=(data.get("예시") or [""])[0],
+        )
+        뒤로 = f"/dash/edit?id={b.dashboard_id}"
+        if not 설정:
+            return self._redirect(
+                f"{뒤로}&err=" + urllib.parse.quote(" / ".join(메모)))
+        제목 = 설정.pop("_제목", "") or b.제목 or b.종류
+        boards.save_block(bid, 제목=제목, 설정={**b.설정, **설정})
+        audit.record(me.아이디, "대시보드", str(b.dashboard_id),
+                     항목=f"{b.종류} 초안", 새값=말[:80])
+        return self._redirect(
+            f"{뒤로}&msg=" + urllib.parse.quote(" / ".join(메모)))
+
+    if path == "/dash/sheet/calc":
+        # 편집 중 **다시 계산만** 한다. 저장하지 않는다 — 칸 하나 고칠
+        # 때마다 저장하고 화면을 통째로 다시 그리던 것을 이걸로 바꿨다.
+        if not can(me, "대시보드_편집"):
+            return self._json({"error": "대시보드를 고칠 권한이 없습니다."}, code=403)
+        b = boards.block(정수("id"))
+        if b is None or b.종류 != "시트":
+            return self._json({"error": "시트를 찾을 수 없습니다."}, code=404)
+        import dataclasses
+        임시 = dataclasses.replace(b, 설정=_시트_받기(b, data))
+        표, 오류 = _시트표(임시, 대시보드_행_잠깐(), 대시보드_열(), 편집=True)
+        return self._json({"sheet": _시트모델(임시), "html": 표, "오류": 오류})
+
+    if path == "/dash/sheet/save":
+        # 시트는 격자·서식·병합이 JSON 한 덩어리로 온다. **믿지 않는다** —
+        # `시트_다듬기` 가 색·크기·병합·격자 밖 칸을 전부 다시 거른다.
+        bid = 정수("id")
+        b = boards.block(bid)
+        if b is None:
+            return self._redirect("/dash")
+        설정 = _시트_받기(b, data)
+        제목 = (data.get("title") or [""])[0]
+        boards.save_block(bid, 제목=제목, 설정=설정)
+        뒤로 = f"/dash/edit?id={b.dashboard_id}"
+        if not (data.get("끝") or [""])[0]:
+            # 도구막대가 값을 바꿔 **다시 계산하러** 보낸 것이다.
+            # 저장은 됐지만 안내는 안 띄운다 — 누를 때마다 뜨면 시끄럽다.
+            return self._redirect(f"{뒤로}#b{bid}")
+        새것 = boards.block(bid)
+        if _블록기록(b) != _블록기록(새것):
+            audit.record(me.아이디, "대시보드", str(b.dashboard_id),
+                         항목=f"시트 블록 #{bid}", 이전값=_블록기록(b),
+                         새값=_블록기록(새것), 비고=제목)
+        return self._redirect(f"{뒤로}&msg="
+                              + urllib.parse.quote("시트를 저장했습니다.")
+                              + f"#b{bid}")
+
+    if path == "/dash/block/save":
+        bid = 정수("id")
+        b = boards.block(bid)
+        if b is None:
+            return self._redirect("/dash")
+        설정, 오류 = _블록설정(b, data)
+        if 오류:
+            return self._redirect(f"/dash/edit?id={b.dashboard_id}&err="
+                                  + urllib.parse.quote(오류))
+        boards.save_block(bid, 제목=(data.get("title") or [""])[0], 설정=설정)
+        # 무엇이 어떻게 바뀌었는지 남긴다. 제목만 남기면 «누가 이 수식을
+        # 바꿨나» 를 알 길이 없었다.
+        새것 = boards.block(bid)
+        if _블록기록(b) != _블록기록(새것):
+            audit.record(me.아이디, "대시보드", str(b.dashboard_id),
+                         항목=f"{b.종류} 블록 #{bid}", 이전값=_블록기록(b),
+                         새값=_블록기록(새것), 비고=새것.제목 if 새것 else "")
+        return self._redirect(f"/dash/edit?id={b.dashboard_id}&msg="
+                              + urllib.parse.quote("블록을 저장했습니다.")
+                              + f"#b{bid}")
+
+    if path == "/dash/block/preview":
+        # 저장 없이 미리보기 — 폼에 적힌 설정으로 그려만 본다.
+        if not can(me, "대시보드_편집"):
+            return self._json({"error": "대시보드를 고칠 권한이 없습니다."}, code=403)
+        b = boards.block(정수("id"))
+        if b is None:
+            return self._json({"error": "블록을 찾을 수 없습니다."}, code=404)
+        설정, 오류 = _블록설정(b, data)
+        if 오류:
+            return self._json({"error": 오류})
+        import dataclasses
+        임시 = dataclasses.replace(
+            b, 제목=(data.get("title") or [b.제목])[0], 설정=설정)
+        return self._json({"html": _블록그리기(임시, 대시보드_행_잠깐(),
+                                           대시보드_축(), 대시보드_열())})
+    return self._redirect("/dash")
+    return _없는주소(self)
+
+
+@라우트("POST", '/fields/add', 권한='열_구성', 거부말='표 항목 추가는 관리자만 할 수 있습니다.')
+def post_fields_add(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    이름 = (data.get("name") or [""])[0]
+    try:
+        구분 = (data.get("scope") or ["지원자 정보"])[0]
+        store.add_field(
+            이름,
+            (data.get("type") or ["텍스트"])[0],
+            (data.get("choices") or [""])[0],
+            만든이=me.아이디,
+            구분=구분,
+        )
+    except ValueError as exc:
+        return self._redirect("/fields?err=" + urllib.parse.quote(str(exc)))
+    audit.record(me.아이디, "표항목", 이름, 항목="구분", 새값=구분, 비고="열 추가")
+    return self._redirect("/fields")
+    return _없는주소(self)
+
+
+@라우트("POST", '/fields/choices', 권한='열_구성', 거부말='표 항목 설정은 관리자만 바꿀 수 있습니다.')
+def post_fields_choices(self, me, path):
+    # 추가한 열의 선택지 고치기. 형식 검사·추출 스키마와 무관한 열이라
+    # 고칠 수 있다. 이미 쓰고 있는 값을 빼면 store 가 거부한다.
+    data = urllib.parse.parse_qs(
+        self._read_body().decode("utf-8", "replace"), keep_blank_values=True
+    )
+    col = (data.get("col") or [""])[0]
+    새선택지 = (data.get("choices") or [""])[0]
+    옛것 = store.field(col)
+    try:
+        store.update_field(col, 선택지=새선택지)
+    except ValueError as exc:
+        return self._redirect("/fields?err=" + urllib.parse.quote(str(exc)))
+    audit.record(me.아이디, "표항목", col, 항목="선택지",
+                 이전값=(옛것 or {}).get("선택지", ""), 새값=새선택지.strip())
+    return self._redirect("/fields?msg=" + urllib.parse.quote(
+        f"'{col}' 선택지를 바꿨습니다."))
+    return _없는주소(self)
+
+
+@라우트("POST", '/recruit/statuses', 권한='열_구성', 거부말='표 항목 설정은 관리자만 바꿀 수 있습니다.')
+def post_recruit_statuses(self, me, path):
+    # 단계에서 고를 수 있는 상태 목록. 네 단계가 같은 목록을 쓴다.
+    data = urllib.parse.parse_qs(
+        self._read_body().decode("utf-8", "replace"), keep_blank_values=True
+    )
+    목록 = [v.strip() for v in (data.get("choices") or [""])[0].split("|")]
+    try:
+        이전 = recruit.set_statuses(목록)
+    except ValueError as exc:
+        return self._redirect("/fields?err=" + urllib.parse.quote(str(exc)))
+    지금 = recruit.statuses()
+    if 지금 != 이전:
+        audit.record(me.아이디, "표항목", "단계 상태", 항목="선택지",
+                     이전값=" | ".join(x for x in 이전 if x),
+                     새값=" | ".join(x for x in 지금 if x))
+    return self._redirect("/fields?msg=" + urllib.parse.quote(
+        "단계 상태 목록을 바꿨습니다: "
+        + ", ".join(x or "(빈칸)" for x in 지금)))
+    return _없는주소(self)
+
+
+@라우트("POST", '/fields/columns', 권한='열_구성', 거부말='표 열 설정은 관리자만 바꿀 수 있습니다.')
+def post_fields_columns(self, me, path):
+    data = urllib.parse.parse_qs(
+        self._read_body().decode("utf-8", "replace"), keep_blank_values=True
+    )
+    # 줄을 끌어 옮기면 폼 칸이 오는 **차례가 바뀐다.** 차례로 짝을 맞추면
+    # 5번 줄의 순서 값이 1번 줄에 붙는다 (실제로 그랬다). 그래서 열 이름도
+    # 번호를 달아 보내고, 번호로만 짝을 맞춘다.
+    열들 = [(int(k.split("_")[1]), v[0])
+          for k, v in data.items()
+          if k.startswith("col_") and k.split("_")[1].isdigit() and v]
+    열들.sort()
+    이전 = store.column_config()
+    구분맵 = {c: g for g, c, _a in 열목록()}
+    바뀐것: list[str] = []
+    for i, col in 열들:
+        # 추가한 열은 이름과 구분(어느 표에 속하는지)까지 고칠 수 있다.
+        # 기본 열은 이 칸을 아예 안 그리므로 여기 걸리지 않는다.
+        옛필드 = store.field(col)
+        if 옛필드 is not None:
+            새이름 = (data.get(f"rename_{i}") or [col])[0].strip()
+            새구분 = (data.get(f"scope_{i}")
+                    or [옛필드.get("구분") or "지원자 정보"])[0]
+            옛구분 = 옛필드.get("구분") or "지원자 정보"
+            if 새이름 != col or 새구분 != 옛구분:
+                try:
+                    store.update_field(col, 새이름=새이름, 구분=새구분)
+                except ValueError as exc:
+                    return self._redirect(
+                        "/fields?err=" + urllib.parse.quote(str(exc)))
+                if 새이름 != col:
+                    audit.record(me.아이디, "표항목", 새이름, 항목="열 이름",
+                                 이전값=col, 새값=새이름)
+                    바뀐것.append(f"{col}→{새이름}")
+                if 새구분 != 옛구분:
+                    audit.record(me.아이디, "표항목", 새이름, 항목="구분",
+                                 이전값=옛구분, 새값=새구분)
+                    바뀐것.append(f"{새이름}(구분 {새구분})")
+                col = 새이름
+        새라벨 = (data.get(f"label_{i}") or [""])[0].strip()
+        순서값 = (data.get(f"order_{i}") or [""])[0].strip()
+        숨김 = f"hide_{i}" in data
+        # 켤 수 없는 열은 체크박스를 아예 안 그린다. 그런 열까지
+        # "체크 없음 = 끔" 으로 읽으면 기본값이 조용히 꺼진다.
+        긴글가능 = _긴글가능(col, store.field(col), 구분맵.get(col, ""))
+        긴글 = (f"long_{i}" in data) if 긴글가능 else None
+        # 관리 정보 열은 설정이 없으면 "숨김" 이 기본이다. 그 상태에서
+        # 체크를 풀었으면 바뀐 것으로 봐야 설정이 저장된다.
+        옛 = 이전.get(
+            col,
+            {"표시이름": "", "숨김": 기본숨김(col, 이전), "순서": 0,
+             "긴글": col in store_DEFAULT_LONG},
+        )
+        try:
+            새순서 = int(순서값) if 순서값 else 0
+        except ValueError:
+            새순서 = 옛["순서"]
+        옛긴글 = bool(옛.get("긴글"))
+        if (새라벨, 숨김, 새순서, 긴글 if 긴글 is not None else 옛긴글) == (
+                옛["표시이름"], 옛["숨김"], 옛["순서"], 옛긴글):
+            continue
+        store.set_column(col, 표시이름=새라벨, 숨김=숨김, 순서=새순서,
+                         긴글=긴글)
+        조각 = []
+        if 새라벨 != 옛["표시이름"]:
+            조각.append(f"이름 {새라벨 or '(원래대로)'}")
+            audit.record(me.아이디, "표항목", col, 항목="표에 보일 이름",
+                         이전값=옛["표시이름"], 새값=새라벨)
+        if 숨김 != 옛["숨김"]:
+            조각.append("숨김" if 숨김 else "다시 보임")
+            audit.record(me.아이디, "표항목", col, 항목="숨김",
+                         이전값="Y" if 옛["숨김"] else "", 새값="Y" if 숨김 else "")
+        if 새순서 != 옛["순서"]:
+            조각.append(f"순서 {새순서 or '원래대로'}")
+            audit.record(me.아이디, "표항목", col, 항목="순서",
+                         이전값=str(옛["순서"] or ""), 새값=str(새순서 or ""))
+        if 긴글 is not None and 긴글 != 옛긴글:
+            조각.append("긴 글" if 긴글 else "긴 글 끔")
+            audit.record(me.아이디, "표항목", col, 항목="긴 글",
+                         이전값="Y" if 옛긴글 else "", 새값="Y" if 긴글 else "")
+        바뀐것.append(f"{col}({', '.join(조각)})")
+    if not 바뀐것:
+        return self._redirect("/fields?msg=" + urllib.parse.quote("바뀐 내용이 없습니다."))
+    보임 = ", ".join(바뀐것[:5]) + (" 외" if len(바뀐것) > 5 else "")
+    return self._redirect("/fields?msg=" + urllib.parse.quote(
+        f"{len(바뀐것)}건 저장했습니다 — {보임}"))
+    return _없는주소(self)
+
+
+@라우트("POST", '/fields/delete', 권한='열_구성', 거부말='표 항목 삭제는 관리자만 할 수 있습니다.')
+def post_fields_delete(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    이름 = (data.get("name") or [""])[0]
+    store.delete_field(이름)
+    audit.record(me.아이디, "표항목", 이름, 비고="열 삭제 (값도 함께 삭제)")
+    return self._redirect("/fields")
+    return _없는주소(self)
+
+
+@라우트("POST", '/candidate/custom', 권한='지원자_수정')
+def post_candidate_custom(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    cid = (data.get("id") or [""])[0]
+    필드명 = (data.get("항목") or [""])[0]
+    뒤로 = f"/candidate?id={urllib.parse.quote(cid)}"
+    field = store.field(필드명)
+    if not field:
+        return self._redirect(뒤로)
+    try:
+        저장값 = validate_custom(field, (data.get("새값") or [""])[0])
+    except ValidationError as exc:
+        return self._redirect(f"{뒤로}&err={urllib.parse.quote(str(exc))}")
+    이전 = store.set_custom(cid, 필드명, 저장값)
+    if 이전 != 저장값:
+        audit.record(me.아이디, "지원자", cid, 항목=필드명, 이전값=이전, 새값=저장값)
+    return self._redirect(뒤로)
+    return _없는주소(self)
+
+
+@라우트("POST", '/org/dept/rename', 권한='부서과제_관리')
+def post_org_dept_rename(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    새이름 = (data.get("name") or [""])[0]
+    try:
+        옛이름 = auth.rename_department(int((data.get("id") or ["0"])[0]), 새이름)
+    except (ValueError, TypeError) as exc:
+        return self._redirect("/org/edit?err=" + urllib.parse.quote(str(exc)))
+    if 옛이름 != 새이름:
+        audit.record(me.아이디, "과제", 새이름, 항목="부서명",
+                     이전값=옛이름, 새값=새이름)
+    return self._redirect("/org/edit")
+    return _없는주소(self)
+
+
+@라우트("POST", '/org/dept/delete', 권한='부서과제_관리')
+def post_org_dept_delete(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    try:
+        auth.delete_department(int((data.get("id") or ["0"])[0]))
+    except (ValueError, TypeError):
+        pass
+    return self._redirect("/org/edit")
+    return _없는주소(self)
+
+
+@라우트("POST", '/org/project/rename', 권한='부서과제_관리')
+def post_org_project_rename(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    새이름 = (data.get("name") or [""])[0]
+    암호 = (data.get("invite") or [""])[0]
+    try:
+        pid = int((data.get("id") or ["0"])[0])
+        옛이름 = auth.rename_project(pid, 새이름)
+    except (ValueError, TypeError) as exc:
+        return self._redirect("/org/edit?err=" + urllib.parse.quote(str(exc)))
+    if 암호.strip():          # 비우면 기존 암호를 그대로 둔다
+        auth.set_project_password(pid, 암호)
+        audit.record(me.아이디, "과제", 새이름, 비고="초대암호 변경")
+    if 옛이름 != 새이름:
+        audit.record(me.아이디, "과제", 새이름, 항목="과제명",
+                     이전값=옛이름, 새값=새이름)
+    return self._redirect("/org/edit")
+    return _없는주소(self)
+
+
+@라우트("POST", '/fields', 권한='열_구성', 거부말='표 항목 추가는 관리자만 할 수 있습니다.')
+def post_fields(self, me, path):
+    params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+    return self._send(_fields_page(me, (params.get("err") or [""])[0]))
+    return _없는주소(self)
+
+
+@라우트("POST", '/recruit/columns', 권한='열_구성', 거부말='표 열 구성은 관리자만 바꿀 수 있습니다.')
+def post_recruit_columns(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    고른것 = data.get("col") or []
+    순서문 = (data.get("order") or [""])[0]
+    if 순서문.strip():
+        원하는 = [c.strip() for c in 순서문.split(",") if c.strip()]
+        최종 = [c for c in 원하는 if c in 고른것] + [c for c in 고른것 if c not in 원하는]
+    else:
+        최종 = 고른것
+    recruit.set_columns(최종)
+    audit.record(me.아이디, "채용현황", "(표 열)", 비고=f"열 구성 변경: {', '.join(최종)}")
+    return self._redirect("/recruit")
+    return _없는주소(self)
+
+
+@라우트("POST", '/candidate/new', 권한='지원자_등록')
+def post_candidate_new(self, me, path):
+    rec = store.create_blank()
+    audit.record(me.아이디, "지원자", rec.지원자_ID, 비고="CV 없이 직접 등록")
+    return self._redirect(f"/candidate?id={urllib.parse.quote(rec.지원자_ID)}")
+    return _없는주소(self)
+
+
+@라우트("POST", '/attachment/add', 권한='지원자_수정')
+def post_attachment_add(self, me, path):
+    form = parse_multipart(self._read_body(), self.headers.get("Content-Type", ""))
+    cid = (form.fields.get("id") or "").strip()
+    뒤로 = f"/candidate?id={urllib.parse.quote(cid)}"
+    for f in form.files:
+        이름 = safe_filename(f.filename)
+        try:
+            store.add_attachment(cid, 이름, f.content, me.아이디)
+            audit.record(me.아이디, "지원자", cid, 항목="첨부파일", 새값=이름)
+        except ValueError as exc:
+            return self._redirect(f"{뒤로}&err={urllib.parse.quote(str(exc))}")
+    return self._redirect(뒤로)
+    return _없는주소(self)
+
+
+@라우트("POST", '/attachment/delete', 권한='지원자_수정')
+def post_attachment_delete(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    cid = (data.get("cid") or [""])[0]
+    try:
+        이름 = store.delete_attachment(int((data.get("id") or ["0"])[0]))
+    except ValueError:
+        이름 = ""
+    if 이름:
+        audit.record(me.아이디, "지원자", cid, 항목="첨부파일 삭제", 이전값=이름)
+    return self._redirect(f"/candidate?id={urllib.parse.quote(cid)}")
+    return _없는주소(self)
+
+
+@라우트("POST", '/api/cell', 권한='지원자_수정', json=True, 거부말='수정 권한이 없습니다.')
+def post_api_cell(self, me, path):
+    # 표에서 칸 하나만 고친다. 상세 화면의 /candidate/edit 과 같은
+    # 검사·같은 낙관적 잠금·같은 이력을 탄다. 다른 점은 응답이 JSON 이라
+    # 페이지를 새로 그리지 않는다는 것뿐이다.
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    cid = (data.get("id") or [""])[0]
+    항목 = (data.get("항목") or [""])[0]
+    새값 = (data.get("새값") or [""])[0]
+    이전값 = (data.get("이전값") or [""])[0]
+    scope = (data.get("scope") or ["기본"])[0]
+
+    if scope == "사용자":
+        field = store.field(항목)
+        if not field:
+            return self._json({"ok": False, "error": f"없는 열입니다: {항목}"}, code=404)
+        현재 = store.custom_values(cid).get(항목, "")
+        if 현재 != 이전값:
+            return self._json({"ok": False, "error": str(
+                ConflictError(항목, 현재, 이전값))}, code=409)
+        try:
+            저장값 = validate_custom(field, 새값, 항목 in store.긴글열())
+        except ValidationError as exc:
+            return self._json({"ok": False, "error": str(exc)}, code=400)
+        이전 = store.set_custom(cid, 항목, 저장값)
+        if 이전 != 저장값:
+            audit.record(me.아이디, "지원자", cid, 항목=항목,
+                         이전값=이전, 새값=저장값, 비고="표에서 수정")
+        return self._json({"ok": True, "raw": 저장값, "표시": 저장값})
+
+    rec = store.get(cid)
+    if rec is None:
+        return self._json({"ok": False, "error": "지원자를 찾을 수 없습니다."}, code=404)
+    try:
+        전, 후 = edit_field(rec, 항목, 새값, 기대_이전값=이전값,
+                          registry=registry,
+                          긴글=항목 in store.긴글열())
+    except ConflictError as exc:
+        return self._json({"ok": False, "error": str(exc)}, code=409)
+    except ValidationError as exc:
+        return self._json({"ok": False, "error": str(exc)}, code=400)
+    if 전 != 후:
+        store.save(rec)
+        audit.record(me.아이디, "지원자", cid, 항목=항목,
+                     이전값=전, 새값=후, 비고="표에서 수정")
+    # 칸이 다음에 되보낼 «이전 값» 이므로 화면에 뜨는 값이어야 한다.
+    return self._json({"ok": True, "raw": 후, "표시": 후})
+    return _없는주소(self)
+
+
+@라우트("POST", '/candidate/save', 권한='지원자_수정')
+def post_candidate_save(self, me, path):
+    # 상세 화면 한 폼 전체. 줄마다 저장 단추가 있으면 하나 고치고
+    # 다른 칸으로 넘어갈 때 앞의 수정이 조용히 날아간다.
+    data = urllib.parse.parse_qs(
+        self._read_body().decode("utf-8", "replace"), keep_blank_values=True
+    )
+    cid = (data.get("id") or [""])[0]
+    rec = store.get(cid)
+    뒤로 = f"/candidate?id={urllib.parse.quote(cid)}"
+    if rec is None:
+        return self._redirect("/")
+    try:
+        끝 = int((data.get("끝") or ["0"])[0])
+    except ValueError:
+        끝 = 0
+
+    바뀐것: list[str] = []
+    문제: list[str] = []
+    레코드바뀜 = False
+    긴글열 = store.긴글열()
+    for i in range(1, 끝 + 1):
+        항목 = (data.get(f"항목_{i}") or [""])[0]
+        if not 항목:
+            continue
+        새값 = (data.get(f"값_{i}") or [""])[0]
+        이전값 = (data.get(f"이전_{i}") or [""])[0]
+        # 브라우저는 폼을 보낼 때 줄바꿈을 CRLF 로 바꾼다. 맞춰 놓고
+        # 견주지 않으면 여러 줄 칸이 손 안 대도 매번 바뀐 것이 된다.
+        if N.lines(새값) == N.lines(이전값):
+            continue
+        구분 = (data.get(f"구분_{i}") or [""])[0]
+        if 구분 == "년도":
+            옛 = store.year_of(cid)
+            try:
+                store.set_year(cid, 새값)
+            except ValueError as exc:
+                문제.append(str(exc))
+                continue
+            if 옛 != 새값.strip():
+                바뀐것.append("등록년도")
+                audit.record(me.아이디, "지원자", cid, 항목="등록년도",
+                             이전값=옛, 새값=새값.strip())
+            continue
+        if 구분 == "추가":
+            field = store.field(항목)
+            if field is None:
+                continue
+            try:
+                저장값 = validate_custom(field, 새값, 항목 in 긴글열)
+            except ValidationError as exc:
+                문제.append(str(exc))
+                continue
+            옛값 = store.set_custom(cid, 항목, 저장값)
+            if 옛값 != 저장값:
+                바뀐것.append(항목)
+                audit.record(me.아이디, "지원자", cid, 항목=항목,
+                             이전값=옛값, 새값=저장값)
+            continue
+        try:
+            전, 후 = edit_field(rec, 항목, 새값, 기대_이전값=이전값,
+                              registry=registry,
+                              긴글=항목 in 긴글열)
+        except (ValidationError, ConflictError) as exc:
+            문제.append(str(exc))
+            continue
+        if 전 != 후:
+            레코드바뀜 = True
+            바뀐것.append(항목)
+            audit.record(me.아이디, "지원자", cid, 항목=항목,
+                         이전값=전, 새값=후)
+    if 레코드바뀜:
+        store.save(rec)
+
+    if 문제:
+        return self._redirect(
+            f"{뒤로}&err=" + urllib.parse.quote(" / ".join(문제[:3]))
+            + "#추출결과")
+    if not 바뀐것:
+        return self._redirect(f"{뒤로}&msg="
+                              + urllib.parse.quote("바뀐 내용이 없습니다.")
+                              + "#추출결과")
+    보임 = ", ".join(바뀐것[:6]) + (" 외" if len(바뀐것) > 6 else "")
+    return self._redirect(
+        f"{뒤로}&msg=" + urllib.parse.quote(f"{len(바뀐것)}개 저장했습니다 — {보임}")
+        + "#추출결과")
+    return _없는주소(self)
+
+
+@라우트("POST", '/candidate/review/done', 권한='지원자_수정')
+@라우트("POST", '/candidate/review/undo', 권한='지원자_수정')
+def post_candidate_review_done(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    cid = (data.get("id") or [""])[0]
+    사유 = (data.get("사유") or [""])[0]
+    rec = store.get(cid)
+    뒤로 = f"/candidate?id={urllib.parse.quote(cid)}#검토"
+    if rec is None or not 사유:
+        return self._redirect(뒤로)
+    끝냄 = path.endswith("/done")
+    if 끝냄:
+        store.mark_reviewed(cid, 사유, 본사람=me.아이디)
+    else:
+        store.unmark_reviewed(cid, 사유)
+    # 남은 게 없으면 검토_필요를 내린다. 화면·표·엑셀이 같이 따라온다.
+    남은 = review.flagged(rec.검토_사유, store.review_done(cid))
+    if rec.검토_필요 != 남은:
+        rec.검토_필요 = 남은
+        store.save(rec)
+    audit.record(me.아이디, "지원자", cid, 항목="검토",
+                 이전값="" if 끝냄 else "확인함",
+                 새값="확인함" if 끝냄 else "",
+                 비고=review.short(사유, 80))
+    return self._redirect(뒤로)
+    return _없는주소(self)
+
+
+@라우트("POST", '/candidate/edit', 권한='지원자_수정')
+def post_candidate_edit(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    cid = (data.get("id") or [""])[0]
+    항목 = (data.get("항목") or [""])[0]
+    새값 = (data.get("새값") or [""])[0]
+    이전값 = (data.get("이전값") or [""])[0]
+    rec = store.get(cid)
+    뒤로 = f"/candidate?id={urllib.parse.quote(cid)}"
+    if rec is None:
+        return self._redirect(뒤로)
+    try:
+        전, 후 = edit_field(rec, 항목, 새값, 기대_이전값=이전값,
+                          registry=registry)
+    except (ValidationError, ConflictError) as exc:
+        return self._redirect(f"{뒤로}&err={urllib.parse.quote(str(exc))}")
+    if 전 != 후:
+        store.save(rec)
+        audit.record(me.아이디, "지원자", cid, 항목=항목, 이전값=전, 새값=후)
+    return self._redirect(뒤로)
+    return _없는주소(self)
+
+
+@라우트("POST", '/candidate/papers', 권한='지원자_수정')
+def post_candidate_papers(self, me, path):
+    # 논문 목록 통째로 받기. LLM 이 틀린 것을 고치는 유일한 길이라
+    # 재분석 없이 여기서 끝나야 한다.
+    data = urllib.parse.parse_qs(
+        self._read_body().decode("utf-8", "replace"), keep_blank_values=True
+    )
+    cid = (data.get("id") or [""])[0]
+    뒤로 = f"/candidate?id={urllib.parse.quote(cid)}"
+    rec = store.get(cid)
+    if rec is None:
+        return self._redirect("/")
+    try:
+        끝 = int((data.get("끝") or ["0"])[0])
+    except ValueError:
+        끝 = 0
+
+    옛것 = list(rec.논문)
+    새목록: list[Paper] = []
+    고침 = 지움 = 더함 = 0
+    for i in range(1, 끝 + 1):
+        if (data.get(f"del_{i}") or [""])[0]:
+            지움 += 1
+            continue
+        한줄 = {칸: (data.get(f"{칸}_{i}") or [""])[0]
+              for 칸 in ("제목", "제출처", "연도", "유형",
+                        "국내해외", "저자구분", "게재상태")}
+        try:
+            논문 = edit.validate_paper(한줄)
+        except ValidationError as exc:
+            return self._redirect(
+                f"{뒤로}&err={urllib.parse.quote(f'{i}번째 줄 — {exc}')}#실적")
+        if 논문 is None:          # 제출처가 빈 줄 (추가용 빈 줄 포함)
+            continue
+        옛줄 = 옛것[i - 1] if i <= len(옛것) else None
+        if 옛줄 is None:
+            더함 += 1
+        elif 논문.model_dump() != 옛줄.model_dump():
+            고침 += 1
+        새목록.append(논문)
+
+    if 고침 or 지움 or 더함:
+        rec.논문 = 새목록
+        # 새로 적어 넣은 제출처를 사전에 등록한다. 안 부르면 방금 넣은
+        # 학회가 미분류로도 안 잡혀 등급을 매길 수가 없다.
+        observe_record(rec, registry)
+        store.save(rec)
+        요약 = " · ".join(
+            x for x in (f"{고침}줄 고침" if 고침 else "",
+                        f"{더함}줄 추가" if 더함 else "",
+                        f"{지움}줄 삭제" if 지움 else "") if x)
+        # 한 번 저장에 한 줄만 남긴다. 줄마다 남기면 변경 이력이
+        # 논문 목록으로 뒤덮인다.
+        audit.record(me.아이디, "지원자", cid, 항목="논문",
+                     이전값=f"{len(옛것)}편", 새값=f"{len(새목록)}편",
+                     비고=요약)
+        return self._redirect(
+            f"{뒤로}&msg={urllib.parse.quote('논문 목록: ' + 요약)}#실적")
+    return self._redirect(
+        f"{뒤로}&msg={urllib.parse.quote('바뀐 내용이 없습니다.')}#실적")
+    return _없는주소(self)
+
+
+@라우트("POST", '/candidate/patents', 권한='지원자_수정')
+def post_candidate_patents(self, me, path):
+    # 특허 목록 통째로 받기. LLM 이 국내/해외를 «불명» 으로 두면 등록
+    # 개수에서 빠지는데, 재분석 말고 그것을 고칠 길이 여기뿐이다.
+    data = urllib.parse.parse_qs(
+        self._read_body().decode("utf-8", "replace"), keep_blank_values=True
+    )
+    cid = (data.get("id") or [""])[0]
+    뒤로 = f"/candidate?id={urllib.parse.quote(cid)}"
+    rec = store.get(cid)
+    if rec is None:
+        return self._redirect("/")
+    try:
+        끝 = int((data.get("끝") or ["0"])[0])
+    except ValueError:
+        끝 = 0
+
+    옛것 = list(rec.특허)
+    새목록: list[Patent] = []
+    고침 = 지움 = 더함 = 0
+    for i in range(1, 끝 + 1):
+        if (data.get(f"특허del_{i}") or [""])[0]:
+            지움 += 1
+            continue
+        한줄 = {칸: (data.get(f"특허{칸}_{i}") or [""])[0]
+              for 칸 in ("제목", "상태", "연도", "번호", "국가", "국내해외")}
+        try:
+            특허 = edit.validate_patent(한줄)
+        except ValidationError as exc:
+            return self._redirect(
+                f"{뒤로}&err={urllib.parse.quote(f'{i}번째 줄 — {exc}')}#실적")
+        if 특허 is None:          # 제목·번호가 다 빈 줄 (추가용 빈 줄)
+            continue
+        옛줄 = 옛것[i - 1] if i <= len(옛것) else None
+        if 옛줄 is None:
+            더함 += 1
+        elif 특허.model_dump() != 옛줄.model_dump():
+            고침 += 1
+        새목록.append(특허)
+
+    if 고침 or 지움 or 더함:
+        rec.특허 = 새목록
+        store.save(rec)
+        요약 = " · ".join(
+            x for x in (f"{고침}줄 고침" if 고침 else "",
+                        f"{더함}줄 추가" if 더함 else "",
+                        f"{지움}줄 삭제" if 지움 else "") if x)
+        # 논문과 같은 이유로 한 번 저장에 한 줄만 남긴다.
+        audit.record(me.아이디, "지원자", cid, 항목="특허",
+                     이전값=f"{len(옛것)}건", 새값=f"{len(새목록)}건",
+                     비고=요약)
+        return self._redirect(
+            f"{뒤로}&msg={urllib.parse.quote('특허 목록: ' + 요약)}#실적")
+    return self._redirect(
+        f"{뒤로}&msg={urllib.parse.quote('바뀐 내용이 없습니다.')}#실적")
+    return _없는주소(self)
+
+
+@라우트("POST", '/candidate/unpin', 권한='지원자_수정')
+def post_candidate_unpin(self, me, path):
+    # 손으로 정해 둔 값을 버리고 다시 명칭 관리를 따라가게 한다.
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    cid = (data.get("id") or [""])[0]
+    항목 = (data.get("col") or [""])[0]
+    뒤로 = f"/candidate?id={urllib.parse.quote(cid)}"
+    rec = store.get(cid)
+    if rec is None or 항목 not in REGISTRY_FIELDS:
+        return self._redirect(뒤로)
+    전, 후 = 사전_따라가기(rec, 항목, registry)
+    if 전 != 후:
+        store.save(rec)
+        audit.record(me.아이디, "지원자", cid, 항목=항목,
+                     이전값=전, 새값=후, 비고="사전 따라가기")
+    return self._redirect(뒤로 + "#추출결과")
+    return _없는주소(self)
+
+
+@라우트("POST", '/candidate/year', 권한='지원자_수정')
+def post_candidate_year(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    cid = (data.get("id") or [""])[0]
+    년도 = (data.get("년도") or [""])[0]
+    뒤로 = f"/candidate?id={urllib.parse.quote(cid)}"
+    옛 = store.year_of(cid)
+    try:
+        store.set_year(cid, 년도)
+    except ValueError as exc:
+        return self._redirect(f"{뒤로}&err={urllib.parse.quote(str(exc))}")
+    if 옛 != 년도:
+        audit.record(me.아이디, "지원자", cid, 항목="등록년도", 이전값=옛, 새값=년도)
+    return self._redirect(뒤로)
+    return _없는주소(self)
+
+
+@라우트("POST", '/users/add', 권한='계정_현업추가')
+def post_users_add(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    역할 = (data.get("role") or ["현업"])[0]
+    if 역할 != "현업" and not can(me, "계정_전체관리"):
+        return self._redirect("/users?err=" + urllib.parse.quote(
+            "채용담당자는 현업 계정만 만들 수 있습니다."))
+    try:
+        u = auth.create_user(
+            (data.get("userid") or [""])[0],
+            (data.get("name") or [""])[0],
+            (data.get("password") or [""])[0],
+            역할,
+            생성자=me.아이디,
+        )
+    except ValueError as exc:
+        return self._redirect("/users?err=" + urllib.parse.quote(str(exc)))
+    과제 = (data.get("project") or [""])[0]
+    if 과제 and u.역할 == "현업":
+        auth.assign(u.아이디, int(과제))
+    audit.record(me.아이디, "계정", u.아이디, 비고=f"{u.역할} 계정 생성")
+    return self._redirect("/users")
+    return _없는주소(self)
+
+
+# 현업은 계정을 못 다룬다. 이 선언이 없던 동안에는 아래 «현업 계정이면 된다»
+# 검사만 있어서, 현업이 다른 현업 계정을 끄거나 지울 수 있었다.
+@라우트("POST", '/users/toggle', 권한='계정_현업추가')
+def post_users_toggle(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    대상 = auth.get_user((data.get("id") or [""])[0])
+    if 대상 is None or 대상.아이디 == me.아이디:
+        return self._redirect("/users")
+    if not (can(me, "계정_전체관리") or 대상.역할 == "현업"):
+        return self._deny()
+    auth.set_active(대상.아이디, not 대상.활성)
+    if 대상.활성:
+        auth.end_all_sessions(대상.아이디)
+    audit.record(me.아이디, "계정", 대상.아이디,
+                 비고="비활성화" if 대상.활성 else "활성화")
+    return self._redirect("/users")
+    return _없는주소(self)
+
+
+# 현업은 계정을 못 다룬다. 이 선언이 없던 동안에는 아래 «현업 계정이면 된다»
+# 검사만 있어서, 현업이 다른 현업 계정을 끄거나 지울 수 있었다.
+@라우트("POST", '/users/delete', 권한='계정_현업추가')
+def post_users_delete(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    대상 = auth.get_user((data.get("id") or [""])[0])
+    if 대상 is None or 대상.아이디 == me.아이디:
+        return self._redirect("/users")
+    if not (can(me, "계정_전체관리") or 대상.역할 == "현업"):
+        return self._deny()
+    auth.delete_user(대상.아이디)
+    audit.record(me.아이디, "계정", 대상.아이디, 비고="계정 삭제")
+    return self._redirect("/users")
+    return _없는주소(self)
+
+
+@라우트("POST", '/org/dept/add', 권한='부서과제_관리')
+def post_org_dept_add(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    try:
+        auth.add_department((data.get("name") or [""])[0])
+    except ValueError as exc:
+        return self._redirect("/org/edit?err=" + urllib.parse.quote(str(exc)))
+    audit.record(me.아이디, "과제", (data.get("name") or [""])[0], 비고="부서 추가")
+    return self._redirect("/org/edit")
+    return _없는주소(self)
+
+
+@라우트("POST", '/org/project/add', 권한='부서과제_관리')
+def post_org_project_add(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    try:
+        auth.add_project(
+            int((data.get("dept") or ["0"])[0]),
+            (data.get("name") or [""])[0],
+            (data.get("invite") or [""])[0],
+        )
+    except (ValueError, TypeError) as exc:
+        return self._redirect("/org/edit?err=" + urllib.parse.quote(str(exc)))
+    audit.record(me.아이디, "과제", (data.get("name") or [""])[0], 비고="과제 추가")
+    return self._redirect("/org/edit")
+    return _없는주소(self)
+
+
+@라우트("POST", '/org/project/delete', 권한='부서과제_관리')
+def post_org_project_delete(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    try:
+        auth.delete_project(int((data.get("id") or ["0"])[0]))
+    except (ValueError, TypeError):
+        pass
+    return self._redirect("/org/edit")
+    return _없는주소(self)
+
+
+@라우트("POST", '/candidate/delete', 권한='지원자_삭제')
+def post_candidate_delete(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    cid = (data.get("id") or [""])[0]
+    if cid:
+        store.delete(cid)
+        recruit.delete(cid)
+        audit.record(me.아이디, "지원자", cid, 비고="지원자 삭제")
+    return self._redirect("/")
+    return _없는주소(self)
+
+
+@라우트("POST", '/candidates/delete', 권한='지원자_삭제')
+def post_candidates_delete(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    ids = data.get("ids") or []
+    if ids:
+        store.delete_many(ids)       # 원본·첨부파일까지 함께 지운다
+        for cid in ids:
+            recruit.delete(cid)      # 채용 현황에 유령 줄이 남지 않게
+            audit.record(me.아이디, "지원자", cid, 비고="지원자 삭제")
+    return self._redirect("/")
+    return _없는주소(self)
+
+
+@라우트("POST", '/candidates/start', 권한='채용현황_수정', 거부말='채용 시작은 채용담당자 이상만 할 수 있습니다.')
+@라우트("POST", '/candidates/stop', 권한='채용현황_수정', 거부말='채용 시작은 채용담당자 이상만 할 수 있습니다.')
+def post_candidates_start(self, me, path):
+    # 인재 Pool 에 있는 사람을 채용 현황으로 올리고 내린다.
+    # 줄마다 있는 단추는 id 하나, 묶음 단추는 ids 여럿을 보낸다.
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    ids = (data.get("ids") or []) + [
+        i for i in (data.get("id") or []) if i
+    ]
+    시작 = path.endswith("/start")
+    보이는 = auth.visible_project_ids(me)
+    한것: list[str] = []
+    for cid in dict.fromkeys(ids):
+        if store.get(cid) is None:
+            continue
+        if 보이는 is not None and recruit.get(cid).project_id not in 보이는:
+            continue
+        바뀜 = (recruit.start(cid, me.아이디) if 시작
+              else recruit.stop(cid, me.아이디))
+        if 바뀜:
+            한것.append(cid)
+            audit.record(me.아이디, "채용현황", cid, 항목="채용 절차",
+                         이전값="" if 시작 else "채용 중",
+                         새값="채용 중" if 시작 else "",
+                         비고="채용 시작" if 시작 else "채용 현황에서 내림")
+    if not 한것:
+        return self._redirect("/?msg=" + urllib.parse.quote(
+            "고를 사람을 먼저 체크하세요." if not ids else "이미 그 상태입니다."))
+    말 = (f"{len(한것)}명 채용을 시작했습니다. 채용 현황에서 이어서 관리하세요."
+         if 시작 else f"{len(한것)}명을 채용 현황에서 내렸습니다. "
+                     "진행 상황은 지우지 않았습니다.")
+    return self._redirect("/?msg=" + urllib.parse.quote(말))
+    return _없는주소(self)
+
+
+@라우트("POST", '/candidates/purge', 권한='지원자_삭제')
+def post_candidates_purge(self, me, path):
+    지운것 = store.purge_expired()
+    for cid in 지운것:
+        recruit.delete(cid)
+        audit.record(me.아이디, "지원자", cid, 비고="보관기간 만료 삭제")
+    return self._redirect("/")
+    return _없는주소(self)
+
+
+@라우트("POST", '/candidate/reanalyze', 권한='지원자_등록')
+def post_candidate_reanalyze(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    cid = (data.get("id") or [""])[0]
+    meta = store.meta(cid) if cid else None
+    if not meta or not meta.get("저장_파일명"):
+        return self._redirect(f"/candidate?id={urllib.parse.quote(cid)}")
+    name = meta.get("원본_파일명") or cid
+    # 재분석하면 사유가 새로 나온다. 옛 '확인함' 기록은 무효다.
+    store.clear_reviews(cid)
+    _enqueue(name, cid, meta["저장_파일명"], "재분석")
+    return self._redirect("/upload")
+    return _없는주소(self)
+
+
+@라우트("POST", '/status/clear', 권한='지원자_등록')
+def post_status_clear(self, me, path):
+    with _status_lock:
+        _status.clear()
+    return self._redirect("/upload")
+    return _없는주소(self)
+
+
+@라우트("POST", '/names/save', 권한='명칭_관리')
+def post_names_save(self, me, path):
+    # 빈칸도 받아야 IF 를 지울 수 있다
+    data = urllib.parse.parse_qs(
+        self._read_body().decode("utf-8", "replace"), keep_blank_values=True
+    )
+    kind = canonical_kind((data.get("kind") or ["학회·저널"])[0])
+    뒤로 = f"/names?kind={urllib.parse.quote(kind)}"
+    if (data.get("todo") or [""])[0]:
+        뒤로 += "&todo=1"
+
+    할일 = (data.get("action") or [""])[0]
+    모두확인 = 할일 == "confirm_all"
+
+    # 화면에 있던 줄 전부가 들어온다. 실제로 값이 달라진 것만 저장한다.
+    바뀐것: list[str] = []
+    확인바뀜 = 0
+    for 원시 in data.get("id") or []:
+        try:
+            nid = int(원시)
+        except (ValueError, TypeError):
+            continue
+        이전 = registry.get(nid)
+        if 이전 is None:
+            continue
+        registry.classify(
+            nid,
+            표시명=(data.get(f"표시명_{nid}") or [None])[0],
+            등급=(data.get(f"등급_{nid}") or [None])[0],
+            국내해외=(data.get(f"국내해외_{nid}") or [None])[0],
+            유형=(data.get(f"유형_{nid}") or [None])[0],
+            IF=(data.get(f"IF_{nid}") or [""])[0] if f"IF_{nid}" in data else None,
+        )
+        이후 = registry.get(nid)
+        if 이후 is None:
+            continue
+        변경 = [
+            (항목, 옛, 새)
+            for 항목, 옛, 새 in (
+                ("표에 보일 이름", 이전.표시명, 이후.표시명),
+                ("학회/저널", 이전.유형, 이후.유형),
+                ("등급", 이전.등급, 이후.등급),
+                ("국내해외", 이전.국내해외, 이후.국내해외),
+                ("IF", 이전.IF, 이후.IF),
+            )
+            if 옛 != 새
+        ]
+        for 항목, 옛, 새 in 변경:
+            audit.record(me.아이디, "명칭", f"{kind}:{이후.원표기}",
+                         항목=항목, 이전값=옛, 새값=새)
+        if 변경:
+            이름변경 = [v for v in 변경 if v[0] == "표에 보일 이름"]
+            머리 = (f"{이전.표시명} → {이후.표시명}" if 이름변경 else 이후.표시명)
+            나머지 = [f"{항목} {새}" for 항목, _, 새 in 변경 if 항목 != "표에 보일 이름"]
+            바뀐것.append(f"{이후.원표기}: " + 머리
+                        + (f" ({', '.join(나머지)})" if 나머지 else ""))
+
+        # 확인 표시. 체크칸을 켰거나, **값을 실제로 고쳤으면** 본 것이다.
+        # 고쳐 놓고 체크를 깜박하면 그 줄이 영영 '안 본 것' 으로 남는다.
+        # «보이는 줄 모두 확인» 은 화면의 줄을 전부 켠 것과 같다.
+        켬 = bool(data.get(f"확인_{nid}")) or bool(변경) or 모두확인
+        if 켬 and not 이전.확인:
+            registry.confirm(nid, 사람=me.아이디)
+            확인바뀜 += 1
+            audit.record(me.아이디, "명칭", f"{kind}:{이후.원표기}",
+                         항목="확인", 이전값="", 새값="확인함")
+        elif not 켬 and 이전.확인:
+            registry.unconfirm(nid)
+            확인바뀜 += 1
+            audit.record(me.아이디, "명칭", f"{kind}:{이후.원표기}",
+                         항목="확인", 이전값="확인함", 새값="")
+
+    if 할일 == "merge":
+        # 고친 칸을 먼저 저장했으니, 합치기가 그 위에 덮인다.
+        대상 = (data.get("merge_to") or [""])[0].strip()
+        고른것 = []
+        for 원시 in data.get("pick") or []:
+            try:
+                고른것.append(int(원시))
+            except (ValueError, TypeError):
+                continue
+        if not 대상 or not 고른것:
+            return self._redirect(f"{뒤로}&err=" + urllib.parse.quote(
+                "합칠 줄(「합칠」 칸)과 합칠 이름을 모두 정해 주세요."))
+        이전들 = {i: registry.get(i) for i in 고른것}
+        합친것 = registry.merge(고른것, 대상)
+        for nid in 합친것:
+            이전 = 이전들[nid]
+            audit.record(me.아이디, "명칭", f"{kind}:{이전.원표기}",
+                         항목="표에 보일 이름", 이전값=이전.표시명, 새값=대상)
+            if not 이전.확인 or 이전.확인자 in (AUTO_SAME_NAME, AUTO_CAREER):
+                registry.confirm(nid, 사람=me.아이디)
+        앞말 = f"{len(바뀐것)}건 저장, " if 바뀐것 else ""
+        return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(
+            f"{앞말}{len(합친것)}줄을 '{대상}' 로 합쳤습니다."
+            + (f" ({len(고른것) - len(합친것)}줄은 이미 그 이름)"
+               if len(고른것) > len(합친것) else "")))
+
+    if not 바뀐것 and 확인바뀜:
+        return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(
+            f"{확인바뀜}줄의 확인 표시를 바꿨습니다."))
+    if not 바뀐것:
+        return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote("바뀐 내용이 없습니다."))
+    보임 = ", ".join(바뀐것[:5]) + (" 외" if len(바뀐것) > 5 else "")
+    꼬리 = f" (확인 표시 {확인바뀜}줄)" if 확인바뀜 else ""
+    return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(
+        f"{len(바뀐것)}건 저장했습니다 — {보임}{꼬리}"))
+    return _없는주소(self)
+
+
+@라우트("POST", '/names/save_groups', 권한='명칭_관리')
+def post_names_save_groups(self, me, path):
+    data = urllib.parse.parse_qs(
+        self._read_body().decode("utf-8", "replace"), keep_blank_values=True
+    )
+    kind = canonical_kind((data.get("kind") or ["학회·저널"])[0])
+    뒤로 = f"/names?kind={urllib.parse.quote(kind)}&view=name"
+    그룹들 = data.get("g") or []
+    바뀐것: list[str] = []
+    확인한것 = 0
+
+    def 표기들(이름: str) -> list:
+        return [n for n in registry.list_all(kind) if n.표시명 == 이름]
+
+    def 확인(이름: str) -> int:
+        # 안 본 줄만. 다 본 이름은 확인 칸이 켜진 채로 들어오므로,
+        # 자동 확인 줄까지 건드리면 저장할 때마다 확인자가 사람으로 바뀐다.
+        n개 = 0
+        for n in 표기들(이름):
+            if not n.확인:
+                registry.confirm(n.id, 사람=me.아이디)
+                n개 += 1
+        return n개
+
+    # 이름별 줄마다: 분류 -> 이름 순서로 저장한다. 이름을 먼저 바꾸면
+    # 분류가 새 이름에 붙어야 하는지 옛 이름에 붙어야 하는지 헷갈린다.
+    for g, 옛이름 in enumerate(그룹들):
+        새이름 = ((data.get(f"이름_{g}") or [옛이름])[0] or "").strip() or 옛이름
+        변경 = []
+        if f"등급_{g}" in data or f"IF_{g}" in data:
+            전 = registry.class_of(kind, 옛이름)
+            새값 = {열: (data.get(f"{열}_{g}") or [None])[0]
+                   for 열 in ("유형", "등급", "국내해외", "IF")
+                   if f"{열}_{g}" in data}
+            registry.set_class(kind, 옛이름, **새값)
+            후 = registry.class_of(kind, 옛이름)
+            변경 = [(열, 전[열], 후[열]) for 열 in ("유형", "등급", "국내해외", "IF")
+                  if 전[열] != 후[열]]
+        if 새이름 != 옛이름:
+            for n in 표기들(옛이름):
+                audit.record(me.아이디, "명칭", f"{kind}:{n.원표기}",
+                             항목="표에 보일 이름", 이전값=옛이름, 새값=새이름)
+            registry.rename_group(kind, 옛이름, 새이름)
+        for 열, 전값, 후값 in 변경:
+            audit.record(me.아이디, "명칭", f"{kind}:{옛이름}",
+                         항목={"유형": "학회/저널"}.get(열, 열),
+                         이전값=전값, 새값=후값)
+        if 새이름 != 옛이름 or 변경:
+            바뀐것.append(
+                (f"{옛이름} → {새이름}" if 새이름 != 옛이름 else 새이름)
+                + (f" ({', '.join(f'{열} {후값}' for 열, _, 후값 in 변경)})"
+                   if 변경 else ""))
+        # 고쳤거나 확인 칸을 켰으면 그 이름의 표기를 모두 본 것이다
+        if 새이름 != 옛이름 or 변경 or data.get(f"확인_{g}"):
+            확인한것 += 확인(새이름)
+
+    if (data.get("action") or [""])[0] == "merge":
+        대상 = (data.get("merge_to") or [""])[0].strip()
+        고른 = []
+        for 원시 in data.get("pick") or []:
+            try:
+                고른.append(그룹들[int(원시)])
+            except (ValueError, TypeError, IndexError):
+                continue
+        if not 대상 or not 고른:
+            return self._redirect(f"{뒤로}&err=" + urllib.parse.quote(
+                "합칠 이름(「합칠」 칸)과 합칠 대상 이름을 모두 정해 주세요."))
+        # 위에서 이름을 바꿨을 수 있다. 바뀐 이름을 따라간다.
+        고른 = [((data.get(f"이름_{그룹들.index(x)}") or [x])[0] or x).strip()
+               for x in 고른]
+        합친수 = 0
+        for 옛이름 in dict.fromkeys(고른):
+            if 옛이름 == 대상:
+                continue
+            for n in 표기들(옛이름):
+                audit.record(me.아이디, "명칭", f"{kind}:{n.원표기}",
+                             항목="표에 보일 이름", 이전값=옛이름, 새값=대상)
+            합친수 += registry.rename_group(kind, 옛이름, 대상)
+        확인한것 += 확인(대상)
+        앞말 = f"{len(바뀐것)}건 저장, " if 바뀐것 else ""
+        return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(
+            f"{앞말}표기 {합친수}줄을 '{대상}' 로 합쳤습니다."))
+
+    if not 바뀐것:
+        return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(
+            f"{확인한것}줄을 확인 표시했습니다." if 확인한것 else "바뀐 내용이 없습니다."))
+    보임 = ", ".join(바뀐것[:5]) + (" 외" if len(바뀐것) > 5 else "")
+    return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(
+        f"{len(바뀐것)}건 저장했습니다 — {보임}"))
+    return _없는주소(self)
+
+
+@라우트("POST", '/names/forget', 권한='명칭_관리')
+def post_names_forget(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    kind = canonical_kind((data.get("kind") or ["학회·저널"])[0])
+    뒤로 = f"/names?kind={urllib.parse.quote(kind)}"
+    try:
+        지운표기 = registry.forget(int((data.get("id") or ["0"])[0]))
+    except (ValueError, TypeError):
+        지운표기 = ""
+    if not 지운표기:
+        return self._redirect(뒤로)
+    audit.record(me.아이디, "명칭", f"{kind}:{지운표기}", 비고="표기 삭제")
+    return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(
+        f"'{지운표기}' 표기를 사전에서 지웠습니다."))
+    return _없는주소(self)
+
+
+@라우트("POST", '/names/tiers', 권한='열_구성', 거부말='표 열 구성은 관리자만 바꿀 수 있습니다.')
+def post_names_tiers(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    kind = canonical_kind((data.get("kind") or ["학회"])[0])
+    켠것 = set(data.get("tier") or [])
+    for t in registry.tiers():
+        if t["이름"] != "미분류":
+            registry.set_tier_column(t["이름"], t["이름"] in 켠것)
+    return self._redirect(f"/names?kind={urllib.parse.quote(kind)}")
+    return _없는주소(self)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "cvtool"
 
@@ -8904,2315 +11371,45 @@ class Handler(BaseHTTPRequestHandler):
         return path
 
     def do_GET(self) -> None:  # noqa: N802
-        path = self._경로기억()
-
-        if path == "/login":
-            return self._send(_login_page())
-        if path == "/logout":
-            auth.end_session(self._token())
-            return self._redirect("/login")
-
-        me = self._user()
-        if me is None:
-            return self._redirect("/login")
-
-        if path == "/":
-            if not can(me, "지원자_목록"):
-                return self._redirect(홈(me))    # 현업은 채용 현황으로
-            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            return self._send(
-                _dashboard(
-                    me,
-                    q=(params.get("q") or [""])[0],
-                    review_only=bool(params.get("review")),
-                    년도=(params.get("year") or [""])[0],
-                    msg=(params.get("msg") or [""])[0],
-                )
-            )
-        if path == "/upload":
-            if not can(me, "지원자_등록"):
-                return self._deny()
-            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            return self._send(_upload_page(me, (params.get("err") or [""])[0]))
-        if path == "/upload/template.xlsx":
-            if not can(me, "지원자_등록"):
-                return self._deny()
-            열, 머리 = _엑셀양식열()
-            이름 = urllib.parse.quote(bulk.파일이름)
-            return self._send(
-                bulk.양식(열, 머리),
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                extra={"Content-Disposition":
-                       'attachment; filename="candidate_template.xlsx";'
-                       f" filename*=UTF-8\'\'{이름}"},
-            )
-        if path == "/candidate":
-            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            if not _볼수있나(me, (params.get("id") or [""])[0]):
-                return self._deny("배정된 과제의 지원자만 볼 수 있습니다.")
-            cid = (params.get("id") or [""])[0]
-            return self._send(_candidate_page(cid, me, (params.get("err") or [""])[0],
-                                              (params.get("msg") or [""])[0]))
-        if path == "/users":
-            if not can(me, "계정_현업추가"):
-                return self._deny()
-            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            return self._send(_users_page(me, (params.get("err") or [""])[0]))
-        if path == "/org":
-            if not can(me, "부서과제_관리"):
-                return self._deny()
-            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            return self._send(_org_hub_page(me))
-        if path == "/org/edit":
-            if not can(me, "부서과제_관리"):
-                return self._deny()
-            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            return self._send(_org_page(me, (params.get("err") or [""])[0]))
-        if path == "/history":
-            if not can(me, "변경이력_조회"):
-                return self._deny()
-            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            return self._send(_history_page(me, (params.get("kind") or [""])[0]))
-        if path == "/candidate/file":
-            if not _볼수있나(
-                me,
-                (urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-                 .get("id") or [""])[0],
-            ):
-                return self._deny("배정된 과제의 지원자만 볼 수 있습니다.")
-            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            cid = (params.get("id") or [""])[0]
-            fpath = store.file_path(cid) if cid else None
-            if fpath is None:
-                return self._send(
-                    _page("없음", "<div class='card'>보관된 원본이 없습니다.</div>"), code=404
-                )
-            meta = store.meta(cid) or {}
-            download_name = meta.get("원본_파일명") or fpath.name
-            ctype = CONTENT_TYPES.get(fpath.suffix.lower(), "application/octet-stream")
-            quoted = urllib.parse.quote(download_name)
-            return self._send(
-                fpath.read_bytes(), ctype,
-                extra={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"},
-            )
-        if path == "/recruit":
-            if not (can(me, "채용현황_수정") or can(me, "지원자_조회")):
-                return self._deny()
-            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            return self._send(
-                _recruit_page(me, (params.get("sort") or [""])[0],
-                              (params.get("err") or [""])[0],
-                              (params.get("msg") or [""])[0])
-            )
-        if path == "/recruit/export.xlsx":
-            if not (can(me, "채용현황_수정") or can(me, "지원자_조회")):
-                return self._deny()
-            # 이름을 표열 로 두면 do_GET 안에서 모듈 함수 표열() 을 가린다
-            # (파이썬은 함수 어디서든 대입이 있으면 그 이름을 지역으로 본다).
-            채용열 = store.arrange(recruit.columns())
-            이름표 = 라벨(채용열)
-            records, _진행, 값 = _recruit_rows(me, (urllib.parse.parse_qs(
-                urllib.parse.urlparse(self.path).query).get("sort") or [""])[0])
-            rows = [{이름표[c]: 값(rec, c) for c in 채용열} for rec in records]
-            stamp = now_kst().strftime("%Y%m%d_%H%M")
-            return self._send(
-                build_xlsx(rows, [이름표[c] for c in 채용열]),
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                extra={"Content-Disposition": f'attachment; filename="recruit_{stamp}.xlsx"'},
-            )
-        if path == "/match/curate":
-            if not can(me, "지원자_등록"):
-                return self._deny("과제 파일을 다듬는 건 채용담당자 이상만 할 수 있습니다.")
-            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            return self._send(_curate_page(me, (params.get("err") or [""])[0],
-                                           (params.get("msg") or [""])[0]))
-        if path == "/match":
-            # 과제 정보 관리. 부서·과제 탭 아래 화면이다.
-            if not can(me, "과제매칭_조회"):
-                return self._deny("과제 정보는 채용담당자 이상만 볼 수 있습니다.")
-            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            return self._send(_projects_page(me, (params.get("err") or [""])[0],
-                                             (params.get("msg") or [""])[0]))
-        if path == "/mail":
-            if not can(me, "메일_템플릿"):
-                return self._deny()
-            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            return self._send(_mail_page(me, (params.get("err") or [""])[0],
-                                         (params.get("msg") or [""])[0]))
-        if path == "/mail/template":
-            if not can(me, "메일_템플릿"):
-                return self._deny()
-            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            try:
-                tid = int((params.get("id") or ["0"])[0])
-            except ValueError:
-                return self._redirect("/mail")
-            return self._send(_mail_template_page(tid, me, (params.get("err") or [""])[0],
-                                                  (params.get("msg") or [""])[0]))
-        if path == "/mail/draft":
-            # 메일 한 통을 쓰는 창. 발송 목록에서 새 창으로 띄운다.
-            if not can(me, "메일_발송"):
-                return self._deny("메일 발송 권한이 없습니다.")
-            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            try:
-                tid = int((params.get("tpl") or ["0"])[0])
-            except ValueError:
-                return self._redirect("/mail")
-            cid = (params.get("id") or [""])[0]
-            if not _볼수있는지원자(cid, me):
-                return self._deny("이 지원자에게는 보낼 수 없습니다.")
-            return self._send(_mail_draft_page(tid, cid, me,
-                                               (params.get("err") or [""])[0]))
-
-        if path == "/mail/test":
-            # 메일 탭에서는 **시험 발송까지만** 한다. 실제 발송은 인재 Pool·
-            # 채용 현황에서 대상을 고른 뒤에 한다.
-            if not can(me, "메일_템플릿"):
-                return self._deny()
-            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            try:
-                tid = int((params.get("id") or ["0"])[0])
-            except ValueError:
-                return self._redirect("/mail")
-            return self._send(_mail_test_page(tid, me, (params.get("err") or [""])[0],
-                                              (params.get("msg") or [""])[0],
-                                              peek=bool(params.get("peek"))))
-        if path == "/mail/attachment":
-            if not can(me, "메일_템플릿"):
-                return self._deny()
-            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            try:
-                att = mailing.attachment(int((params.get("id") or ["0"])[0]))
-            except (ValueError, TypeError):
-                att = None
-            if not att:
-                return self._send(_page("없음", "<div class='card'>첨부를 찾을 수 없습니다.</div>"),
-                                  code=404)
-            path_ = mailing.files_dir / att["저장명"]
-            if not path_.is_file():
-                return self._send(_page("없음", "<div class='card'>파일이 없습니다.</div>"),
-                                  code=404)
-            이름 = urllib.parse.quote(att["파일명"])
-            return self._send(
-                path_.read_bytes(),
-                CONTENT_TYPES.get(Path(att["저장명"]).suffix.lower(),
-                                  "application/octet-stream"),
-                extra={"Content-Disposition":
-                       f"attachment; filename=\"file\"; filename*=UTF-8''{이름}"},
-            )
-        if path == "/mail/image":
-            # 본문 그림. 편집기·미리보기·발송 이력이 이 주소로 그림을 본다.
-            if not can(me, "메일_템플릿"):
-                return self._deny()
-            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            try:
-                img = mailing.body_image(int((params.get("id") or ["0"])[0]))
-            except (ValueError, TypeError):
-                img = None
-            내용 = mailing.body_image_bytes(img["id"]) if img else None
-            if 내용 is None:
-                return self._send(b"", "image/png", code=404)
-            return self._send(
-                내용,
-                CONTENT_TYPES.get(Path(img["저장명"]).suffix.lower(), "image/png"),
-                extra={"Cache-Control": "private, max-age=600"},
-            )
-        if path == "/mail/log":
-            if not can(me, "메일_템플릿"):
-                return self._deny()
-            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            try:
-                로그tid = int((params.get("tpl") or ["0"])[0])
-            except ValueError:
-                로그tid = 0
-            return self._send(_mail_log_page(me, 로그tid))
-        if path in ("/dash", "/dash/view", "/dash/edit"):
-            if not can(me, "대시보드_조회"):
-                return self._deny("대시보드는 채용담당자 이상만 볼 수 있습니다.")
-            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            err = (params.get("err") or [""])[0]
-            msg = (params.get("msg") or [""])[0]
-            if path == "/dash":
-                return self._send(_dash_list_page(me, err, msg))
-            try:
-                did = int((params.get("id") or ["0"])[0])
-            except ValueError:
-                return self._redirect("/dash")
-            if path == "/dash/view":
-                return self._send(_dash_view_page(did, me, _대시거르개(params)))
-            return self._send(_dash_edit_page(did, me, err, msg))
-        if path == "/dash/who":
-            if not can(me, "대시보드_조회"):
-                return self._deny("대시보드는 채용담당자 이상만 볼 수 있습니다.")
-            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            return self._send(_dash_who_page(me, params))
-        if path == "/fields":
-            if not can(me, "열_구성"):
-                return self._deny("표 항목 추가는 관리자만 할 수 있습니다.")
-            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            return self._send(_fields_page(me, (params.get("err") or [""])[0],
-                                           (params.get("msg") or [""])[0]))
-        if path == "/recruit/columns":
-            if not can(me, "열_구성"):
-                return self._deny("표 열 구성은 관리자만 바꿀 수 있습니다.")
-            return self._send(_recruit_columns_page(me))
-        if path == "/attachment":
-            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            try:
-                att = store.attachment(int((params.get("id") or ["0"])[0]))
-            except ValueError:
-                att = None
-            if not att:
-                return self._send(_page("없음", "<div class='card'>첨부파일이 없습니다.</div>"),
-                                  code=404)
-            if not _볼수있나(me, att["지원자_ID"]):
-                return self._deny("배정된 과제의 지원자만 볼 수 있습니다.")
-            fpath = store.files_dir / att["저장명"]
-            if not fpath.is_file():
-                return self._send(_page("없음", "<div class='card'>파일이 사라졌습니다.</div>"),
-                                  code=404)
-            ctype = CONTENT_TYPES.get(fpath.suffix.lower(), "application/octet-stream")
-            quoted = urllib.parse.quote(att["파일명"])
-            return self._send(
-                fpath.read_bytes(), ctype,
-                extra={"Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"},
-            )
-        if path == "/names":
-            if not can(me, "명칭_관리"):
-                return self._deny()
-            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            return self._send(_names_page(
-                (params.get("kind") or ["학회"])[0],
-                me,
-                error=(params.get("err") or [""])[0],
-                msg=(params.get("msg") or [""])[0],
-                안본것만=bool((params.get("todo") or [""])[0]),
-                보기="이름" if (params.get("view") or [""])[0] == "name" else "표기",
-            ))
-        if path == "/dash/preview":
-            # 문장 칸 아래 미리보기. 대시보드와 **같은 계산기**를 써야 믿을 수 있다.
-            if not can(me, "대시보드_편집"):
-                return self._deny()
-            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            틀 = (params.get("line") or [""])[0]
-            cid = (params.get("id") or [""])[0]
-            # 집계 문맥(=COUNT(...)) 과 행 문맥(=한글_이름) 은 계산기가 다르다.
-            # 화면이 어느 쪽인지 알려 준다 — 글만 보고 맞히려 들면 틀린다.
-            if (params.get("kind") or ["row"])[0] == "agg":
-                # 축표 칸 수식의 {행}{열} 은 그대로는 계산이 안 된다. 그 블록의
-                # **첫 축 값**을 넣어서 한 칸만 미리 계산해 본다.
-                if "{행}" in 틀 or "{열}" in 틀:
-                    try:
-                        b = boards.block(int((params.get("bid") or ["0"])[0]))
-                    except (TypeError, ValueError):
-                        b = None
-                    if b is None:
-                        return self._json(
-                            {"text": "", "error": "{행}{열} 은 축을 정해야 계산됩니다"})
-                    축값 = 대시보드_축()
-                    첫행 = (축값.get(b.행축) or b.행이름 or ["(행)"])[0]
-                    첫열 = (축값.get(b.열축) or b.열이름 or ["(열)"])[0]
-                    보임 = 틀.replace("{행}", 첫행).replace("{열}", 첫열)
-                    try:
-                        글, _값 = 수식계산(보임, 대시보드_행_잠깐(), 대시보드_열())
-                    except (F.FormulaError, expr.ExprError, SheetError,
-                            ValueError) as exc:
-                        return self._json({"text": "", "error": str(exc)})
-                    return self._json(
-                        {"text": f"{글}   ({첫행} × {첫열} 칸)", "error": ""})
-                # 블록이 쓰는 계산기(`sheet.계산`)와 **같은 것**으로 미리 본다.
-                # `F.run` 으로 보면 `=COUNT(지원자)/2` 처럼 섞은 식이 미리보기에서만
-                # 틀렸다고 나왔다.
-                try:
-                    글, _값 = 수식계산(틀, 대시보드_행_잠깐(), 대시보드_열())
-                except (F.FormulaError, expr.ExprError, SheetError, ValueError) as exc:
-                    return self._json({"text": "", "error": str(exc)})
-                return self._json({"text": str(글), "error": ""})
-            # 여기부터는 행 문맥 — 한 사람의 값이 있어야 계산할 수 있다.
-            if not cid or store.get(cid) is None:
-                return self._json({"text": "", "error": "미리볼 지원자가 없습니다"})
-            값들 = _프로필값(cid)
-            if expr.is_formula(틀):
-                글, 오류 = expr.render(틀, 값들)
-                return self._json({"text": 글, "error": 오류})
-            return self._json({"text": P.render_line(틀, 값들), "error": ""})
-        if path == "/status/rows":
-            # 현황 표 조각만. 페이지를 통째로 다시 그리면 고르던 파일이 풀린다.
-            if not can(me, "지원자_등록"):
-                return self._deny()
-            return self._send(_status_table().encode("utf-8"))
-        if path == "/favicon.ico":
-            return self._send(b"", "image/x-icon", code=204)
-        if path == "/dash/sheet.xlsx":
-            # 시트는 서버가 직접 만든다. 화면에서 TSV 를 만들어 보내는 길로는
-            # 색도 병합도 못 싣는다 (글자만 옮겨진다).
-            if not can(me, "대시보드_조회") or not can(me, "엑셀_다운로드"):
-                return self._deny()
-            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            try:
-                bid = int((params.get("block") or ["0"])[0])
-            except ValueError:
-                bid = 0
-            b = boards.block(bid)
-            if b is None or b.종류 != "시트":
-                return self._send(_page("없음", "<div class='card'>시트를 찾을 수 없습니다.</div>",
-                                        me=me), code=404)
-            결과 = render_sheet(b, 대시보드_행(), 대시보드_열())
-            데이터 = build_sheet_xlsx(결과, b.제목 or "시트")
-            이름 = urllib.parse.quote((b.제목 or "시트") + ".xlsx")
-            return self._send(
-                데이터,
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                extra={"Content-Disposition":
-                       f"attachment; filename*=UTF-8''{이름}"},
-            )
-
-        if path == "/export.xlsx":
-            if not can(me, "엑셀_다운로드"):
-                return self._deny()
-            # 화면에 걸어 둔 검색 조건을 **그대로** 따른다. 걸러 놓고 받았는데
-            # 전체가 나오면 엉뚱한 사람에게 자료가 나간다.
-            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            records = store.list_filtered(
-                (params.get("q") or [""])[0],
-                bool(params.get("review")),
-                (params.get("year") or [""])[0],
-                registry=registry,
-            )
-            열 = 표열()
-            data = records_to_xlsx(records, registry,
-                                   (store.field_names(), _표값맵()),
-                                   열=열, 라벨=라벨(열))
-            stamp = now_kst().strftime("%Y%m%d_%H%M")
-            return self._send(
-                data,
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                extra={"Content-Disposition": f'attachment; filename="cv_{stamp}.xlsx"'},
-            )
-        return self._send(_page("없음", "<div class='card'>페이지가 없습니다.</div>"), code=404)
+        self._처리("GET")
 
     # -- POST ---------------------------------------------------------------
     def do_POST(self) -> None:  # noqa: N802
+        self._처리("POST")
+
+    def _처리(self, method: str) -> None:
+        """주소표(`router.py`)에서 찾아 **로그인·권한을 여기서 한 번** 보고 부른다."""
         path = self._경로기억()
+        길 = 라우터.find(method, path)
         # 무엇이든 바꿀 수 있는 요청이다. 미리보기용 줄 캐시를 버린다 — 방금 고친
         # 값이 미리보기에 몇 초 늦게 나오면 고친 게 안 먹은 줄 안다.
-        if path not in ("/dash/sheet/calc", "/dash/block/preview"):   # 읽기만 한다
+        if method == "POST" and not (길 and 길.읽기전용):
             with _행캐시_잠금:
                 _행캐시["값"] = None
-
-        if path == "/login":
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            아이디 = (data.get("userid") or [""])[0].strip()
-            pw = (data.get("password") or [""])[0]
-            if not auth.count():
-                return self._send(
-                    _login_page("계정이 하나도 없습니다. 서버 콘솔 안내를 확인하세요.")
-                )
-            user = auth.authenticate(아이디, pw)
-            if user is None:
-                audit.record(아이디 or "(빈칸)", "로그인", 아이디 or "-", 비고="로그인 실패")
-                return self._send(_login_page("아이디 또는 비밀번호가 틀렸습니다."))
-            token = auth.start_session(user.아이디)
-            audit.record(user.아이디, "로그인", user.아이디, 비고="로그인")
-            return self._redirect(
-                홈(user),
-                {"Set-Cookie": f"cvsession={token}; HttpOnly; Path=/; SameSite=Strict"},
-            )
-
-        me = self._user()
-        if me is None:
-            # 표에서 바로 고치기는 fetch 라 리다이렉트를 받으면 HTML 을 파싱하게 된다.
-            if path.startswith("/api/"):
-                return self._json({"ok": False, "error": "로그인이 풀렸습니다. 새로고침하세요."},
-                                  code=401)
-            return self._redirect("/login")
-
-        if path == "/upload":
-            if not can(me, "지원자_등록"):
-                return self._deny()
-            form = parse_multipart(self._read_body(), self.headers.get("Content-Type", ""))
-            if not form.files:
-                return self._redirect("/upload")
-            for f in form.files:
-                safe_name = safe_filename(f.filename)
-                suffix = Path(safe_name).suffix.lower()
-                if suffix not in SUPPORTED_SUFFIXES:
-                    _set_status(safe_name, "실패",
-                                f"지원하지 않는 형식: {suffix or '(확장자 없음)'}")
-                    continue
-                try:
-                    cid = f"CV-{uuid.uuid4().hex[:8].upper()}"
-                    저장명 = store.store_file(cid, safe_name, f.content)
-                    _enqueue(safe_name, cid, 저장명)
-                except Exception as exc:  # noqa: BLE001
-                    _set_status(safe_name, "실패", f"{type(exc).__name__}: {exc}")
-            return self._redirect("/upload")
-
-        if path == "/upload/xlsx":
-            # 결과를 그 자리에서 그린다. 빠진 줄 목록은 주소창에 담을 길이가
-            # 아니라, 리다이렉트하면 "몇 명 등록" 만 남고 이유가 사라진다.
-            if not can(me, "지원자_등록"):
-                return self._deny()
-            form = parse_multipart(self._read_body(), self.headers.get("Content-Type", ""))
-            올린것 = [f for f in form.files if f.content]
-            if not 올린것:
-                return self._redirect("/upload?err=" + urllib.parse.quote(
-                    "채운 엑셀 파일을 고른 뒤 올려 주세요."))
-            try:
-                만든것, 빠진것, 모르는것 = _엑셀등록(올린것[0].content, me)
-            except XlsxError as exc:
-                return self._redirect("/upload?err=" + urllib.parse.quote(str(exc)))
-            return self._send(_page(
-                "엑셀로 지원자 추가", _엑셀결과카드(만든것, 빠진것, 모르는것), me=me))
-
-        if path == "/table.xlsx":
-            data = urllib.parse.parse_qs(
-                self._read_body().decode("utf-8", "replace"), keep_blank_values=True
-            )
-            이름 = ((data.get("name") or ["표"])[0] or "표").strip()[:40]
-            stamp = now_kst().strftime("%Y%m%d_%H%M")
-            # 한글 파일명은 RFC 5987 로 따로 보낸다 (옛 브라우저는 ASCII 이름을 쓴다)
-            한글 = urllib.parse.quote(f"{이름}_{stamp}.xlsx")
-            return self._send(
-                _tsv_to_xlsx((data.get("tsv") or [""])[0]),
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                extra={"Content-Disposition":
-                       f'attachment; filename="table_{stamp}.xlsx";'
-                       f" filename*=UTF-8''{한글}"},
-            )
-
-        if path == "/recruit/save":
-            # 표 전체가 한 번에 온다. 실제로 값이 달라진 것만 저장한다.
-            if not (can(me, "채용현황_수정") or can(me, "지원자_수정")):
-                return self._deny()
-            data = urllib.parse.parse_qs(
-                self._read_body().decode("utf-8", "replace"), keep_blank_values=True
-            )
-            보이는 = auth.visible_project_ids(me)
-            바뀐것: list[str] = []
-            긴글열 = store.긴글열()
-            이름맵 = {r.지원자_ID: (r.한글_이름 or r.영문_이름 or r.지원자_ID)
-                     for r in store.list_all()}
-
-            def 볼수있나(cid: str) -> bool:
-                return 보이는 is None or recruit.get(cid).project_id in 보이는
-
-            # 1) 단계 상태
-            if can(me, "채용현황_수정"):
-                for key, 값들 in data.items():
-                    if not key.startswith("단계_"):
-                        continue
-                    몸통 = key[len("단계_"):]
-                    for 단계 in STAGES:
-                        if 몸통.endswith("_" + 단계):
-                            cid = 몸통[: -(len(단계) + 1)]
-                            break
-                    else:
-                        continue
-                    if not 볼수있나(cid):
-                        continue
-                    try:
-                        이전 = recruit.set_stage(cid, 단계, 값들[0], me.아이디)
-                    except ValueError as exc:
-                        return self._redirect("/recruit?err=" + urllib.parse.quote(str(exc)))
-                    if 이전 != 값들[0]:
-                        audit.record(me.아이디, "채용현황", cid, 항목=단계,
-                                     이전값=이전, 새값=값들[0])
-                        바뀐것.append(f"{이름맵.get(cid, cid)} {단계} {값들[0] or '(빈칸)'}")
-
-                # 2) 채용 비고 (지원자 쪽 '비고' 와 다른 값이다)
-                for key, 값들 in data.items():
-                    if not key.startswith("채용비고_"):
-                        continue
-                    cid = key[len("채용비고_"):]
-                    if not 볼수있나(cid):
-                        continue
-                    새비고 = (N.paragraph(값들[0]) if "채용_비고" in 긴글열
-                            else N.text(값들[0]))
-                    이전 = recruit.set_note(cid, 새비고, me.아이디)
-                    if 이전 != 새비고:
-                        audit.record(me.아이디, "채용현황", cid, 항목="채용_비고",
-                                     이전값=이전, 새값=새비고)
-                        바뀐것.append(f"{이름맵.get(cid, cid)} 채용_비고")
-
-                # 3) '채용 현황' 으로 만든 추가 열
-                for 키, 열이름들 in data.items():
-                    if not 키.startswith("사용자열_"):
-                        continue
-                    n = 키[len("사용자열_"):]
-                    열이름 = 열이름들[0]
-                    정의 = store.field(열이름)
-                    if 정의 is None or (정의.get("구분") or "지원자 정보") != "채용 현황":
-                        continue
-                    앞머리 = f"사용자_{n}_"
-                    for k2, 값들2 in data.items():
-                        if not k2.startswith(앞머리):
-                            continue
-                        cid = k2[len(앞머리):]
-                        if not 볼수있나(cid):
-                            continue
-                        try:
-                            새값 = validate_custom(정의, 값들2[0], 열이름 in 긴글열)
-                        except ValidationError as exc:
-                            return self._redirect(
-                                "/recruit?err=" + urllib.parse.quote(str(exc)))
-                        이전 = store.set_custom(cid, 열이름, 새값)
-                        if 이전 != 새값:
-                            audit.record(me.아이디, "채용현황", cid, 항목=열이름,
-                                         이전값=이전, 새값=새값)
-                            바뀐것.append(f"{이름맵.get(cid, cid)} {열이름}")
-
-            # 4) 부서 / 과제 (지원자 수정 권한이 있어야 배정할 수 있다)
-            if can(me, "지원자_수정"):
-                for key, 값들 in data.items():
-                    if not key.startswith("부서_"):
-                        continue
-                    cid = key[len("부서_"):]
-                    dept = 값들[0]
-                    proj = (data.get(f"과제_{cid}") or [""])[0]
-                    부서_id = int(dept) if dept.isdigit() else None
-                    project_id = int(proj) if proj.isdigit() else None
-                    # 부서를 바꾸면 그 부서에 속하지 않는 과제는 떨어뜨린다
-                    if project_id is not None:
-                        소속 = {pr["id"] for pr in auth.projects(부서_id)} if 부서_id else set()
-                        if project_id not in 소속:
-                            project_id = None
-                    옛부서, 옛과제 = recruit.set_assignment(cid, 부서_id, project_id, me.아이디)
-                    if (옛부서, 옛과제) != (부서_id, project_id):
-                        audit.record(me.아이디, "채용현황", cid, 항목="부서/과제",
-                                     이전값=f"{옛부서}/{옛과제}", 새값=f"{부서_id}/{project_id}")
-                        바뀐것.append(f"{이름맵.get(cid, cid)} 부서/과제")
-
-            if not 바뀐것:
-                return self._redirect("/recruit?msg=" + urllib.parse.quote("바뀐 내용이 없습니다."))
-            보임 = ", ".join(바뀐것[:5]) + (" 외" if len(바뀐것) > 5 else "")
-            return self._redirect("/recruit?msg=" + urllib.parse.quote(
-                f"{len(바뀐것)}건 저장했습니다 — {보임}"))
-
-        if path == "/match/curate":
-            if not can(me, "지원자_등록"):
-                return self._deny()
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            고른키 = set(data.get("keys") or [])
-            고른필드 = set(data.get("fields") or [])
-            if not 고른키:
-                return self._redirect("/match/curate?err=" + urllib.parse.quote(
-                    "남길 과제를 하나 이상 고르세요."))
-            try:
-                항목 = projectsmod.raw_items(projectsmod.read_json(settings.projects_json))
-            except projectsmod.ProjectsError as exc:
-                return self._redirect("/match/curate?err="
-                                      + urllib.parse.quote(str(exc)))
-            고른것 = projectsmod.curate(항목, 고른키, 고른필드)
-            if not 고른것:
-                return self._redirect("/match/curate?err=" + urllib.parse.quote(
-                    "고른 조건으로 남는 과제가 없습니다. 필드를 더 고르세요."))
-            원본 = projectsmod.resolve_path(settings.projects_json)
-            저장위치 = projectsmod.save_curated(
-                다듬은파일(), 고른것, 출처=str(원본 or ""), 만든이=me.아이디,
-            )
-            과제목록(다시=True)
-            audit.record(me.아이디, "과제", str(저장위치), 항목="과제 파일 다듬기",
-                         새값=f"과제 {len(고른것)}개 · 필드 {len(고른필드)}종")
-            return self._redirect("/match/curate?msg=" + urllib.parse.quote(
-                f"과제 {len(고른것)}개를 남겨 저장했습니다. 이제 매칭은 이 파일을 씁니다. "
-                f"이미 맞춰본 지원자는 '과제 매칭' 에서 다시 돌리세요."))
-
-        if path == "/match/curate/reset":
-            if not can(me, "지원자_등록"):
-                return self._deny()
-            다듬 = 다듬은파일()
-            있었나 = 다듬.is_file()
-            다듬.unlink(missing_ok=True)
-            과제목록(다시=True)
-            if 있었나:
-                audit.record(me.아이디, "과제", str(다듬), 비고="다듬은 과제 파일 삭제")
-            return self._redirect("/match/curate?msg=" + urllib.parse.quote(
-                "다듬은 파일을 지웠습니다. 매칭은 다시 원본을 씁니다."
-                if 있었나 else "지울 파일이 없습니다."))
-
-        if path == "/match/one":
-            if not can(me, "지원자_등록"):
-                return self._deny()
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            cid = (data.get("id") or [""])[0]
-            뒤로 = f"/candidate?id={urllib.parse.quote(cid)}"
-            rec = store.get(cid)
-            if rec is None:
-                return self._redirect("/")
-            개수, 오류 = 매칭실행(rec, 사용자=me.아이디)
-            if 오류:
-                return self._redirect(f"{뒤로}&err=" + urllib.parse.quote(오류))
-            return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(
-                f"과제 {개수}건과 맞춰봤습니다." if 개수 else "맞춰볼 과제가 없습니다."))
-
-        if path == "/match/all":
-            if not can(me, "지원자_등록"):
-                return self._deny()
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            다시 = bool(data.get("again"))
-            목록, 파일오류 = 과제목록(다시=True)
-            if 파일오류:
-                return self._redirect("/match?err=" + urllib.parse.quote(파일오류))
-            이미 = set() if 다시 else set(store.top_matches())
-            한것, 실패, 첫오류 = 0, 0, ""
-            for rec in store.list_all():
-                if rec.지원자_ID in 이미:
-                    continue
-                개수, 오류 = 매칭실행(rec, 사용자=me.아이디)
-                if 오류:
-                    실패 += 1
-                    첫오류 = 첫오류 or 오류
-                elif 개수:
-                    한것 += 1
-            조각 = [f"{한것}명을 과제와 맞춰봤습니다"]
-            if 실패:
-                조각.append(f"{실패}명 실패 ({첫오류[:80]})")
-            if not 한것 and not 실패:
-                조각 = ["새로 맞춰볼 지원자가 없습니다"]
-            return self._redirect("/match?msg=" + urllib.parse.quote(" / ".join(조각)))
-
-        if path == "/mail/template/add":
-            if not can(me, "메일_템플릿"):
-                return self._deny()
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            이름 = (data.get("name") or [""])[0]
-            탈락 = bool(data.get("reject"))
-            대상 = (data.get("to") or [DEFAULT_RECIPIENT])[0]
-            if 대상 not in RECIPIENT_KINDS:
-                대상 = DEFAULT_RECIPIENT
-            try:
-                tid = mailing.add_template(이름, 탈락메일=탈락, 만든이=me.아이디,
-                                           본문형식="HTML", 받는대상=대상)
-            except ValueError as exc:
-                return self._redirect("/mail?err=" + urllib.parse.quote(str(exc)))
-            audit.record(me.아이디, "메일", 이름,
-                         비고="템플릿 추가" + (" (탈락 메일)" if 탈락 else "")
-                         + (" (내부 메일)" if 대상 == "내부" else ""))
-            return self._redirect(f"/mail/template?id={tid}")
-
-        if path == "/mail/template/save":
-            if not can(me, "메일_템플릿"):
-                return self._deny()
-            data = urllib.parse.parse_qs(
-                self._read_body().decode("utf-8", "replace"), keep_blank_values=True
-            )
-            try:
-                tid = int((data.get("id") or ["0"])[0])
-            except ValueError:
-                return self._redirect("/mail")
-            옛 = mailing.template(tid)
-            if 옛 is None:
-                return self._redirect("/mail")
-            try:
-                새것 = mailing.update_template(
-                    tid,
-                    이름=(data.get("name") or [None])[0],
-                    제목=(data.get("subject") or [""])[0],
-                    본문=(data.get("body") or [""])[0],
-                    탈락메일=bool(data.get("reject")),
-                    참조=(data.get("cc") or [""])[0],
-                    그림방식=(data.get("imgmode") or [None])[0],
-                    받는대상=(data.get("to") or [None])[0],
-                    CV첨부=bool(data.get("cvattach")),
-                    지원자첨부=bool(data.get("candattach")),
-                    발송조건=_고른조건(data.get("when") or []),
-                )
-            except ValueError as exc:
-                return self._redirect(f"/mail/template?id={tid}&err="
-                                      + urllib.parse.quote(str(exc)))
-            변경 = [
-                (항목, 옛값, 새값)
-                for 항목, 옛값, 새값 in (
-                    ("이름", 옛.이름, 새것.이름),
-                    ("참조", 옛.참조, 새것.참조),
-                    ("제목", 옛.제목, 새것.제목),
-                    ("본문", 옛.본문, 새것.본문),
-                    ("탈락메일", "Y" if 옛.탈락메일 else "", "Y" if 새것.탈락메일 else ""),
-                    ("받는 사람", 옛.받는대상, 새것.받는대상),
-                    ("CV 첨부", "Y" if 옛.CV첨부 else "", "Y" if 새것.CV첨부 else ""),
-                    ("지원자 첨부", "Y" if 옛.지원자첨부 else "",
-                     "Y" if 새것.지원자첨부 else ""),
-                    ("보내야 하는 때", ", ".join(옛.조건들), ", ".join(새것.조건들)),
-                )
-                if 옛값 != 새값
-            ]
-            for 항목, 옛값, 새값 in 변경:
-                # 본문 전체를 이력에 남기면 읽기 어려워서 바뀐 사실만 남긴다
-                if 항목 == "본문":
-                    audit.record(me.아이디, "메일", 새것.이름, 항목="본문", 비고="본문 수정")
-                else:
-                    audit.record(me.아이디, "메일", 새것.이름, 항목=항목,
-                                 이전값=옛값, 새값=새값)
-            메시지 = "저장했습니다." if 변경 else "바뀐 내용이 없습니다."
-            return self._redirect(f"/mail/template?id={tid}&msg="
-                                  + urllib.parse.quote(메시지))
-
-        if path == "/mail/template/delete":
-            if not can(me, "메일_템플릿"):
-                return self._deny()
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            try:
-                이름 = mailing.delete_template(int((data.get("id") or ["0"])[0]))
-            except ValueError:
-                이름 = ""
-            if 이름:
-                audit.record(me.아이디, "메일", 이름, 비고="템플릿 삭제 (발송 기록은 유지)")
-            return self._redirect("/mail?msg=" + urllib.parse.quote(
-                f"'{이름}' 템플릿을 지웠습니다." if 이름 else "지울 템플릿이 없습니다."))
-
-        if path == "/mail/test":
-            if not can(me, "메일_발송"):
-                return self._deny()
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            try:
-                tid = int((data.get("id") or ["0"])[0])
-            except (ValueError, TypeError):
-                return self._redirect("/mail")
-            tpl = mailing.template(tid)
-            if tpl is None:
-                return self._redirect("/mail")
-            주소 = (data.get("to") or [""])[0].strip()
-            뒤로 = f"/mail/test?id={tid}"
-            if not 주소:
-                return self._redirect(뒤로 + "&err=" + urllib.parse.quote(
-                    "시험 발송할 주소를 넣으세요."))
-
-            # 실제 지원자 한 명의 값으로 채운다 (없으면 보기용 값)
-            진행맵 = recruit.all()
-            records = store.list_all()
-            값 = _mail_vars(records[0], 진행맵) if records else {}
-            값 = {k: (v or f"(예시){k}") for k, v in 값.items()}
-            for 변수 in _mail_var_names():
-                값.setdefault(변수, f"(예시){변수}")
-            제목, _ = render(tpl.제목, 값)
-            본문, _ = render(tpl.본문, 값)
-            try:
-                결과 = mailapi.send(주소, f"[시험] {제목}", 본문, html=tpl.html,
-                                  참조=tpl.cc(),
-                                  첨부=mailing.attachment_bytes(tpl.id))
-            except mailapi.MailError as exc:
-                audit.record(me.아이디, "메일", tpl.이름,
-                             비고=f"시험 발송 실패 ({주소})")
-                return self._redirect(뒤로 + "&err=" + urllib.parse.quote(str(exc)))
-            # 시험 발송은 **지원자 발송 기록에 남기지 않는다.**
-            # 남기면 그 지원자에게 진짜로 못 보내게 된다.
-            audit.record(me.아이디, "메일", tpl.이름,
-                         비고=f"시험 발송 {'성공' if 결과.보냄 else '(연습 모드)'} → {주소}")
-            if 결과.보냄:
-                알림 = (f"{주소} 로 보냈습니다. API 응답 HTTP {결과.상태코드}: "
-                      f"{결과.응답[:200] or '(본문 없음)'}")
-            else:
-                알림 = ("연습 모드(MAIL_DRY_RUN=1)라 보내지 않았습니다. "
-                      "아래 '보낼 요청 내용' 에서 형식을 확인하세요.")
-            return self._redirect(뒤로 + "&msg=" + urllib.parse.quote(알림)
-                                  + "&peek=1")
-
-        if path == "/mail/image/add":
-            # 편집기가 그림을 넣을 때 부른다. 본문에 base64 를 박는 대신
-            # 파일로 보관하고 짧은 참조만 돌려준다.
-            if not can(me, "메일_템플릿"):
-                return self._json({"ok": False, "error": "권한이 없습니다."}, code=403)
-            form = parse_multipart(self._read_body(), self.headers.get("Content-Type", ""))
-            try:
-                tid = int(form.fields.get("template", "0"))
-            except (ValueError, TypeError):
-                tid = 0
-            if mailing.template(tid) is None:
-                return self._json({"ok": False, "error": "템플릿을 찾을 수 없습니다."},
-                                  code=404)
-            f = form.files[0] if form.files else None
-            if f is None or not f.filename:
-                return self._json({"ok": False, "error": "그림 파일이 없습니다."}, code=400)
-            try:
-                img_id = mailing.add_body_image(tid, f.filename, f.content,
-                                                올린이=me.아이디)
-            except ValueError as exc:
-                return self._json({"ok": False, "error": str(exc)}, code=400)
-            audit.record(me.아이디, "메일", str(tid), 항목="본문 그림 추가",
-                         새값=f.filename)
-            return self._json({"ok": True, "id": img_id,
-                               "src": f"/mail/image?id={img_id}"})
-
-        if path == "/mail/image/delete":
-            if not can(me, "메일_템플릿"):
-                return self._deny()
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            tid = (data.get("template") or ["0"])[0]
-            try:
-                이름 = mailing.delete_body_image(int((data.get("id") or ["0"])[0]))
-            except (ValueError, TypeError):
-                이름 = ""
-            if 이름:
-                audit.record(me.아이디, "메일", tid, 항목="본문 그림 삭제", 이전값=이름)
-            return self._redirect(f"/mail/template?id={tid}&msg="
-                                  + urllib.parse.quote("본문에서 쓰지 않는 그림을 지웠습니다."
-                                                       if 이름 else "그림을 찾을 수 없습니다."))
-
-        if path == "/mail/attachment/add":
-            if not can(me, "메일_템플릿"):
-                return self._deny()
-            form = parse_multipart(self._read_body(), self.headers.get("Content-Type", ""))
-            try:
-                tid = int(form.fields.get("template", "0"))
-            except (ValueError, TypeError):
-                return self._redirect("/mail")
-            뒤로 = f"/mail/template?id={tid}"
-            if mailing.template(tid) is None:
-                return self._redirect("/mail")
-            붙임, 실패 = [], ""
-            for f in form.files:
-                if not f.filename:
-                    continue
-                try:
-                    mailing.add_attachment(tid, f.filename, f.content, 올린이=me.아이디)
-                    붙임.append(f.filename)
-                except ValueError as exc:
-                    실패 = 실패 or str(exc)
-            for 이름 in 붙임:
-                audit.record(me.아이디, "메일", str(tid), 항목="첨부 추가", 새값=이름)
-            if 실패:
-                return self._redirect(f"{뒤로}&err=" + urllib.parse.quote(실패))
-            if not 붙임:
-                return self._redirect(f"{뒤로}&err="
-                                      + urllib.parse.quote("붙일 파일을 고르세요."))
-            return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(
-                f"{len(붙임)}개 붙였습니다: {', '.join(붙임)}"))
-
-        if path == "/mail/attachment/delete":
-            if not can(me, "메일_템플릿"):
-                return self._deny()
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            try:
-                tid = int((data.get("template") or ["0"])[0])
-                이름 = mailing.delete_attachment(int((data.get("id") or ["0"])[0]))
-            except (ValueError, TypeError):
-                return self._redirect("/mail")
-            if 이름:
-                audit.record(me.아이디, "메일", str(tid), 항목="첨부 삭제", 이전값=이름)
-            return self._redirect(f"/mail/template?id={tid}")
-
-        if path == "/mail/compose":
-            # 인재 Pool·채용 현황에서 고른 사람을 데리고 오는 입구.
-            if not can(me, "메일_발송"):
-                return self._deny("메일 발송 권한이 없습니다.")
-            data = urllib.parse.parse_qs(
-                self._read_body().decode("utf-8", "replace"), keep_blank_values=True
-            )
-            ids = [x for x in (data.get("ids") or []) if x.strip()]
-            뒤로 = (data.get("back") or ["/"])[0] or "/"
-            if not 뒤로.startswith("/"):
-                뒤로 = "/"
-            try:
-                tid = int((data.get("template") or ["0"])[0] or 0)
-            except ValueError:
-                tid = 0
-            return self._send(_mail_compose_page(ids, tid, me, 뒤로))
-
-        if path == "/mail/send/one":
-            # 작성창에서 한 통. 고친 내용 그대로 보내고 그대로 기록한다.
-            if not can(me, "메일_발송"):
-                return self._deny("메일 발송 권한이 없습니다.")
-            data = urllib.parse.parse_qs(
-                self._read_body().decode("utf-8", "replace"), keep_blank_values=True
-            )
-            try:
-                tid = int((data.get("tpl") or ["0"])[0])
-            except ValueError:
-                return self._redirect("/mail")
-            cid = (data.get("id") or [""])[0]
-            tpl = mailing.template(tid)
-            if tpl is None or not _볼수있는지원자(cid, me):
-                return self._deny("보낼 수 없는 요청입니다.")
-            넣은값 = {
-                "to": (data.get("to") or [""])[0].strip(),
-                "cc": (data.get("cc") or [""])[0].strip(),
-                "subject": (data.get("subject") or [""])[0],
-                "body": (data.get("body") or [""])[0],
-                "cv": bool(data.get("cv")),
-                "cand": bool(data.get("cand")),
-            }
-            # 첨부 체크만 바꾼 것 — 보내지 않고 다시 그린다
-            if not data.get("send"):
-                return self._send(_mail_draft_page(tid, cid, me, 넣은값=넣은값))
-
-            rec = store.get(cid)
-            이름 = _mail_vars(rec).get("한글_이름") or cid
-            막힘 = mailing.blocked_reason(cid, tpl)
-            if 막힘:
-                return self._send(_mail_draft_page(tid, cid, me, 막힘, 넣은값))
-            if not 넣은값["to"]:
-                return self._send(_mail_draft_page(
-                    tid, cid, me, "받는 사람을 적으세요.", 넣은값))
-
-            자료, 자료오류 = _지원자자료(cid, 넣은값["cv"], 넣은값["cand"])
-            if 자료오류:
-                return self._send(_mail_draft_page(tid, cid, me, 자료오류, 넣은값))
-            참조 = split_addresses(넣은값["cc"])
-            첨부파일 = mailing.attachment_bytes(tpl.id) + 자료
-            보낼본문, 그림첨부 = mailing.prepare_body(넣은값["body"], tpl.그림보내기)
-            첨부이름 = ", ".join([n for n, _ in 첨부파일 + 그림첨부])
-            try:
-                결과 = mailapi.send(넣은값["to"], 넣은값["subject"], 보낼본문,
-                                  html=tpl.html, 참조=참조,
-                                  첨부=첨부파일 + 그림첨부)
-            except mailapi.MailError as exc:
-                mailing.record(cid, tpl, 넣은값["to"], 넣은값["subject"],
-                               넣은값["body"], "실패", 오류=str(exc),
-                               보낸이=me.아이디, 참조=", ".join(참조), 첨부=첨부이름)
-                return self._send(_mail_draft_page(
-                    tid, cid, me, f"보내지 못했습니다: {exc}", 넣은값))
-            상태 = "성공" if 결과.보냄 else "발송안함"
-            메모 = f"HTTP {결과.상태코드} {결과.응답[:300]}".strip()
-            mailing.record(cid, tpl, 넣은값["to"], 넣은값["subject"], 넣은값["body"],
-                           상태, 오류="" if 결과.보냄 else 메모,
-                           보낸이=me.아이디, 참조=", ".join(참조), 첨부=첨부이름)
-            audit.record(me.아이디, "메일", cid, 항목=tpl.이름,
-                         비고=f"{tpl.받는대상} 발송 → {넣은값['to']} ({상태})")
-            글 = "보냈습니다" if 결과.보냄 else "연습 모드라 나가지 않았습니다"
-            return self._send(_mail_sent_window(cid, 이름, 글))
-
-        if path == "/mail/send":
-            if not can(me, "메일_발송"):
-                return self._deny()
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            try:
-                tid = int((data.get("template") or data.get("id") or ["0"])[0])
-            except ValueError:
-                return self._redirect("/mail")
-            tpl = mailing.template(tid)
-            if tpl is None:
-                return self._redirect("/mail")
-            돌아갈곳 = (data.get("back") or ["/"])[0] or "/"
-            if not 돌아갈곳.startswith("/"):
-                돌아갈곳 = "/"
-            ids = [x for x in (data.get("ids") or []) if x.strip()]
-            if not ids:
-                return self._send(_mail_compose_page(
-                    ids, tid, me, 돌아갈곳, "보낼 지원자를 하나 이상 고르세요."))
-
-            # 안전장치: 보낼 인원수를 사람이 직접 쳐야 한다. 화면을 그린 뒤에
-            # 상황이 바뀌었을 수 있으니 **지금 다시 세어** 그 수와 맞춰 본다.
-            갈사람, _막힌 = _mail_targets(ids, tpl, me)
-            친것 = (data.get("confirm") or [""])[0].strip()
-            if 친것 != str(len(갈사람)):
-                return self._send(_mail_compose_page(
-                    ids, tid, me, 돌아갈곳,
-                    f"보낼 인원수({len(갈사람)})를 그대로 쳐 넣어야 나갑니다. "
-                    f"넣은 값: {친것 or '(빈칸)'}"
-                    + ("" if 친것 else "")
-                ))
-            뒤로 = 돌아갈곳
-
-            진행맵 = recruit.all()
-            보이는 = auth.visible_project_ids(me)
-            참조 = tpl.cc()
-            첨부파일 = mailing.attachment_bytes(tpl.id)
-            그림이름 = [f"{i['id']}_{i['파일명']}"
-                     for i in mailing.used_body_images(tpl.본문)
-                     if tpl.그림보내기 in ("본문+첨부", "첨부만")]
-            # 붙는 파일 이름은 사람마다 달라진다 (지원자 자료). 보낼 때 만든다.
-            성공, 실패, 건너뜀 = 0, 0, 0
-            첫오류 = ""
-            for cid in ids:
-                rec = store.get(cid)
-                if rec is None:
-                    건너뜀 += 1
-                    continue
-                if 보이는 is not None and recruit.get(cid).project_id not in 보이는:
-                    건너뜀 += 1
-                    continue
-                # 화면을 그린 뒤에 상황이 바뀌었을 수 있다. 보내기 직전에 다시 본다.
-                막힘 = mailing.blocked_reason(cid, tpl)
-                if 막힘:
-                    건너뜀 += 1
-                    continue
-                값 = _mail_vars(rec, 진행맵)
-                받는사람 = (값.get("이메일") or "").split(MULTI_SEP)[0].strip()
-                제목, 빈1 = render(tpl.제목, 값)
-                본문, 빈2 = render(tpl.본문, 값)
-                if not 받는사람:
-                    건너뜀 += 1
-                    continue
-                # 빈 자리표시자는 빈 채로 나간다 (화면에서 이미 알렸다).
-                # 본문 그림을 실제로 실을 모양으로 바꾼다. 이력에는 **참조가 든
-                # 본문**을 남긴다 — 나중에 다시 열어도 우리 DB 로 그림이 보인다.
-                보낼본문, 그림첨부 = mailing.prepare_body(본문, tpl.그림보내기)
-                # 사람마다 다른 파일이라 여기서 읽는다. 너무 크면 그 사람만 건너뛴다.
-                자료, 자료오류 = _지원자자료(cid, tpl.CV첨부, tpl.지원자첨부)
-                if 자료오류:
-                    실패 += 1
-                    첫오류 = 첫오류 or f"{cid}: {자료오류}"
-                    continue
-                이번첨부 = ", ".join([n for n, _ in 첨부파일 + 자료] + 그림이름)
-                try:
-                    결과 = mailapi.send(받는사람, 제목, 보낼본문, html=tpl.html,
-                                      참조=참조, 첨부=첨부파일 + 자료 + 그림첨부)
-                except mailapi.MailError as exc:
-                    실패 += 1
-                    첫오류 = 첫오류 or str(exc)
-                    mailing.record(cid, tpl, 받는사람, 제목, 본문, "실패",
-                                   오류=str(exc), 보낸이=me.아이디,
-                                   참조=", ".join(참조), 첨부=이번첨부)
-                    continue
-                상태 = "성공" if 결과.보냄 else "발송안함"
-                성공 += 1
-                # API 응답을 그대로 남긴다. HTTP 200 이어도 본문에 실패가 적혀 오는
-                # API 가 있어서, 사람이 눈으로 확인할 수 있어야 한다.
-                메모 = (f"HTTP {결과.상태코드} {결과.응답[:300]}".strip()
-                      if 결과.보냄 else 결과.응답)
-                mailing.record(cid, tpl, 받는사람, 제목, 본문, 상태,
-                               오류=메모, 보낸이=me.아이디,
-                               참조=", ".join(참조), 첨부=이번첨부)
-                audit.record(me.아이디, "메일", cid, 항목=tpl.이름,
-                             새값=상태, 비고=f"{받는사람} 로 발송")
-
-            조각 = [f"'{tpl.이름}' 을 {성공}명에게 보냈습니다"]
-            if 실패:
-                조각.append(f"{실패}명 실패 ({첫오류[:80]})")
-            if 건너뜀:
-                조각.append(f"{건너뜀}명은 보낼 수 없어 건너뛰었습니다")
-            이음 = "&" if "?" in 뒤로 else "?"
-            return self._redirect(뒤로 + 이음 + "msg="
-                                  + urllib.parse.quote(" / ".join(조각)))
-
-        if path.startswith("/dash"):
-            if not can(me, "대시보드_조회"):
-                return self._deny("대시보드는 채용담당자 이상만 다룰 수 있습니다.")
-            data = urllib.parse.parse_qs(
-                self._read_body().decode("utf-8", "replace"), keep_blank_values=True
-            )
-
-            def 정수(키: str, 기본: int = 0) -> int:
-                try:
-                    return int((data.get(키) or [str(기본)])[0])
-                except ValueError:
-                    return 기본
-
-            if path == "/dash/add":
-                이름 = (data.get("name") or [""])[0]
-                try:
-                    did = boards.add(이름, 만든이=me.아이디,
-                                     설명=(data.get("desc") or [""])[0])
-                except ValueError as exc:
-                    return self._redirect("/dash?err=" + urllib.parse.quote(str(exc)))
-                if data.get("sample"):
-                    _예시블록(did)
-                audit.record(me.아이디, "대시보드", str(did), 항목="만들기", 새값=이름)
-                return self._redirect(f"/dash/edit?id={did}")
-
-            if path == "/dash/rename":
-                did = 정수("id")
-                try:
-                    boards.rename(did, (data.get("name") or [""])[0],
-                                  (data.get("desc") or [""])[0])
-                except ValueError as exc:
-                    return self._redirect(f"/dash/edit?id={did}&err="
-                                          + urllib.parse.quote(str(exc)))
-                boards.set_width(did, (data.get("width") or [""])[0])
-                return self._redirect(f"/dash/edit?id={did}&msg="
-                                      + urllib.parse.quote("저장했습니다."))
-
-            if path == "/dash/copy":
-                did = 정수("id")
-                옛 = boards.get(did)
-                if 옛 is None:
-                    return self._redirect("/dash")
-                for n in range(2, 50):
-                    새이름 = f"{옛.이름} 복사본{'' if n == 2 else n}"
-                    if not boards.by_name(새이름):
-                        break
-                새id = boards.copy(did, 새이름, 만든이=me.아이디)
-                audit.record(me.아이디, "대시보드", str(새id), 항목="복제", 새값=새이름)
-                return self._redirect(f"/dash/edit?id={새id}")
-
-            if path == "/dash/delete":
-                d = boards.get(정수("id"))
-                if d is not None and not _대시_지울수있나(me, d):
-                    return self._redirect("/dash?err=" + urllib.parse.quote(
-                        f"'{d.이름}' 은 만든 사람({d.만든이 or '기록 없음'})이나 관리자만 지울 수 있습니다."))
-                이름 = boards.delete(d.id, me.아이디) if d else ""
-                if 이름:
-                    audit.record(me.아이디, "대시보드", 이름, 비고="대시보드 휴지통으로")
-                return self._redirect("/dash?msg=" + urllib.parse.quote(
-                    f"'{이름}' 을 휴지통으로 보냈습니다. 아래 휴지통에서 되살릴 수 있습니다."
-                    if 이름 else "없는 대시보드입니다."))
-
-            if path == "/dash/restore":
-                이름 = boards.restore(정수("id"))
-                if 이름:
-                    audit.record(me.아이디, "대시보드", 이름, 비고="휴지통에서 되살림")
-                return self._redirect("/dash?msg=" + urllib.parse.quote(
-                    f"'{이름}' 을 되살렸습니다." if 이름 else "휴지통에 없는 대시보드입니다."))
-
-            if path == "/dash/purge":
-                d = boards.get(정수("id"), 지운것도=True)
-                if d is not None and not _대시_지울수있나(me, d):
-                    return self._redirect("/dash?err=" + urllib.parse.quote(
-                        "만든 사람이나 관리자만 완전히 지울 수 있습니다."))
-                이름 = boards.purge(d.id) if d else ""
-                if 이름:
-                    audit.record(me.아이디, "대시보드", 이름, 비고="대시보드 완전 삭제")
-                return self._redirect("/dash?msg=" + urllib.parse.quote(
-                    f"'{이름}' 을 완전히 지웠습니다." if 이름 else "휴지통에 없는 대시보드입니다."))
-
-            if path == "/dash/block/add":
-                did = 정수("dash")
-                종류 = (data.get("kind") or [""])[0]
-                try:
-                    설정 = {"줄": 기본_프로필틀, "머리": 기본_프로필머리} \
-                        if 종류 == "프로필" else {}
-                    boards.add_block(did, 종류, 제목=종류, 설정=설정)
-                except ValueError as exc:
-                    return self._redirect(f"/dash/edit?id={did}&err="
-                                          + urllib.parse.quote(str(exc)))
-                return self._redirect(f"/dash/edit?id={did}")
-
-            if path == "/dash/block/move":
-                bid = 정수("id")
-                b = boards.block(bid)
-                boards.move_block(bid, 정수("dir", 1))
-                return self._redirect(f"/dash/edit?id={b.dashboard_id if b else 0}")
-
-            if path == "/dash/block/copy":
-                # 블록 하나만 닮은 것으로 하나 더. **저장된 것**을 베낀다 —
-                # 화면에서 고치다 만 것은 아직 DB 에 없다.
-                bid = 정수("id")
-                b = boards.block(bid)
-                did = b.dashboard_id if b else 0
-                if b is not None:
-                    boards.copy_block(bid)
-                    audit.record(me.아이디, "대시보드", str(did), 항목="블록 복제",
-                                 새값=b.제목 or b.종류)
-                return self._redirect(f"/dash/edit?id={did}")
-
-            if path == "/dash/block/delete":
-                bid = 정수("id")
-                b = boards.block(bid)
-                did = b.dashboard_id if b else 0
-                이름 = boards.delete_block(bid)
-                if 이름:
-                    audit.record(me.아이디, "대시보드", str(did), 항목="블록 삭제",
-                                 이전값=_블록기록(b), 비고=이름)
-                return self._redirect(f"/dash/edit?id={did}&msg=" + urllib.parse.quote(
-                    "블록을 지웠습니다. 맨 아래 «지운 블록» 에서 되살릴 수 있습니다."))
-
-            if path == "/dash/block/restore":
-                did = boards.restore_block(정수("id"))
-                if did:
-                    audit.record(me.아이디, "대시보드", str(did), 항목="블록 되살림")
-                return self._redirect(f"/dash/edit?id={did}" if did else "/dash")
-
-            if path == "/dash/block/draft":
-                # 말 -> 블록 정의 초안. **LLM 은 값을 만들지 않는다** — 정의만
-                # 내고, 표는 언제나 우리 계산기가 그린다.
-                bid = 정수("id")
-                b = boards.block(bid)
-                if b is None:
-                    return self._redirect("/dash")
-                말 = (data.get("말") or [""])[0]
-                설정, 메모 = dash_draft.draft(
-                    말, 대시보드_열(), 종류=b.종류,
-                    축목록=[a for a in AXIS_SOURCES if a != "직접 입력"],
-                    예시표=(data.get("예시") or [""])[0],
-                )
-                뒤로 = f"/dash/edit?id={b.dashboard_id}"
-                if not 설정:
-                    return self._redirect(
-                        f"{뒤로}&err=" + urllib.parse.quote(" / ".join(메모)))
-                제목 = 설정.pop("_제목", "") or b.제목 or b.종류
-                boards.save_block(bid, 제목=제목, 설정={**b.설정, **설정})
-                audit.record(me.아이디, "대시보드", str(b.dashboard_id),
-                             항목=f"{b.종류} 초안", 새값=말[:80])
-                return self._redirect(
-                    f"{뒤로}&msg=" + urllib.parse.quote(" / ".join(메모)))
-
-            if path == "/dash/sheet/calc":
-                # 편집 중 **다시 계산만** 한다. 저장하지 않는다 — 칸 하나 고칠
-                # 때마다 저장하고 화면을 통째로 다시 그리던 것을 이걸로 바꿨다.
-                if not can(me, "대시보드_편집"):
-                    return self._json({"error": "대시보드를 고칠 권한이 없습니다."}, code=403)
-                b = boards.block(정수("id"))
-                if b is None or b.종류 != "시트":
-                    return self._json({"error": "시트를 찾을 수 없습니다."}, code=404)
-                import dataclasses
-                임시 = dataclasses.replace(b, 설정=_시트_받기(b, data))
-                표, 오류 = _시트표(임시, 대시보드_행_잠깐(), 대시보드_열(), 편집=True)
-                return self._json({"sheet": _시트모델(임시), "html": 표, "오류": 오류})
-
-            if path == "/dash/sheet/save":
-                # 시트는 격자·서식·병합이 JSON 한 덩어리로 온다. **믿지 않는다** —
-                # `시트_다듬기` 가 색·크기·병합·격자 밖 칸을 전부 다시 거른다.
-                bid = 정수("id")
-                b = boards.block(bid)
-                if b is None:
-                    return self._redirect("/dash")
-                설정 = _시트_받기(b, data)
-                제목 = (data.get("title") or [""])[0]
-                boards.save_block(bid, 제목=제목, 설정=설정)
-                뒤로 = f"/dash/edit?id={b.dashboard_id}"
-                if not (data.get("끝") or [""])[0]:
-                    # 도구막대가 값을 바꿔 **다시 계산하러** 보낸 것이다.
-                    # 저장은 됐지만 안내는 안 띄운다 — 누를 때마다 뜨면 시끄럽다.
-                    return self._redirect(f"{뒤로}#b{bid}")
-                새것 = boards.block(bid)
-                if _블록기록(b) != _블록기록(새것):
-                    audit.record(me.아이디, "대시보드", str(b.dashboard_id),
-                                 항목=f"시트 블록 #{bid}", 이전값=_블록기록(b),
-                                 새값=_블록기록(새것), 비고=제목)
-                return self._redirect(f"{뒤로}&msg="
-                                      + urllib.parse.quote("시트를 저장했습니다.")
-                                      + f"#b{bid}")
-
-            if path == "/dash/block/save":
-                bid = 정수("id")
-                b = boards.block(bid)
-                if b is None:
-                    return self._redirect("/dash")
-                설정, 오류 = _블록설정(b, data)
-                if 오류:
-                    return self._redirect(f"/dash/edit?id={b.dashboard_id}&err="
-                                          + urllib.parse.quote(오류))
-                boards.save_block(bid, 제목=(data.get("title") or [""])[0], 설정=설정)
-                # 무엇이 어떻게 바뀌었는지 남긴다. 제목만 남기면 «누가 이 수식을
-                # 바꿨나» 를 알 길이 없었다.
-                새것 = boards.block(bid)
-                if _블록기록(b) != _블록기록(새것):
-                    audit.record(me.아이디, "대시보드", str(b.dashboard_id),
-                                 항목=f"{b.종류} 블록 #{bid}", 이전값=_블록기록(b),
-                                 새값=_블록기록(새것), 비고=새것.제목 if 새것 else "")
-                return self._redirect(f"/dash/edit?id={b.dashboard_id}&msg="
-                                      + urllib.parse.quote("블록을 저장했습니다.")
-                                      + f"#b{bid}")
-
-            if path == "/dash/block/preview":
-                # 저장 없이 미리보기 — 폼에 적힌 설정으로 그려만 본다.
-                if not can(me, "대시보드_편집"):
-                    return self._json({"error": "대시보드를 고칠 권한이 없습니다."}, code=403)
-                b = boards.block(정수("id"))
-                if b is None:
-                    return self._json({"error": "블록을 찾을 수 없습니다."}, code=404)
-                설정, 오류 = _블록설정(b, data)
-                if 오류:
-                    return self._json({"error": 오류})
-                import dataclasses
-                임시 = dataclasses.replace(
-                    b, 제목=(data.get("title") or [b.제목])[0], 설정=설정)
-                return self._json({"html": _블록그리기(임시, 대시보드_행_잠깐(),
-                                                   대시보드_축(), 대시보드_열())})
-            return self._redirect("/dash")
-
-        if path == "/fields/add":
-            if not can(me, "열_구성"):
-                return self._deny("표 항목 추가는 관리자만 할 수 있습니다.")
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            이름 = (data.get("name") or [""])[0]
-            try:
-                구분 = (data.get("scope") or ["지원자 정보"])[0]
-                store.add_field(
-                    이름,
-                    (data.get("type") or ["텍스트"])[0],
-                    (data.get("choices") or [""])[0],
-                    만든이=me.아이디,
-                    구분=구분,
-                )
-            except ValueError as exc:
-                return self._redirect("/fields?err=" + urllib.parse.quote(str(exc)))
-            audit.record(me.아이디, "표항목", 이름, 항목="구분", 새값=구분, 비고="열 추가")
-            return self._redirect("/fields")
-
-        if path == "/fields/choices":
-            # 추가한 열의 선택지 고치기. 형식 검사·추출 스키마와 무관한 열이라
-            # 고칠 수 있다. 이미 쓰고 있는 값을 빼면 store 가 거부한다.
-            if not can(me, "열_구성"):
-                return self._deny("표 항목 설정은 관리자만 바꿀 수 있습니다.")
-            data = urllib.parse.parse_qs(
-                self._read_body().decode("utf-8", "replace"), keep_blank_values=True
-            )
-            col = (data.get("col") or [""])[0]
-            새선택지 = (data.get("choices") or [""])[0]
-            옛것 = store.field(col)
-            try:
-                store.update_field(col, 선택지=새선택지)
-            except ValueError as exc:
-                return self._redirect("/fields?err=" + urllib.parse.quote(str(exc)))
-            audit.record(me.아이디, "표항목", col, 항목="선택지",
-                         이전값=(옛것 or {}).get("선택지", ""), 새값=새선택지.strip())
-            return self._redirect("/fields?msg=" + urllib.parse.quote(
-                f"'{col}' 선택지를 바꿨습니다."))
-
-        if path == "/recruit/statuses":
-            # 단계에서 고를 수 있는 상태 목록. 네 단계가 같은 목록을 쓴다.
-            if not can(me, "열_구성"):
-                return self._deny("표 항목 설정은 관리자만 바꿀 수 있습니다.")
-            data = urllib.parse.parse_qs(
-                self._read_body().decode("utf-8", "replace"), keep_blank_values=True
-            )
-            목록 = [v.strip() for v in (data.get("choices") or [""])[0].split("|")]
-            try:
-                이전 = recruit.set_statuses(목록)
-            except ValueError as exc:
-                return self._redirect("/fields?err=" + urllib.parse.quote(str(exc)))
-            지금 = recruit.statuses()
-            if 지금 != 이전:
-                audit.record(me.아이디, "표항목", "단계 상태", 항목="선택지",
-                             이전값=" | ".join(x for x in 이전 if x),
-                             새값=" | ".join(x for x in 지금 if x))
-            return self._redirect("/fields?msg=" + urllib.parse.quote(
-                "단계 상태 목록을 바꿨습니다: "
-                + ", ".join(x or "(빈칸)" for x in 지금)))
-
-        if path == "/fields/columns":
-            if not can(me, "열_구성"):
-                return self._deny("표 열 설정은 관리자만 바꿀 수 있습니다.")
-            data = urllib.parse.parse_qs(
-                self._read_body().decode("utf-8", "replace"), keep_blank_values=True
-            )
-            # 줄을 끌어 옮기면 폼 칸이 오는 **차례가 바뀐다.** 차례로 짝을 맞추면
-            # 5번 줄의 순서 값이 1번 줄에 붙는다 (실제로 그랬다). 그래서 열 이름도
-            # 번호를 달아 보내고, 번호로만 짝을 맞춘다.
-            열들 = [(int(k.split("_")[1]), v[0])
-                  for k, v in data.items()
-                  if k.startswith("col_") and k.split("_")[1].isdigit() and v]
-            열들.sort()
-            이전 = store.column_config()
-            구분맵 = {c: g for g, c, _a in 열목록()}
-            바뀐것: list[str] = []
-            for i, col in 열들:
-                # 추가한 열은 이름과 구분(어느 표에 속하는지)까지 고칠 수 있다.
-                # 기본 열은 이 칸을 아예 안 그리므로 여기 걸리지 않는다.
-                옛필드 = store.field(col)
-                if 옛필드 is not None:
-                    새이름 = (data.get(f"rename_{i}") or [col])[0].strip()
-                    새구분 = (data.get(f"scope_{i}")
-                            or [옛필드.get("구분") or "지원자 정보"])[0]
-                    옛구분 = 옛필드.get("구분") or "지원자 정보"
-                    if 새이름 != col or 새구분 != 옛구분:
-                        try:
-                            store.update_field(col, 새이름=새이름, 구분=새구분)
-                        except ValueError as exc:
-                            return self._redirect(
-                                "/fields?err=" + urllib.parse.quote(str(exc)))
-                        if 새이름 != col:
-                            audit.record(me.아이디, "표항목", 새이름, 항목="열 이름",
-                                         이전값=col, 새값=새이름)
-                            바뀐것.append(f"{col}→{새이름}")
-                        if 새구분 != 옛구분:
-                            audit.record(me.아이디, "표항목", 새이름, 항목="구분",
-                                         이전값=옛구분, 새값=새구분)
-                            바뀐것.append(f"{새이름}(구분 {새구분})")
-                        col = 새이름
-                새라벨 = (data.get(f"label_{i}") or [""])[0].strip()
-                순서값 = (data.get(f"order_{i}") or [""])[0].strip()
-                숨김 = f"hide_{i}" in data
-                # 켤 수 없는 열은 체크박스를 아예 안 그린다. 그런 열까지
-                # "체크 없음 = 끔" 으로 읽으면 기본값이 조용히 꺼진다.
-                긴글가능 = _긴글가능(col, store.field(col), 구분맵.get(col, ""))
-                긴글 = (f"long_{i}" in data) if 긴글가능 else None
-                # 관리 정보 열은 설정이 없으면 "숨김" 이 기본이다. 그 상태에서
-                # 체크를 풀었으면 바뀐 것으로 봐야 설정이 저장된다.
-                옛 = 이전.get(
-                    col,
-                    {"표시이름": "", "숨김": 기본숨김(col, 이전), "순서": 0,
-                     "긴글": col in store_DEFAULT_LONG},
-                )
-                try:
-                    새순서 = int(순서값) if 순서값 else 0
-                except ValueError:
-                    새순서 = 옛["순서"]
-                옛긴글 = bool(옛.get("긴글"))
-                if (새라벨, 숨김, 새순서, 긴글 if 긴글 is not None else 옛긴글) == (
-                        옛["표시이름"], 옛["숨김"], 옛["순서"], 옛긴글):
-                    continue
-                store.set_column(col, 표시이름=새라벨, 숨김=숨김, 순서=새순서,
-                                 긴글=긴글)
-                조각 = []
-                if 새라벨 != 옛["표시이름"]:
-                    조각.append(f"이름 {새라벨 or '(원래대로)'}")
-                    audit.record(me.아이디, "표항목", col, 항목="표에 보일 이름",
-                                 이전값=옛["표시이름"], 새값=새라벨)
-                if 숨김 != 옛["숨김"]:
-                    조각.append("숨김" if 숨김 else "다시 보임")
-                    audit.record(me.아이디, "표항목", col, 항목="숨김",
-                                 이전값="Y" if 옛["숨김"] else "", 새값="Y" if 숨김 else "")
-                if 새순서 != 옛["순서"]:
-                    조각.append(f"순서 {새순서 or '원래대로'}")
-                    audit.record(me.아이디, "표항목", col, 항목="순서",
-                                 이전값=str(옛["순서"] or ""), 새값=str(새순서 or ""))
-                if 긴글 is not None and 긴글 != 옛긴글:
-                    조각.append("긴 글" if 긴글 else "긴 글 끔")
-                    audit.record(me.아이디, "표항목", col, 항목="긴 글",
-                                 이전값="Y" if 옛긴글 else "", 새값="Y" if 긴글 else "")
-                바뀐것.append(f"{col}({', '.join(조각)})")
-            if not 바뀐것:
-                return self._redirect("/fields?msg=" + urllib.parse.quote("바뀐 내용이 없습니다."))
-            보임 = ", ".join(바뀐것[:5]) + (" 외" if len(바뀐것) > 5 else "")
-            return self._redirect("/fields?msg=" + urllib.parse.quote(
-                f"{len(바뀐것)}건 저장했습니다 — {보임}"))
-
-        if path == "/fields/delete":
-            if not can(me, "열_구성"):
-                return self._deny("표 항목 삭제는 관리자만 할 수 있습니다.")
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            이름 = (data.get("name") or [""])[0]
-            store.delete_field(이름)
-            audit.record(me.아이디, "표항목", 이름, 비고="열 삭제 (값도 함께 삭제)")
-            return self._redirect("/fields")
-
-        if path == "/candidate/custom":
-            if not can(me, "지원자_수정"):
-                return self._deny()
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            cid = (data.get("id") or [""])[0]
-            필드명 = (data.get("항목") or [""])[0]
-            뒤로 = f"/candidate?id={urllib.parse.quote(cid)}"
-            field = store.field(필드명)
-            if not field:
-                return self._redirect(뒤로)
-            try:
-                저장값 = validate_custom(field, (data.get("새값") or [""])[0])
-            except ValidationError as exc:
-                return self._redirect(f"{뒤로}&err={urllib.parse.quote(str(exc))}")
-            이전 = store.set_custom(cid, 필드명, 저장값)
-            if 이전 != 저장값:
-                audit.record(me.아이디, "지원자", cid, 항목=필드명, 이전값=이전, 새값=저장값)
-            return self._redirect(뒤로)
-
-        if path == "/org/dept/rename":
-            if not can(me, "부서과제_관리"):
-                return self._deny()
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            새이름 = (data.get("name") or [""])[0]
-            try:
-                옛이름 = auth.rename_department(int((data.get("id") or ["0"])[0]), 새이름)
-            except (ValueError, TypeError) as exc:
-                return self._redirect("/org/edit?err=" + urllib.parse.quote(str(exc)))
-            if 옛이름 != 새이름:
-                audit.record(me.아이디, "과제", 새이름, 항목="부서명",
-                             이전값=옛이름, 새값=새이름)
-            return self._redirect("/org/edit")
-
-        if path == "/org/dept/delete":
-            if not can(me, "부서과제_관리"):
-                return self._deny()
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            try:
-                auth.delete_department(int((data.get("id") or ["0"])[0]))
-            except (ValueError, TypeError):
-                pass
-            return self._redirect("/org/edit")
-
-        if path == "/org/project/rename":
-            if not can(me, "부서과제_관리"):
-                return self._deny()
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            새이름 = (data.get("name") or [""])[0]
-            암호 = (data.get("invite") or [""])[0]
-            try:
-                pid = int((data.get("id") or ["0"])[0])
-                옛이름 = auth.rename_project(pid, 새이름)
-            except (ValueError, TypeError) as exc:
-                return self._redirect("/org/edit?err=" + urllib.parse.quote(str(exc)))
-            if 암호.strip():          # 비우면 기존 암호를 그대로 둔다
-                auth.set_project_password(pid, 암호)
-                audit.record(me.아이디, "과제", 새이름, 비고="초대암호 변경")
-            if 옛이름 != 새이름:
-                audit.record(me.아이디, "과제", 새이름, 항목="과제명",
-                             이전값=옛이름, 새값=새이름)
-            return self._redirect("/org/edit")
-
-        if path == "/fields":
-            if not can(me, "열_구성"):
-                return self._deny("표 항목 추가는 관리자만 할 수 있습니다.")
-            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            return self._send(_fields_page(me, (params.get("err") or [""])[0]))
-        if path == "/recruit/columns":
-            if not can(me, "열_구성"):
-                return self._deny("표 열 구성은 관리자만 바꿀 수 있습니다.")
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            고른것 = data.get("col") or []
-            순서문 = (data.get("order") or [""])[0]
-            if 순서문.strip():
-                원하는 = [c.strip() for c in 순서문.split(",") if c.strip()]
-                최종 = [c for c in 원하는 if c in 고른것] + [c for c in 고른것 if c not in 원하는]
-            else:
-                최종 = 고른것
-            recruit.set_columns(최종)
-            audit.record(me.아이디, "채용현황", "(표 열)", 비고=f"열 구성 변경: {', '.join(최종)}")
-            return self._redirect("/recruit")
-
-        if path == "/candidate/new":
-            if not can(me, "지원자_등록"):
-                return self._deny()
-            rec = store.create_blank()
-            audit.record(me.아이디, "지원자", rec.지원자_ID, 비고="CV 없이 직접 등록")
-            return self._redirect(f"/candidate?id={urllib.parse.quote(rec.지원자_ID)}")
-
-        if path == "/attachment/add":
-            if not can(me, "지원자_수정"):
-                return self._deny()
-            form = parse_multipart(self._read_body(), self.headers.get("Content-Type", ""))
-            cid = (form.fields.get("id") or "").strip()
-            뒤로 = f"/candidate?id={urllib.parse.quote(cid)}"
-            for f in form.files:
-                이름 = safe_filename(f.filename)
-                try:
-                    store.add_attachment(cid, 이름, f.content, me.아이디)
-                    audit.record(me.아이디, "지원자", cid, 항목="첨부파일", 새값=이름)
-                except ValueError as exc:
-                    return self._redirect(f"{뒤로}&err={urllib.parse.quote(str(exc))}")
-            return self._redirect(뒤로)
-
-        if path == "/attachment/delete":
-            if not can(me, "지원자_수정"):
-                return self._deny()
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            cid = (data.get("cid") or [""])[0]
-            try:
-                이름 = store.delete_attachment(int((data.get("id") or ["0"])[0]))
-            except ValueError:
-                이름 = ""
-            if 이름:
-                audit.record(me.아이디, "지원자", cid, 항목="첨부파일 삭제", 이전값=이름)
-            return self._redirect(f"/candidate?id={urllib.parse.quote(cid)}")
-
-        if path == "/api/cell":
-            # 표에서 칸 하나만 고친다. 상세 화면의 /candidate/edit 과 같은
-            # 검사·같은 낙관적 잠금·같은 이력을 탄다. 다른 점은 응답이 JSON 이라
-            # 페이지를 새로 그리지 않는다는 것뿐이다.
-            if not can(me, "지원자_수정"):
-                return self._json({"ok": False, "error": "수정 권한이 없습니다."}, code=403)
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            cid = (data.get("id") or [""])[0]
-            항목 = (data.get("항목") or [""])[0]
-            새값 = (data.get("새값") or [""])[0]
-            이전값 = (data.get("이전값") or [""])[0]
-            scope = (data.get("scope") or ["기본"])[0]
-
-            if scope == "사용자":
-                field = store.field(항목)
-                if not field:
-                    return self._json({"ok": False, "error": f"없는 열입니다: {항목}"}, code=404)
-                현재 = store.custom_values(cid).get(항목, "")
-                if 현재 != 이전값:
-                    return self._json({"ok": False, "error": str(
-                        ConflictError(항목, 현재, 이전값))}, code=409)
-                try:
-                    저장값 = validate_custom(field, 새값, 항목 in store.긴글열())
-                except ValidationError as exc:
-                    return self._json({"ok": False, "error": str(exc)}, code=400)
-                이전 = store.set_custom(cid, 항목, 저장값)
-                if 이전 != 저장값:
-                    audit.record(me.아이디, "지원자", cid, 항목=항목,
-                                 이전값=이전, 새값=저장값, 비고="표에서 수정")
-                return self._json({"ok": True, "raw": 저장값, "표시": 저장값})
-
-            rec = store.get(cid)
-            if rec is None:
-                return self._json({"ok": False, "error": "지원자를 찾을 수 없습니다."}, code=404)
-            try:
-                전, 후 = edit_field(rec, 항목, 새값, 기대_이전값=이전값,
-                                  registry=registry,
-                                  긴글=항목 in store.긴글열())
-            except ConflictError as exc:
-                return self._json({"ok": False, "error": str(exc)}, code=409)
-            except ValidationError as exc:
-                return self._json({"ok": False, "error": str(exc)}, code=400)
-            if 전 != 후:
-                store.save(rec)
-                audit.record(me.아이디, "지원자", cid, 항목=항목,
-                             이전값=전, 새값=후, 비고="표에서 수정")
-            # 칸이 다음에 되보낼 «이전 값» 이므로 화면에 뜨는 값이어야 한다.
-            return self._json({"ok": True, "raw": 후, "표시": 후})
-
-        if path == "/candidate/save":
-            # 상세 화면 한 폼 전체. 줄마다 저장 단추가 있으면 하나 고치고
-            # 다른 칸으로 넘어갈 때 앞의 수정이 조용히 날아간다.
-            if not can(me, "지원자_수정"):
-                return self._deny()
-            data = urllib.parse.parse_qs(
-                self._read_body().decode("utf-8", "replace"), keep_blank_values=True
-            )
-            cid = (data.get("id") or [""])[0]
-            rec = store.get(cid)
-            뒤로 = f"/candidate?id={urllib.parse.quote(cid)}"
-            if rec is None:
-                return self._redirect("/")
-            try:
-                끝 = int((data.get("끝") or ["0"])[0])
-            except ValueError:
-                끝 = 0
-
-            바뀐것: list[str] = []
-            문제: list[str] = []
-            레코드바뀜 = False
-            긴글열 = store.긴글열()
-            for i in range(1, 끝 + 1):
-                항목 = (data.get(f"항목_{i}") or [""])[0]
-                if not 항목:
-                    continue
-                새값 = (data.get(f"값_{i}") or [""])[0]
-                이전값 = (data.get(f"이전_{i}") or [""])[0]
-                # 브라우저는 폼을 보낼 때 줄바꿈을 CRLF 로 바꾼다. 맞춰 놓고
-                # 견주지 않으면 여러 줄 칸이 손 안 대도 매번 바뀐 것이 된다.
-                if N.lines(새값) == N.lines(이전값):
-                    continue
-                구분 = (data.get(f"구분_{i}") or [""])[0]
-                if 구분 == "년도":
-                    옛 = store.year_of(cid)
-                    try:
-                        store.set_year(cid, 새값)
-                    except ValueError as exc:
-                        문제.append(str(exc))
-                        continue
-                    if 옛 != 새값.strip():
-                        바뀐것.append("등록년도")
-                        audit.record(me.아이디, "지원자", cid, 항목="등록년도",
-                                     이전값=옛, 새값=새값.strip())
-                    continue
-                if 구분 == "추가":
-                    field = store.field(항목)
-                    if field is None:
-                        continue
-                    try:
-                        저장값 = validate_custom(field, 새값, 항목 in 긴글열)
-                    except ValidationError as exc:
-                        문제.append(str(exc))
-                        continue
-                    옛값 = store.set_custom(cid, 항목, 저장값)
-                    if 옛값 != 저장값:
-                        바뀐것.append(항목)
-                        audit.record(me.아이디, "지원자", cid, 항목=항목,
-                                     이전값=옛값, 새값=저장값)
-                    continue
-                try:
-                    전, 후 = edit_field(rec, 항목, 새값, 기대_이전값=이전값,
-                                      registry=registry,
-                                      긴글=항목 in 긴글열)
-                except (ValidationError, ConflictError) as exc:
-                    문제.append(str(exc))
-                    continue
-                if 전 != 후:
-                    레코드바뀜 = True
-                    바뀐것.append(항목)
-                    audit.record(me.아이디, "지원자", cid, 항목=항목,
-                                 이전값=전, 새값=후)
-            if 레코드바뀜:
-                store.save(rec)
-
-            if 문제:
-                return self._redirect(
-                    f"{뒤로}&err=" + urllib.parse.quote(" / ".join(문제[:3]))
-                    + "#추출결과")
-            if not 바뀐것:
-                return self._redirect(f"{뒤로}&msg="
-                                      + urllib.parse.quote("바뀐 내용이 없습니다.")
-                                      + "#추출결과")
-            보임 = ", ".join(바뀐것[:6]) + (" 외" if len(바뀐것) > 6 else "")
-            return self._redirect(
-                f"{뒤로}&msg=" + urllib.parse.quote(f"{len(바뀐것)}개 저장했습니다 — {보임}")
-                + "#추출결과")
-
-        if path in ("/candidate/review/done", "/candidate/review/undo"):
-            if not can(me, "지원자_수정"):
-                return self._deny()
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            cid = (data.get("id") or [""])[0]
-            사유 = (data.get("사유") or [""])[0]
-            rec = store.get(cid)
-            뒤로 = f"/candidate?id={urllib.parse.quote(cid)}#검토"
-            if rec is None or not 사유:
-                return self._redirect(뒤로)
-            끝냄 = path.endswith("/done")
-            if 끝냄:
-                store.mark_reviewed(cid, 사유, 본사람=me.아이디)
-            else:
-                store.unmark_reviewed(cid, 사유)
-            # 남은 게 없으면 검토_필요를 내린다. 화면·표·엑셀이 같이 따라온다.
-            남은 = review.flagged(rec.검토_사유, store.review_done(cid))
-            if rec.검토_필요 != 남은:
-                rec.검토_필요 = 남은
-                store.save(rec)
-            audit.record(me.아이디, "지원자", cid, 항목="검토",
-                         이전값="" if 끝냄 else "확인함",
-                         새값="확인함" if 끝냄 else "",
-                         비고=review.short(사유, 80))
-            return self._redirect(뒤로)
-
-        if path == "/candidate/edit":
-            if not can(me, "지원자_수정"):
-                return self._deny()
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            cid = (data.get("id") or [""])[0]
-            항목 = (data.get("항목") or [""])[0]
-            새값 = (data.get("새값") or [""])[0]
-            이전값 = (data.get("이전값") or [""])[0]
-            rec = store.get(cid)
-            뒤로 = f"/candidate?id={urllib.parse.quote(cid)}"
-            if rec is None:
-                return self._redirect(뒤로)
-            try:
-                전, 후 = edit_field(rec, 항목, 새값, 기대_이전값=이전값,
-                                  registry=registry)
-            except (ValidationError, ConflictError) as exc:
-                return self._redirect(f"{뒤로}&err={urllib.parse.quote(str(exc))}")
-            if 전 != 후:
-                store.save(rec)
-                audit.record(me.아이디, "지원자", cid, 항목=항목, 이전값=전, 새값=후)
-            return self._redirect(뒤로)
-
-        if path == "/candidate/papers":
-            # 논문 목록 통째로 받기. LLM 이 틀린 것을 고치는 유일한 길이라
-            # 재분석 없이 여기서 끝나야 한다.
-            if not can(me, "지원자_수정"):
-                return self._deny()
-            data = urllib.parse.parse_qs(
-                self._read_body().decode("utf-8", "replace"), keep_blank_values=True
-            )
-            cid = (data.get("id") or [""])[0]
-            뒤로 = f"/candidate?id={urllib.parse.quote(cid)}"
-            rec = store.get(cid)
-            if rec is None:
-                return self._redirect("/")
-            try:
-                끝 = int((data.get("끝") or ["0"])[0])
-            except ValueError:
-                끝 = 0
-
-            옛것 = list(rec.논문)
-            새목록: list[Paper] = []
-            고침 = 지움 = 더함 = 0
-            for i in range(1, 끝 + 1):
-                if (data.get(f"del_{i}") or [""])[0]:
-                    지움 += 1
-                    continue
-                한줄 = {칸: (data.get(f"{칸}_{i}") or [""])[0]
-                      for 칸 in ("제목", "제출처", "연도", "유형",
-                                "국내해외", "저자구분", "게재상태")}
-                try:
-                    논문 = edit.validate_paper(한줄)
-                except ValidationError as exc:
-                    return self._redirect(
-                        f"{뒤로}&err={urllib.parse.quote(f'{i}번째 줄 — {exc}')}#실적")
-                if 논문 is None:          # 제출처가 빈 줄 (추가용 빈 줄 포함)
-                    continue
-                옛줄 = 옛것[i - 1] if i <= len(옛것) else None
-                if 옛줄 is None:
-                    더함 += 1
-                elif 논문.model_dump() != 옛줄.model_dump():
-                    고침 += 1
-                새목록.append(논문)
-
-            if 고침 or 지움 or 더함:
-                rec.논문 = 새목록
-                # 새로 적어 넣은 제출처를 사전에 등록한다. 안 부르면 방금 넣은
-                # 학회가 미분류로도 안 잡혀 등급을 매길 수가 없다.
-                observe_record(rec, registry)
-                store.save(rec)
-                요약 = " · ".join(
-                    x for x in (f"{고침}줄 고침" if 고침 else "",
-                                f"{더함}줄 추가" if 더함 else "",
-                                f"{지움}줄 삭제" if 지움 else "") if x)
-                # 한 번 저장에 한 줄만 남긴다. 줄마다 남기면 변경 이력이
-                # 논문 목록으로 뒤덮인다.
-                audit.record(me.아이디, "지원자", cid, 항목="논문",
-                             이전값=f"{len(옛것)}편", 새값=f"{len(새목록)}편",
-                             비고=요약)
-                return self._redirect(
-                    f"{뒤로}&msg={urllib.parse.quote('논문 목록: ' + 요약)}#실적")
-            return self._redirect(
-                f"{뒤로}&msg={urllib.parse.quote('바뀐 내용이 없습니다.')}#실적")
-
-        if path == "/candidate/patents":
-            # 특허 목록 통째로 받기. LLM 이 국내/해외를 «불명» 으로 두면 등록
-            # 개수에서 빠지는데, 재분석 말고 그것을 고칠 길이 여기뿐이다.
-            if not can(me, "지원자_수정"):
-                return self._deny()
-            data = urllib.parse.parse_qs(
-                self._read_body().decode("utf-8", "replace"), keep_blank_values=True
-            )
-            cid = (data.get("id") or [""])[0]
-            뒤로 = f"/candidate?id={urllib.parse.quote(cid)}"
-            rec = store.get(cid)
-            if rec is None:
-                return self._redirect("/")
-            try:
-                끝 = int((data.get("끝") or ["0"])[0])
-            except ValueError:
-                끝 = 0
-
-            옛것 = list(rec.특허)
-            새목록: list[Patent] = []
-            고침 = 지움 = 더함 = 0
-            for i in range(1, 끝 + 1):
-                if (data.get(f"특허del_{i}") or [""])[0]:
-                    지움 += 1
-                    continue
-                한줄 = {칸: (data.get(f"특허{칸}_{i}") or [""])[0]
-                      for 칸 in ("제목", "상태", "연도", "번호", "국가", "국내해외")}
-                try:
-                    특허 = edit.validate_patent(한줄)
-                except ValidationError as exc:
-                    return self._redirect(
-                        f"{뒤로}&err={urllib.parse.quote(f'{i}번째 줄 — {exc}')}#실적")
-                if 특허 is None:          # 제목·번호가 다 빈 줄 (추가용 빈 줄)
-                    continue
-                옛줄 = 옛것[i - 1] if i <= len(옛것) else None
-                if 옛줄 is None:
-                    더함 += 1
-                elif 특허.model_dump() != 옛줄.model_dump():
-                    고침 += 1
-                새목록.append(특허)
-
-            if 고침 or 지움 or 더함:
-                rec.특허 = 새목록
-                store.save(rec)
-                요약 = " · ".join(
-                    x for x in (f"{고침}줄 고침" if 고침 else "",
-                                f"{더함}줄 추가" if 더함 else "",
-                                f"{지움}줄 삭제" if 지움 else "") if x)
-                # 논문과 같은 이유로 한 번 저장에 한 줄만 남긴다.
-                audit.record(me.아이디, "지원자", cid, 항목="특허",
-                             이전값=f"{len(옛것)}건", 새값=f"{len(새목록)}건",
-                             비고=요약)
-                return self._redirect(
-                    f"{뒤로}&msg={urllib.parse.quote('특허 목록: ' + 요약)}#실적")
-            return self._redirect(
-                f"{뒤로}&msg={urllib.parse.quote('바뀐 내용이 없습니다.')}#실적")
-
-        if path == "/candidate/unpin":
-            # 손으로 정해 둔 값을 버리고 다시 명칭 관리를 따라가게 한다.
-            if not can(me, "지원자_수정"):
-                return self._deny()
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            cid = (data.get("id") or [""])[0]
-            항목 = (data.get("col") or [""])[0]
-            뒤로 = f"/candidate?id={urllib.parse.quote(cid)}"
-            rec = store.get(cid)
-            if rec is None or 항목 not in REGISTRY_FIELDS:
-                return self._redirect(뒤로)
-            전, 후 = 사전_따라가기(rec, 항목, registry)
-            if 전 != 후:
-                store.save(rec)
-                audit.record(me.아이디, "지원자", cid, 항목=항목,
-                             이전값=전, 새값=후, 비고="사전 따라가기")
-            return self._redirect(뒤로 + "#추출결과")
-
-        if path == "/candidate/year":
-            if not can(me, "지원자_수정"):
-                return self._deny()
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            cid = (data.get("id") or [""])[0]
-            년도 = (data.get("년도") or [""])[0]
-            뒤로 = f"/candidate?id={urllib.parse.quote(cid)}"
-            옛 = store.year_of(cid)
-            try:
-                store.set_year(cid, 년도)
-            except ValueError as exc:
-                return self._redirect(f"{뒤로}&err={urllib.parse.quote(str(exc))}")
-            if 옛 != 년도:
-                audit.record(me.아이디, "지원자", cid, 항목="등록년도", 이전값=옛, 새값=년도)
-            return self._redirect(뒤로)
-
-        if path == "/users/add":
-            if not can(me, "계정_현업추가"):
-                return self._deny()
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            역할 = (data.get("role") or ["현업"])[0]
-            if 역할 != "현업" and not can(me, "계정_전체관리"):
-                return self._redirect("/users?err=" + urllib.parse.quote(
-                    "채용담당자는 현업 계정만 만들 수 있습니다."))
-            try:
-                u = auth.create_user(
-                    (data.get("userid") or [""])[0],
-                    (data.get("name") or [""])[0],
-                    (data.get("password") or [""])[0],
-                    역할,
-                    생성자=me.아이디,
-                )
-            except ValueError as exc:
-                return self._redirect("/users?err=" + urllib.parse.quote(str(exc)))
-            과제 = (data.get("project") or [""])[0]
-            if 과제 and u.역할 == "현업":
-                auth.assign(u.아이디, int(과제))
-            audit.record(me.아이디, "계정", u.아이디, 비고=f"{u.역할} 계정 생성")
-            return self._redirect("/users")
-
-        if path == "/users/toggle":
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            대상 = auth.get_user((data.get("id") or [""])[0])
-            if 대상 is None or 대상.아이디 == me.아이디:
-                return self._redirect("/users")
-            if not (can(me, "계정_전체관리") or 대상.역할 == "현업"):
-                return self._deny()
-            auth.set_active(대상.아이디, not 대상.활성)
-            if 대상.활성:
-                auth.end_all_sessions(대상.아이디)
-            audit.record(me.아이디, "계정", 대상.아이디,
-                         비고="비활성화" if 대상.활성 else "활성화")
-            return self._redirect("/users")
-
-        if path == "/users/delete":
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            대상 = auth.get_user((data.get("id") or [""])[0])
-            if 대상 is None or 대상.아이디 == me.아이디:
-                return self._redirect("/users")
-            if not (can(me, "계정_전체관리") or 대상.역할 == "현업"):
-                return self._deny()
-            auth.delete_user(대상.아이디)
-            audit.record(me.아이디, "계정", 대상.아이디, 비고="계정 삭제")
-            return self._redirect("/users")
-
-        if path == "/org/dept/add":
-            if not can(me, "부서과제_관리"):
-                return self._deny()
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            try:
-                auth.add_department((data.get("name") or [""])[0])
-            except ValueError as exc:
-                return self._redirect("/org/edit?err=" + urllib.parse.quote(str(exc)))
-            audit.record(me.아이디, "과제", (data.get("name") or [""])[0], 비고="부서 추가")
-            return self._redirect("/org/edit")
-
-        if path == "/org/project/add":
-            if not can(me, "부서과제_관리"):
-                return self._deny()
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            try:
-                auth.add_project(
-                    int((data.get("dept") or ["0"])[0]),
-                    (data.get("name") or [""])[0],
-                    (data.get("invite") or [""])[0],
-                )
-            except (ValueError, TypeError) as exc:
-                return self._redirect("/org/edit?err=" + urllib.parse.quote(str(exc)))
-            audit.record(me.아이디, "과제", (data.get("name") or [""])[0], 비고="과제 추가")
-            return self._redirect("/org/edit")
-
-        if path == "/org/project/delete":
-            if not can(me, "부서과제_관리"):
-                return self._deny()
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            try:
-                auth.delete_project(int((data.get("id") or ["0"])[0]))
-            except (ValueError, TypeError):
-                pass
-            return self._redirect("/org/edit")
-
-        if path == "/candidate/delete":
-            if not can(me, "지원자_삭제"):
-                return self._deny()
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            cid = (data.get("id") or [""])[0]
-            if cid:
-                store.delete(cid)
-                recruit.delete(cid)
-                audit.record(me.아이디, "지원자", cid, 비고="지원자 삭제")
-            return self._redirect("/")
-
-        if path == "/candidates/delete":
-            if not can(me, "지원자_삭제"):
-                return self._deny()
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            ids = data.get("ids") or []
-            if ids:
-                store.delete_many(ids)       # 원본·첨부파일까지 함께 지운다
-                for cid in ids:
-                    recruit.delete(cid)      # 채용 현황에 유령 줄이 남지 않게
-                    audit.record(me.아이디, "지원자", cid, 비고="지원자 삭제")
-            return self._redirect("/")
-
-        if path in ("/candidates/start", "/candidates/stop"):
-            # 인재 Pool 에 있는 사람을 채용 현황으로 올리고 내린다.
-            # 줄마다 있는 단추는 id 하나, 묶음 단추는 ids 여럿을 보낸다.
-            if not can(me, "채용현황_수정"):
-                return self._deny("채용 시작은 채용담당자 이상만 할 수 있습니다.")
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            ids = (data.get("ids") or []) + [
-                i for i in (data.get("id") or []) if i
-            ]
-            시작 = path.endswith("/start")
-            보이는 = auth.visible_project_ids(me)
-            한것: list[str] = []
-            for cid in dict.fromkeys(ids):
-                if store.get(cid) is None:
-                    continue
-                if 보이는 is not None and recruit.get(cid).project_id not in 보이는:
-                    continue
-                바뀜 = (recruit.start(cid, me.아이디) if 시작
-                      else recruit.stop(cid, me.아이디))
-                if 바뀜:
-                    한것.append(cid)
-                    audit.record(me.아이디, "채용현황", cid, 항목="채용 절차",
-                                 이전값="" if 시작 else "채용 중",
-                                 새값="채용 중" if 시작 else "",
-                                 비고="채용 시작" if 시작 else "채용 현황에서 내림")
-            if not 한것:
-                return self._redirect("/?msg=" + urllib.parse.quote(
-                    "고를 사람을 먼저 체크하세요." if not ids else "이미 그 상태입니다."))
-            말 = (f"{len(한것)}명 채용을 시작했습니다. 채용 현황에서 이어서 관리하세요."
-                 if 시작 else f"{len(한것)}명을 채용 현황에서 내렸습니다. "
-                             "진행 상황은 지우지 않았습니다.")
-            return self._redirect("/?msg=" + urllib.parse.quote(말))
-
-        if path == "/candidates/purge":
-            if not can(me, "지원자_삭제"):
-                return self._deny()
-            지운것 = store.purge_expired()
-            for cid in 지운것:
-                recruit.delete(cid)
-                audit.record(me.아이디, "지원자", cid, 비고="보관기간 만료 삭제")
-            return self._redirect("/")
-
-        if path == "/candidate/reanalyze":
-            if not can(me, "지원자_등록"):
-                return self._deny()
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            cid = (data.get("id") or [""])[0]
-            meta = store.meta(cid) if cid else None
-            if not meta or not meta.get("저장_파일명"):
-                return self._redirect(f"/candidate?id={urllib.parse.quote(cid)}")
-            name = meta.get("원본_파일명") or cid
-            # 재분석하면 사유가 새로 나온다. 옛 '확인함' 기록은 무효다.
-            store.clear_reviews(cid)
-            _enqueue(name, cid, meta["저장_파일명"], "재분석")
-            return self._redirect("/upload")
-
-        if path == "/status/clear":
-            if not can(me, "지원자_등록"):
-                return self._deny()
-            with _status_lock:
-                _status.clear()
-            return self._redirect("/upload")
-
-        if path == "/names/save":
-            if not can(me, "명칭_관리"):
-                return self._deny()
-            # 빈칸도 받아야 IF 를 지울 수 있다
-            data = urllib.parse.parse_qs(
-                self._read_body().decode("utf-8", "replace"), keep_blank_values=True
-            )
-            kind = canonical_kind((data.get("kind") or ["학회·저널"])[0])
-            뒤로 = f"/names?kind={urllib.parse.quote(kind)}"
-            if (data.get("todo") or [""])[0]:
-                뒤로 += "&todo=1"
-
-            할일 = (data.get("action") or [""])[0]
-            모두확인 = 할일 == "confirm_all"
-
-            # 화면에 있던 줄 전부가 들어온다. 실제로 값이 달라진 것만 저장한다.
-            바뀐것: list[str] = []
-            확인바뀜 = 0
-            for 원시 in data.get("id") or []:
-                try:
-                    nid = int(원시)
-                except (ValueError, TypeError):
-                    continue
-                이전 = registry.get(nid)
-                if 이전 is None:
-                    continue
-                registry.classify(
-                    nid,
-                    표시명=(data.get(f"표시명_{nid}") or [None])[0],
-                    등급=(data.get(f"등급_{nid}") or [None])[0],
-                    국내해외=(data.get(f"국내해외_{nid}") or [None])[0],
-                    유형=(data.get(f"유형_{nid}") or [None])[0],
-                    IF=(data.get(f"IF_{nid}") or [""])[0] if f"IF_{nid}" in data else None,
-                )
-                이후 = registry.get(nid)
-                if 이후 is None:
-                    continue
-                변경 = [
-                    (항목, 옛, 새)
-                    for 항목, 옛, 새 in (
-                        ("표에 보일 이름", 이전.표시명, 이후.표시명),
-                        ("학회/저널", 이전.유형, 이후.유형),
-                        ("등급", 이전.등급, 이후.등급),
-                        ("국내해외", 이전.국내해외, 이후.국내해외),
-                        ("IF", 이전.IF, 이후.IF),
-                    )
-                    if 옛 != 새
-                ]
-                for 항목, 옛, 새 in 변경:
-                    audit.record(me.아이디, "명칭", f"{kind}:{이후.원표기}",
-                                 항목=항목, 이전값=옛, 새값=새)
-                if 변경:
-                    이름변경 = [v for v in 변경 if v[0] == "표에 보일 이름"]
-                    머리 = (f"{이전.표시명} → {이후.표시명}" if 이름변경 else 이후.표시명)
-                    나머지 = [f"{항목} {새}" for 항목, _, 새 in 변경 if 항목 != "표에 보일 이름"]
-                    바뀐것.append(f"{이후.원표기}: " + 머리
-                                + (f" ({', '.join(나머지)})" if 나머지 else ""))
-
-                # 확인 표시. 체크칸을 켰거나, **값을 실제로 고쳤으면** 본 것이다.
-                # 고쳐 놓고 체크를 깜박하면 그 줄이 영영 '안 본 것' 으로 남는다.
-                # «보이는 줄 모두 확인» 은 화면의 줄을 전부 켠 것과 같다.
-                켬 = bool(data.get(f"확인_{nid}")) or bool(변경) or 모두확인
-                if 켬 and not 이전.확인:
-                    registry.confirm(nid, 사람=me.아이디)
-                    확인바뀜 += 1
-                    audit.record(me.아이디, "명칭", f"{kind}:{이후.원표기}",
-                                 항목="확인", 이전값="", 새값="확인함")
-                elif not 켬 and 이전.확인:
-                    registry.unconfirm(nid)
-                    확인바뀜 += 1
-                    audit.record(me.아이디, "명칭", f"{kind}:{이후.원표기}",
-                                 항목="확인", 이전값="확인함", 새값="")
-
-            if 할일 == "merge":
-                # 고친 칸을 먼저 저장했으니, 합치기가 그 위에 덮인다.
-                대상 = (data.get("merge_to") or [""])[0].strip()
-                고른것 = []
-                for 원시 in data.get("pick") or []:
-                    try:
-                        고른것.append(int(원시))
-                    except (ValueError, TypeError):
-                        continue
-                if not 대상 or not 고른것:
-                    return self._redirect(f"{뒤로}&err=" + urllib.parse.quote(
-                        "합칠 줄(「합칠」 칸)과 합칠 이름을 모두 정해 주세요."))
-                이전들 = {i: registry.get(i) for i in 고른것}
-                합친것 = registry.merge(고른것, 대상)
-                for nid in 합친것:
-                    이전 = 이전들[nid]
-                    audit.record(me.아이디, "명칭", f"{kind}:{이전.원표기}",
-                                 항목="표에 보일 이름", 이전값=이전.표시명, 새값=대상)
-                    if not 이전.확인 or 이전.확인자 in (AUTO_SAME_NAME, AUTO_CAREER):
-                        registry.confirm(nid, 사람=me.아이디)
-                앞말 = f"{len(바뀐것)}건 저장, " if 바뀐것 else ""
-                return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(
-                    f"{앞말}{len(합친것)}줄을 '{대상}' 로 합쳤습니다."
-                    + (f" ({len(고른것) - len(합친것)}줄은 이미 그 이름)"
-                       if len(고른것) > len(합친것) else "")))
-
-            if not 바뀐것 and 확인바뀜:
-                return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(
-                    f"{확인바뀜}줄의 확인 표시를 바꿨습니다."))
-            if not 바뀐것:
-                return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote("바뀐 내용이 없습니다."))
-            보임 = ", ".join(바뀐것[:5]) + (" 외" if len(바뀐것) > 5 else "")
-            꼬리 = f" (확인 표시 {확인바뀜}줄)" if 확인바뀜 else ""
-            return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(
-                f"{len(바뀐것)}건 저장했습니다 — {보임}{꼬리}"))
-
-        if path == "/names/save_groups":
-            if not can(me, "명칭_관리"):
-                return self._deny()
-            data = urllib.parse.parse_qs(
-                self._read_body().decode("utf-8", "replace"), keep_blank_values=True
-            )
-            kind = canonical_kind((data.get("kind") or ["학회·저널"])[0])
-            뒤로 = f"/names?kind={urllib.parse.quote(kind)}&view=name"
-            그룹들 = data.get("g") or []
-            바뀐것: list[str] = []
-            확인한것 = 0
-
-            def 표기들(이름: str) -> list:
-                return [n for n in registry.list_all(kind) if n.표시명 == 이름]
-
-            def 확인(이름: str) -> int:
-                # 안 본 줄만. 다 본 이름은 확인 칸이 켜진 채로 들어오므로,
-                # 자동 확인 줄까지 건드리면 저장할 때마다 확인자가 사람으로 바뀐다.
-                n개 = 0
-                for n in 표기들(이름):
-                    if not n.확인:
-                        registry.confirm(n.id, 사람=me.아이디)
-                        n개 += 1
-                return n개
-
-            # 이름별 줄마다: 분류 -> 이름 순서로 저장한다. 이름을 먼저 바꾸면
-            # 분류가 새 이름에 붙어야 하는지 옛 이름에 붙어야 하는지 헷갈린다.
-            for g, 옛이름 in enumerate(그룹들):
-                새이름 = ((data.get(f"이름_{g}") or [옛이름])[0] or "").strip() or 옛이름
-                변경 = []
-                if f"등급_{g}" in data or f"IF_{g}" in data:
-                    전 = registry.class_of(kind, 옛이름)
-                    새값 = {열: (data.get(f"{열}_{g}") or [None])[0]
-                           for 열 in ("유형", "등급", "국내해외", "IF")
-                           if f"{열}_{g}" in data}
-                    registry.set_class(kind, 옛이름, **새값)
-                    후 = registry.class_of(kind, 옛이름)
-                    변경 = [(열, 전[열], 후[열]) for 열 in ("유형", "등급", "국내해외", "IF")
-                          if 전[열] != 후[열]]
-                if 새이름 != 옛이름:
-                    for n in 표기들(옛이름):
-                        audit.record(me.아이디, "명칭", f"{kind}:{n.원표기}",
-                                     항목="표에 보일 이름", 이전값=옛이름, 새값=새이름)
-                    registry.rename_group(kind, 옛이름, 새이름)
-                for 열, 전값, 후값 in 변경:
-                    audit.record(me.아이디, "명칭", f"{kind}:{옛이름}",
-                                 항목={"유형": "학회/저널"}.get(열, 열),
-                                 이전값=전값, 새값=후값)
-                if 새이름 != 옛이름 or 변경:
-                    바뀐것.append(
-                        (f"{옛이름} → {새이름}" if 새이름 != 옛이름 else 새이름)
-                        + (f" ({', '.join(f'{열} {후값}' for 열, _, 후값 in 변경)})"
-                           if 변경 else ""))
-                # 고쳤거나 확인 칸을 켰으면 그 이름의 표기를 모두 본 것이다
-                if 새이름 != 옛이름 or 변경 or data.get(f"확인_{g}"):
-                    확인한것 += 확인(새이름)
-
-            if (data.get("action") or [""])[0] == "merge":
-                대상 = (data.get("merge_to") or [""])[0].strip()
-                고른 = []
-                for 원시 in data.get("pick") or []:
-                    try:
-                        고른.append(그룹들[int(원시)])
-                    except (ValueError, TypeError, IndexError):
-                        continue
-                if not 대상 or not 고른:
-                    return self._redirect(f"{뒤로}&err=" + urllib.parse.quote(
-                        "합칠 이름(「합칠」 칸)과 합칠 대상 이름을 모두 정해 주세요."))
-                # 위에서 이름을 바꿨을 수 있다. 바뀐 이름을 따라간다.
-                고른 = [((data.get(f"이름_{그룹들.index(x)}") or [x])[0] or x).strip()
-                       for x in 고른]
-                합친수 = 0
-                for 옛이름 in dict.fromkeys(고른):
-                    if 옛이름 == 대상:
-                        continue
-                    for n in 표기들(옛이름):
-                        audit.record(me.아이디, "명칭", f"{kind}:{n.원표기}",
-                                     항목="표에 보일 이름", 이전값=옛이름, 새값=대상)
-                    합친수 += registry.rename_group(kind, 옛이름, 대상)
-                확인한것 += 확인(대상)
-                앞말 = f"{len(바뀐것)}건 저장, " if 바뀐것 else ""
-                return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(
-                    f"{앞말}표기 {합친수}줄을 '{대상}' 로 합쳤습니다."))
-
-            if not 바뀐것:
-                return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(
-                    f"{확인한것}줄을 확인 표시했습니다." if 확인한것 else "바뀐 내용이 없습니다."))
-            보임 = ", ".join(바뀐것[:5]) + (" 외" if len(바뀐것) > 5 else "")
-            return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(
-                f"{len(바뀐것)}건 저장했습니다 — {보임}"))
-
-        if path == "/names/forget":
-            if not can(me, "명칭_관리"):
-                return self._deny()
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            kind = canonical_kind((data.get("kind") or ["학회·저널"])[0])
-            뒤로 = f"/names?kind={urllib.parse.quote(kind)}"
-            try:
-                지운표기 = registry.forget(int((data.get("id") or ["0"])[0]))
-            except (ValueError, TypeError):
-                지운표기 = ""
-            if not 지운표기:
-                return self._redirect(뒤로)
-            audit.record(me.아이디, "명칭", f"{kind}:{지운표기}", 비고="표기 삭제")
-            return self._redirect(f"{뒤로}&msg=" + urllib.parse.quote(
-                f"'{지운표기}' 표기를 사전에서 지웠습니다."))
-
-        if path == "/names/tiers":
-            if not can(me, "열_구성"):
-                return self._deny("표 열 구성은 관리자만 바꿀 수 있습니다.")
-            data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
-            kind = canonical_kind((data.get("kind") or ["학회"])[0])
-            켠것 = set(data.get("tier") or [])
-            for t in registry.tiers():
-                if t["이름"] != "미분류":
-                    registry.set_tier_column(t["이름"], t["이름"] in 켠것)
-            return self._redirect(f"/names?kind={urllib.parse.quote(kind)}")
-
-        return self._send(_page("없음", "<div class='card'>없는 경로입니다.</div>"), code=404)
+        me = None
+        if 길 is None or 길.로그인필요:
+            me = self._user()
+            if me is None:
+                # 표에서 바로 고치기는 fetch 라 리다이렉트를 받으면 HTML 을 파싱하게 된다.
+                if method == "POST" and (path.startswith("/api/") or (길 and 길.json)):
+                    return self._json(
+                        {"ok": False, "error": "로그인이 풀렸습니다. 새로고침하세요."}, code=401)
+                return self._redirect("/login")
+        if 길 is None:
+            return _없는주소(self)
+        if not 통과(me, 길.권한, can):
+            if 길.json:
+                return self._json({"ok": False, "error": 길.거부말 or "권한이 없습니다."},
+                                  code=403)
+            return self._deny(길.거부말) if 길.거부말 else self._deny()
+        return 길.func(self, me, path)
+
+
+# 모르는 권한 이름을 쓰는 주소가 있으면 **여기서 터진다** (서버가 안 뜬다).
+# `can()` 은 모르는 이름을 관리자 전용으로 보므로, 그냥 두면 조용히 막힌다.
+from ..auth import _PERMISSIONS as _권한표  # noqa: E402
+
+라우터.점검(_권한표)
 
 
 def _startup_cleanup() -> list[str]:

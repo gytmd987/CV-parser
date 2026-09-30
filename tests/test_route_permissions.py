@@ -4,7 +4,7 @@
 권한 검사를 하나씩 붙이는 방식은, 새 화면을 만들 때 빠뜨리면 그대로 구멍이
 된다. 그래서 여기서 두 가지를 강제한다.
 
-1. **분류 강제** — `cvtool/web/app.py` 에 있는 모든 `if path == "..."` 이
+1. **분류 강제** — `cvtool/web/` 에 `@라우트(...)` 로 등록한 모든 주소가
    아래 표에 있어야 한다. 새 주소를 만들고 표에 안 적으면 테스트가 깨진다.
    깨지면 "권한을 어떻게 할지 정하라"는 뜻이다.
 2. **실제 확인** — `거부` 로 적은 주소는 현업 계정으로 진짜 요청해서 403 이
@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-APP = Path(__file__).resolve().parent.parent / "cvtool" / "web" / "app.py"
+WEB = Path(__file__).resolve().parent.parent / "cvtool" / "web"
 
 #: 로그인 전에도 되는 주소
 공개 = "공개"
@@ -158,18 +158,15 @@ POST_정책 = {
 }
 
 
-def _찾기(덩어리: str) -> set[str]:
-    """`if path == "..."` 와 `if path in ("...", "...")` 를 모두 잡는다."""
-    찾은것 = set(re.findall(r'if path == "([^"]+)"', 덩어리))
-    for 묶음 in re.findall(r'if path in \(([^)]*)\)', 덩어리):
-        찾은것 |= set(re.findall(r'"([^"]+)"', 묶음))
-    return 찾은것
-
-
 def _routes() -> tuple[set[str], set[str]]:
-    src = APP.read_text(encoding="utf-8")
-    g, p = src.index("def do_GET"), src.index("def do_POST")
-    return _찾기(src[g:p]), _찾기(src[p:]) | {"/api/cell"}
+    """`@라우트("GET", "/주소", 권한=…)` 로 등록한 주소들. 소스를 읽어서 찾는다 —
+    앱을 불러오면 DB 가 만들어지므로 여기서는 글자만 본다."""
+    찾은것: dict[str, set[str]] = {"GET": set(), "POST": set()}
+    for 파일 in WEB.glob("*.py"):
+        for 방법, 주소 in re.findall(r"""@라우트\(\s*"(GET|POST)",\s*["']([^"']+)["']""",
+                                   파일.read_text(encoding="utf-8")):
+            찾은것[방법].add(주소)
+    return 찾은것["GET"], 찾은것["POST"]
 
 
 def test_every_get_route_is_classified():
