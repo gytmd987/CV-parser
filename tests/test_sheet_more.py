@@ -231,3 +231,25 @@ def test_편집기는_병합에_걸친_선택을_넓힌다():
 
     assert "function 테두리네모()" in _SHEET_JS and "if(!넓힘) break;" in _SHEET_JS
     assert "function 선모으기()" in _SHEET_JS          # 화면에서도 선 단위로 그린다
+
+
+# --- 열 너비 -----------------------------------------------------------------------
+def test_모든_열에_너비가_걸리고_표_폭은_그_합이다(web_client):
+    """표 폭이 «알아서» 면 브라우저가 열들을 화면 폭에 맞춰 눌러서, 끌어도 너비가
+    안 바뀌었다 (좁히기는 칸의 최소 90px 에 막혔다)."""
+    from cvtool.web.app import _CSS, _SHEET_JS, _시트표
+
+    b = Block(1, 1, 0, "시트", "", {"행수": 2, "열수": 3, "시트열너비": {"B": "40"}})
+    표, _ = _시트표(b, 빈줄, set(), 편집=True)
+    assert "style='width:264px'" in 표                 # 44 + 90 + 40 + 90
+    assert 표.count("<col style='width:") == 4
+    assert "min-width:90px" not in _CSS
+    assert "document.addEventListener('mousemove'" in _SHEET_JS   # 편집기 밖으로 끌어도 된다
+
+
+def test_격자를_숨긴_보기는_행_번호_칸이_폭에_안_들어간다(web_client):
+    from cvtool.web.app import _시트표
+
+    b = Block(1, 1, 0, "시트", "", {"행수": 1, "열수": 2, "격자숨김": True})
+    표, _ = _시트표(b, 빈줄, set())
+    assert "style='width:180px'" in 표

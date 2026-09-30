@@ -611,12 +611,12 @@ details.pcard{border:1px solid var(--line);border-radius:8px;padding:8px 14px;
   margin-bottom:8px}
 details.pcard>summary{font-weight:800;cursor:pointer;padding:2px 0}
 details.pcard[open]>summary{margin-bottom:6px}
-table.sheet{border-collapse:collapse;table-layout:fixed;width:auto}
+table.sheet{border-collapse:collapse;table-layout:fixed;max-width:none}
 table.sheet th,table.sheet td{border:1px solid #d6dbe3;padding:4px 6px;
   max-width:none;white-space:normal;vertical-align:middle}
 table.sheet th{background:#f1f4f8;color:#5b6472;font-weight:600;text-align:center;
-  font-size:12px;width:44px;min-width:44px;user-select:none}
-table.sheet td{min-width:90px;height:26px}
+  font-size:12px;user-select:none;overflow:hidden}
+table.sheet td{height:26px;overflow:hidden;overflow-wrap:anywhere}
 table.sheet th.corner{width:44px}
 /* 보기에서 격자 숨김 — 내가 그은 테두리(인라인 style)만 남는다 */
 table.sheet.plain td{border:1px solid transparent}
@@ -6630,6 +6630,12 @@ def _dash_list_page(me: User, error: str = "", msg: str = "") -> bytes:
     )
 
 
+#: 시트 열 너비를 안 정했을 때 (px). 편집기 JS 의 `기본열너비` 와 같아야 한다.
+시트_기본열너비 = 90
+#: 행 번호(1·2·3) 칸 너비
+시트_머리열너비 = 44
+
+
 def _시트표(b, rows, 아는열, *, 편집: bool = False) -> tuple[str, list[str]]:
     """시트 격자를 그린다. (표 HTML, 오류들)
 
@@ -6640,10 +6646,7 @@ def _시트표(b, rows, 아는열, *, 편집: bool = False) -> tuple[str, list[s
     결과 = render_sheet(b, rows, 아는열)
     # 편집일 때는 머리글에 자리를 달아 둔다 — 끌어서 너비·높이를 바꾼다.
     머리 = "".join(
-        f"<th data-col='{col_letter(c)}'"
-        + (f" style='width:{html.escape(결과.열너비[col_letter(c)])}px'"
-           if col_letter(c) in 결과.열너비 else "")
-        + f">{col_letter(c)}</th>"
+        f"<th data-col='{col_letter(c)}'>{col_letter(c)}</th>"
         for c in range(결과.열수)
     )
     줄들 = []
@@ -6668,18 +6671,23 @@ def _시트표(b, rows, 아는열, *, 편집: bool = False) -> tuple[str, list[s
             f"<th data-row='{r + 1}' style='height:{html.escape(높이)}px'>{r + 1}</th>"
             if 높이 else f"<th data-row='{r + 1}'>{r + 1}</th>")
         줄들.append(f"<tr{줄스타일}>{줄머리}{''.join(칸들)}</tr>")
-    # 열 너비는 <colgroup> 으로 건다 — 머리글이 없어도 너비가 남는다.
+    # 열 너비는 <colgroup> 으로 **모든 열에** 건다 (안 정한 열은 기본 너비).
+    # 표 폭은 그 합이다. 예전에는 표 폭이 «알아서» 라 브라우저가 열들을 화면
+    # 폭에 맞춰 눌렀고, 칸에 최소 90px 이 걸려 있어서 — 끌어도 좁아지지 않았고,
+    # 열이 많아 화면을 채우면 넓어지지도 않았다. 넘치면 가로로 스크롤한다.
     맨몸 = (not 편집) and b.시트격자숨김
-    열묶음 = ("" if 맨몸 else "<col style='width:44px'>") + "".join(
-        f"<col style='width:{html.escape(결과.열너비[col_letter(c)])}px'>"
-        if col_letter(c) in 결과.열너비 else "<col>"
-        for c in range(결과.열수))
+    폭들 = [_px(결과.열너비.get(col_letter(c))) or 시트_기본열너비
+           for c in range(결과.열수)]
+    열묶음 = ("" if 맨몸 else f"<col style='width:{시트_머리열너비}px'>") + "".join(
+        f"<col style='width:{w}px'>" for w in 폭들)
+    표폭 = sum(폭들) + (0 if 맨몸 else 시트_머리열너비)
     # `data-name` 을 안 붙인다. 그걸 붙이면 표 위에 «찾기 · 엑셀 내려받기» 막대가
     # 저절로 달라붙는데, 그 내려받기는 화면 글자를 TSV 로 긁어 만드는 길이라
     # 색도 병합도 안 실린다. 시트에는 서버가 만드는 제 내려받기가 따로 있다.
     반 = "sheet" + (" editing" if 편집 else (" plain" if 맨몸 else ""))
     머리줄 = "" if 맨몸 else f"<tr><th class='corner'></th>{머리}</tr>"
-    표 = (f"<div class='scroll'><table class='{반}'><colgroup>{열묶음}</colgroup>"
+    표 = (f"<div class='scroll'><table class='{반}' style='width:{표폭}px'>"
+         f"<colgroup>{열묶음}</colgroup>"
          f"{머리줄}{''.join(줄들)}</table></div>")
     return 표, 결과.오류
 
@@ -6957,11 +6965,18 @@ function 시트편집기(칸){
 
   /* -- 마우스 ---------------------------------------------------------------- */
   var 끄는중 = null, 크기끌기 = null;
-  /* 열 너비는 <colgroup> 에 걸린다 (머리글이 없는 보기에서도 남게). */
+  /* 열 너비는 <colgroup> 에 걸리고, 표 폭은 그 합이다 (서버 `_시트표` 와 같다). */
   function 열맞추기(글, px){
+    var 열들 = 표().querySelectorAll('colgroup col');
     var i = 자리(글 + '1').c + 1;                  /* 0번 col 은 행 번호 자리 */
-    var col = 표().querySelectorAll('colgroup col')[i];
-    if(col) col.style.width = px + 'px';
+    if(열들[i]) 열들[i].style.width = px + 'px';
+    var 합 = 0;
+    열들.forEach(function(c){ 합 += parseInt(c.style.width, 10) || 0; });
+    표().style.width = 합 + 'px';
+  }
+  function 열너비(글){
+    var col = 표().querySelectorAll('colgroup col')[자리(글 + '1').c + 1];
+    return col ? (parseInt(col.style.width, 10) || 90) : 90;
   }
   칸.addEventListener('mousedown', function(e){
     var 머리 = e.target.closest && e.target.closest('table.sheet th[data-col],table.sheet th[data-row]');
@@ -6969,7 +6984,7 @@ function 시트편집기(칸){
       var 판 = 머리.getBoundingClientRect();
       if(머리.dataset.col && e.clientX > 판.right - 6){
         e.preventDefault();
-        크기끌기 = {el: 머리, 열: 머리.dataset.col, 시작: e.clientX, 처음: 판.width};
+        크기끌기 = {el: 머리, 열: 머리.dataset.col, 시작: e.clientX, 처음: 열너비(머리.dataset.col)};
       }else if(머리.dataset.row && e.clientY > 판.bottom - 6){
         e.preventDefault();
         크기끌기 = {el: 머리, 행: 머리.dataset.row, 시작: e.clientY, 처음: 판.height};
@@ -7013,17 +7028,23 @@ function 시트편집기(칸){
     칸.querySelector('.sheetgrid').focus({preventScroll:true});
   });
   var 고르는중 = false;
-  칸.addEventListener('mousemove', function(e){
-    if(크기끌기){
-      if(크기끌기.열){
-        var w = Math.max(24, Math.round(크기끌기.처음 + e.clientX - 크기끌기.시작));
-        크기끌기.el.style.width = w + 'px'; 열맞추기(크기끌기.열, w); 크기끌기.값 = w;
-      }else{
-        var h = Math.max(18, Math.round(크기끌기.처음 + e.clientY - 크기끌기.시작));
-        크기끌기.el.style.height = h + 'px'; 크기끌기.값 = h;
-      }
-      return;
+  /* 너비·높이 끌기는 **문서 전체**에서 따라간다 — 끄는 중에 마우스가 편집기
+     밖으로 나가도 멈추지 않게. */
+  document.addEventListener('mousemove', function(e){
+    if(!크기끌기) return;
+    e.preventDefault();
+    if(크기끌기.열){
+      var w = Math.max(24, Math.round(크기끌기.처음 + e.clientX - 크기끌기.시작));
+      열맞추기(크기끌기.열, w); 크기끌기.값 = w;
+    }else{
+      var h = Math.max(18, Math.round(크기끌기.처음 + e.clientY - 크기끌기.시작));
+      크기끌기.el.style.height = h + 'px';
+      var 줄 = 크기끌기.el.parentNode; if(줄) 줄.style.height = h + 'px';
+      크기끌기.값 = h;
     }
+  });
+  칸.addEventListener('mousemove', function(e){
+    if(크기끌기) return;
     var td = e.target.closest && e.target.closest('td[data-cell]');
     if(!td) return;
     if(끄는중){
@@ -7060,7 +7081,8 @@ function 시트편집기(칸){
   칸.addEventListener('dblclick', function(e){
     var 머리 = e.target.closest && e.target.closest('table.sheet th[data-col]');
     if(머리){                               /* 열 머리 두 번 누르기 = 너비 자동 */
-      기록(); delete 모델.열너비[머리.dataset.col]; 담기(); 바뀜(); 다시계산(); return;
+      기록(); delete 모델.열너비[머리.dataset.col]; 열맞추기(머리.dataset.col, 90);
+      담기(); 바뀜(); 다시계산(); return;
     }
     if(e.target.closest && e.target.closest('td[data-cell]') && 기준) 적기시작();
   });
