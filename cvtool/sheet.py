@@ -719,30 +719,48 @@ def 조건집계짜임(수식: str):
     return 나무, 짝
 
 
-def 조건줄(수식: str, rows, 아는열=None, 값찾기=None) -> list[dict] | None:
-    """수식 안의 조건 집계 하나(`=COUNTIFS(부서, "A", …)`)가 **센 사람들**. 아니면 None.
+def 조건줄(수식: str, rows, 아는열=None, 값찾기=None,
+         현재칸: str | None = None) -> list[dict] | None:
+    """수식 안의 조건 집계 하나(`=COUNTIFS(부서, "A", …)`)가 **센 사람들**. 아니면 None."""
+    return 조건줄_까닭(수식, rows, 아는열, 값찾기, 현재칸)[0]
+
+
+def 조건줄_까닭(수식: str, rows, 아는열=None, 값찾기=None,
+            현재칸: str | None = None) -> tuple[list[dict] | None, str]:
+    """`조건줄` 과 같고, 못 찾았으면 **왜 못 찾았는지**도 돌려준다. (사람들, 까닭)
 
     대시보드에서 숫자를 누르면 누구인지 보여줄 때 쓴다. 조건 값과 범위에
-    함수·칸이 있어도 된다 — 계산해서 쓴다.
+    함수·칸이 있어도 된다 — 계산해서 쓴다. `현재칸` 은 그 수식이 있는 칸이다
+    (`ROW()` 처럼 자리를 읽는 함수가 시트 계산과 같은 값을 내도록).
     """
     짜임 = 조건집계짜임(수식)
     if 짜임 is None:
-        return None
-    나무, 짝 = 짜임
+        return None, "사람을 세는 조건 집계가 하나뿐인 수식이 아닙니다"
+    # 시트 계산(`계산`)과 **같은 순서**로 다듬는다 — 다르면 숫자와 명단이 갈린다.
+    try:
+        글 = 범위묶기(위치함수풀기(고정떼기((수식 or "").strip()), 현재칸))
+        글 = 집계먼저(글, rows, 아는열, 값찾기)
+        나무 = _조건집계들(E.parse(글))[0]
+    except IndexError:
+        return None, "사람을 세는 조건 집계를 찾지 못했습니다"
+    except (E.ExprError, SheetError, F.FormulaError, ValueError) as exc:
+        return None, str(exc)
+    인자 = 나무.인자
+    짝 = 인자 if 나무.이름 in ("COUNTIF", "COUNTIFS") else (
+        인자[1:] if 나무.이름 in ("SUMIFS", "AVERAGEIFS") else 인자[:2])
     # 조건 값에 칸(`A3`)을 썼으면 시트의 그 칸 값으로 푼다.
-    글 = 범위묶기(위치함수풀기(고정떼기((수식 or "").strip())))
     칸값 = ({a: 값찾기(a) for a in 참조들(글)} if 값찾기 is not None else {})
     문맥 = 집계문맥(칸값, rows, 아는열)
     try:
         값들 = [E._계산(x, 문맥) for x in 짝]
         # 범위 자리는 **사람마다 하나씩**이어야 한다 — 줄과 짝을 맞춰 고른다.
-        if not all(isinstance(값들[i], E.범위) and len(값들[i]) == len(문맥._줄)
-                   for i in range(0, len(값들), 2)):
-            return None
+        for i in range(0, len(값들), 2):
+            if not (isinstance(값들[i], E.범위) and len(값들[i]) == len(문맥._줄)):
+                return None, f"{i // 2 + 1}번째 범위가 지원자 열이 아닙니다"
         맞음 = E._조건짝(값들, 나무.이름)
-    except E.ExprError:
-        return None
-    return [r for r, m in zip(문맥._줄, 맞음) if m]
+    except E.ExprError as exc:
+        return None, str(exc)
+    return [r for r, m in zip(문맥._줄, 맞음) if m], ""
 
 
 def 덮인칸(칸들: dict, 행수: int = MAX_ROWS,

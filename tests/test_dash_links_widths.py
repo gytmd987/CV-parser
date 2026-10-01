@@ -182,3 +182,22 @@ def test_명단에_읽은_칸_값을_보여_준다(판):
     명단 = 판.get(주소)
     assert "읽은 칸: C4 = «공정L(2명)»" in 명단 and "2명" in 명단
     assert "명단은" not in 명단                   # 어긋나지 않으면 경고 없음
+
+
+def test_ROW_를_써도_명단이_맞다(판):
+    """숫자는 그 칸 자리(ROW())로 계산하는데 명단은 자리를 몰라 실패했다."""
+    칸 = {"C4": {"글": "공정L(2명)"},
+         "D4": {"글": '=countifs(부서, left(INDEX(C1:C9,ROW()),find("(",C4)-1))'}}
+    did, _ = _대시(판, "시트", 시트_다듬기({"행수": 9, "열수": 4, "칸": 칸}))
+    (주소, 수), = _링크들(판.get(f"/dash/view?id={did}"))
+    명단 = 판.get(주소)
+    assert 수 == "2" and "2명" in 명단 and "계산하지 못했습니다" not in 명단
+
+
+def test_못_찾으면_까닭을_보여_준다():
+    from cvtool import sheet as S
+    from cvtool.formula import Rows
+
+    줄 = Rows(지원자=[{"부서": "A"}], 채용=[])
+    사람, 까닭 = S.조건줄_까닭('=COUNTIFS(부서, VALUE(C4))', 줄, {"부서"}, lambda a: "글자")
+    assert 사람 is None and "숫자가 아닙니다" in 까닭

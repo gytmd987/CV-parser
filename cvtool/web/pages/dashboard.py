@@ -880,11 +880,12 @@ def _dash_who_page(me: User, params: dict) -> bytes:
         못찾음 = ""
         보일열 = ["한글_이름", "현재_소속", "부서", "과제", "최종상태"]
         if isinstance(f, str):
-            찾은 = S.조건줄(f, rows, set(대시보드_열()), 값찾기)
+            찾은, 까닭 = S.조건줄_까닭(f, rows, set(대시보드_열()), 값찾기,
+                                   현재칸=행 if b.종류 == "시트" else None)
             if 찾은 is None:
                 # 조용히 «0명» 을 띄우면 정말 0명인지 못 찾은 건지 모른다.
-                못찾음 = ("<p class='flag'>명단을 계산하지 못했습니다 — 조건에 쓴 칸이나 "
-                       "함수가 값을 못 냅니다. 수식을 확인해 주세요.</p>")
+                못찾음 = ("<p class='flag'>명단을 계산하지 못했습니다 — "
+                       f"{html.escape(까닭)}</p>")
             사람 = 찾은 or []
             나무, _짝 = S.조건집계짜임(f)
             if 나무.이름 in ("SUMIF", "SUMIFS", "AVERAGEIF", "AVERAGEIFS"):
