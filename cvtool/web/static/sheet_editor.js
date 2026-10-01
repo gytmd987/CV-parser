@@ -172,9 +172,29 @@ function 시트편집기(칸){
     고른것 = 네모(주소(n.r0, n.c0), 주소(n.r1, n.c1));
     고른것칠하기();
   }
+  /* 보일 범위 — 보기 화면·엑셀에 이 네모만 나간다. 편집에서는 밖을 흐리게. */
+  function 보일네모(){
+    var m = /^([A-Z]{1,2}[0-9]+)(?::([A-Z]{1,2}[0-9]+))?$/.exec(모델.보일범위 || '');
+    if(!m) return null;
+    var a = 자리(m[1]), b = 자리(m[2] || m[1]);
+    return {r0: Math.min(a.r,b.r), c0: Math.min(a.c,b.c), r1: Math.max(a.r,b.r), c1: Math.max(a.c,b.c)};
+  }
+  function 보일범위정하기(글){
+    글 = String(글 || '').toUpperCase().replace(/[\s$]/g, '');
+    if(글 && !/^[A-Z]{1,2}[0-9]+(:[A-Z]{1,2}[0-9]+)?$/.test(글)){
+      alert('보일 범위는 A1:F12 처럼 적습니다 (비우면 전체)'); return;
+    }
+    기록(); 모델.보일범위 = 글; 담기(); 바뀜();
+    고른것칠하기();
+  }
   function 고른것칠하기(){
     var 손잡이 = 고른것.length ? 네모글().split(':').pop() : '';
+    var 보일 = 보일네모();
+    var 칸글 = 칸.querySelector("[data-sheet='보일범위']");   /* 되돌리기 뒤에도 맞게 */
+    if(칸글 && document.activeElement !== 칸글) 칸글.value = 모델.보일범위 || '';
     표().querySelectorAll('td[data-cell]').forEach(function(td){
+      var p = 자리(td.dataset.cell);
+      td.classList.toggle('outview', !!보일 && (p.r < 보일.r0 || p.r > 보일.r1 || p.c < 보일.c0 || p.c > 보일.c1));
       td.classList.toggle('picked', 고른것.indexOf(td.dataset.cell) >= 0);
       td.classList.toggle('anchor', td.dataset.cell === 기준);
       var 그립 = td.querySelector('.fillgrip');
@@ -866,6 +886,17 @@ function 시트편집기(칸){
   칸.querySelectorAll('[data-sheet]').forEach(function(el){
     var 무엇 = el.dataset.sheet;
     if(무엇 === '선' || 무엇 === '테두리색') return;       /* 테두리 단추가 읽는다 */
+    if(무엇 === '보일범위'){
+      el.addEventListener('change', function(){ 보일범위정하기(el.value); });
+      el.addEventListener('keydown', function(e){
+        if(e.key === 'Enter'){ e.preventDefault(); 보일범위정하기(el.value); } });
+      return;
+    }
+    if(무엇 === '보일범위고름'){
+      el.addEventListener('click', function(e){
+        e.preventDefault(); if(고른것.length) 보일범위정하기(네모글()); 칸에초점(); });
+      return;
+    }
     var 이벤트 = (el.tagName === 'SELECT' || el.type === 'color' || el.type === 'checkbox')
                 ? 'change' : 'click';
     el.addEventListener(이벤트, function(e){

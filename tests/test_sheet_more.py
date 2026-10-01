@@ -64,7 +64,9 @@ def test_범위_밖_INDEX_는_말해_준다():
 
 def test_목록_표에서_COLUMN_은_열_번호():
     assert E.evaluate("=COLUMN()", {E.열번호_키: 3}) == "3"
-    with pytest.raises(E.ExprError, match="시트에서"):
+    # INDEX 는 이제 어디서나 범위를 받는다 — 값 하나는 1×1 범위다.
+    assert E.evaluate("=INDEX(7, 1)", {}) == "7"
+    with pytest.raises(E.ExprError, match="범위 밖"):
         E.evaluate("=INDEX(1, 2)", {})
 
 

@@ -513,10 +513,12 @@ def _시트표(b, rows, 아는열, *, 편집: bool = False) -> tuple[str, list[s
     이랬는데 저장하니 다르다" 가 된다. 편집일 때는 칸마다 주소를 달아 두어
     도구막대가 짚을 수 있게 한다.
     """
-    결과 = render_sheet(b, rows, 아는열)
+    # 보기 화면은 **보일 범위**만 그린다. 편집은 늘 전체 (범위 밖 칸도 고쳐야 한다).
+    결과 = render_sheet(b, rows, 아는열, 잘라보기=not 편집)
     # 편집일 때는 머리글에 자리를 달아 둔다 — 끌어서 너비·높이를 바꾼다.
+    # 잘라 그렸으면 머리글은 **원래 자리**로 적는다 (C3:F9 면 C·D·E·F, 3·4…).
     머리 = "".join(
-        f"<th data-col='{col_letter(c)}'>{col_letter(c)}</th>"
+        f"<th data-col='{col_letter(c)}'>{col_letter(결과.시작열 + c)}</th>"
         for c in range(결과.열수)
     )
     줄들 = []
@@ -537,9 +539,10 @@ def _시트표(b, rows, 아는열, *, 편집: bool = False) -> tuple[str, list[s
         # 가리면 열 너비(머리글에 걸린)도 같이 사라져 칸이 다 좁아졌다.
         맨몸 = (not 편집) and b.시트격자숨김
         줄스타일 = f" style='height:{html.escape(높이)}px'" if 높이 else ""
+        번호 = 결과.시작행 + r + 1
         줄머리 = "" if 맨몸 else (
-            f"<th data-row='{r + 1}' style='height:{html.escape(높이)}px'>{r + 1}</th>"
-            if 높이 else f"<th data-row='{r + 1}'>{r + 1}</th>")
+            f"<th data-row='{r + 1}' style='height:{html.escape(높이)}px'>{번호}</th>"
+            if 높이 else f"<th data-row='{r + 1}'>{번호}</th>")
         줄들.append(f"<tr{줄스타일}>{줄머리}{''.join(칸들)}</tr>")
     # 열 너비는 <colgroup> 으로 **모든 열에** 건다 (안 정한 열은 기본 너비).
     # 표 폭은 그 합이다. 예전에는 표 폭이 «알아서» 라 브라우저가 열들을 화면
@@ -1056,6 +1059,11 @@ def _수식도움() -> str:
         "<code>=TEXTJOIN(\", \",TRUE,FILTER(한글_이름,부서=\"A\"))</code> · "
         "<code>=COUNTA(UNIQUE(부서))</code> · "
         "<code>=SUMPRODUCT((부서=\"A\")*(저널_수&gt;2))</code><br>"
+        "<b>지원자 DB 에서 찾기</b> — 열 이름이 범위라 엑셀처럼 찾습니다: "
+        "<code>=XLOOKUP(B3,한글_이름,박사_학교)</code> · "
+        "<code>=INDEX(저널_수,MATCH(\"홍길동\",한글_이름,0))</code> · "
+        "<code>=VLOOKUP(B3,HSTACK(한글_이름,박사_학교,저널_수),3,FALSE)</code> "
+        "(HSTACK 이 열들을 옆으로 붙여 표를 만듭니다).<br>"
         "<b>채용 중인 사람만</b> 세려면 조건에 <code>채용중,\"Y\"</code> 를 더합니다 — "
         "<code>=COUNTIFS(채용중,\"Y\",부서,\"A\")</code>.<br>"
         "시트 칸 범위도 됩니다 — <code>=COUNTIF(A1:A10,\"합격\")</code>. "
@@ -1349,7 +1357,8 @@ def _시트모델(b) -> dict:
     """편집기가 들고 다니는 시트 JSON (브라우저 쪽 모양)."""
     return {"행수": b.시트행수, "열수": b.시트열수, "칸": b.시트칸,
             "열너비": b.시트열너비, "행높이": b.시트행높이,
-            "격자숨김": 1 if b.시트격자숨김 else 0}
+            "격자숨김": 1 if b.시트격자숨김 else 0,
+            "보일범위": b.설정.get("보일범위") or ""}
 
 
 def _시트_받기(b, data: dict):
@@ -1454,6 +1463,12 @@ def _시트편집(b) -> str:
         + "<label class='muted' title='보기 화면에서 연한 격자선과 A·B·1·2 머리글을 숨깁니다."
           " 내가 그은 테두리만 남습니다'><input type='checkbox' data-sheet='격자숨김'"
         + (" checked" if b.시트격자숨김 else "") + "> 보기에서 격자 숨기기</label>"
+        + "<span class='sep'></span>"
+        + "<label class='muted' title='보기 화면과 엑셀 내려받기에 이 범위만 나갑니다."
+          " 비우면 전체. 범위 밖 칸은 계산용으로 써도 됩니다 (편집에서는 흐리게 보입니다)'>"
+          "보일 범위 <input type='text' data-sheet='보일범위' style='width:84px'"
+          f" placeholder='전체' value='{html.escape(b.설정.get('보일범위') or '')}'></label>"
+        + 단추("보일범위고름", "고른 칸으로", "지금 고른 네모를 보일 범위로 정합니다")
         + "</div>"
     )
     return (
@@ -1975,7 +1990,7 @@ def get_dash_sheet_xlsx(self, me, path):
     if b is None or b.종류 != "시트":
         return self._send(_page("없음", "<div class='card'>시트를 찾을 수 없습니다.</div>",
                                 me=me), code=404)
-    결과 = render_sheet(b, 대시보드_행(), 대시보드_열())
+    결과 = render_sheet(b, 대시보드_행(), 대시보드_열(), 잘라보기=True)
     데이터 = build_sheet_xlsx(결과, b.제목 or "시트")
     이름 = urllib.parse.quote((b.제목 or "시트") + ".xlsx")
     return self._send(

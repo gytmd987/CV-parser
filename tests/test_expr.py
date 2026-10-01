@@ -170,7 +170,7 @@ def test_an_unknown_column_is_an_error_not_a_blank():
 
 def test_an_unknown_function_says_what_can_be_used():
     with pytest.raises(ExprError) as e:
-        expr.evaluate("=XLOOKUP(1)", 값들)
+        expr.evaluate("=NOSUCHFUNC(1)", 값들)
     assert "모르는 함수" in str(e.value) and "TEXTJOIN" in str(e.value)
 
 

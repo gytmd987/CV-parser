@@ -297,6 +297,7 @@ table.sheet td{height:26px;overflow:hidden;overflow-wrap:anywhere}
 table.sheet th.corner{width:44px}
 /* 보기에서 격자 숨김 — 내가 그은 테두리(인라인 style)만 남는다 */
 table.sheet.plain td{border:1px solid transparent}
+table.sheet.editing td.outview{opacity:.45;background-image:repeating-linear-gradient(45deg,transparent 0 6px,rgba(100,116,139,.08) 6px 12px)}
 table.sheet.editing th[data-col],table.sheet.editing th[data-row]{position:relative}
 table.sheet.editing th[data-col]::after{content:'';position:absolute;right:-3px;top:0;
   width:6px;height:100%;cursor:col-resize;z-index:2}

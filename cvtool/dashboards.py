@@ -131,6 +131,14 @@ class Block:
         return 담긴것 if isinstance(담긴것, dict) else {}
 
     @property
+    def 시트보일범위(self) -> tuple[int, int, int, int] | None:
+        """보기 화면·엑셀에 내보낼 네모 (r0, c0, r1, c1) — 0부터. 안 정했으면 None.
+
+        편집 화면은 늘 전체를 보인다 (범위 밖에 계산용 칸을 둘 수 있어야 한다).
+        """
+        return 보일범위풀기(self.설정.get("보일범위"), self.시트행수, self.시트열수)
+
+    @property
     def 시트격자숨김(self) -> bool:
         """보기 화면에서 연한 격자선과 A·B·1·2 머리글을 숨긴다.
 
@@ -981,6 +989,35 @@ def render_profile(b: Block, rows, 값찾기, 아는열: set[str] | None = None
 # ---------------------------------------------------------------------------
 # 시트
 # ---------------------------------------------------------------------------
+_보일범위_RE = re.compile(r"\$?([A-Za-z]{1,2})\$?(\d{1,4})(?::\$?([A-Za-z]{1,2})\$?(\d{1,4}))?")
+
+
+def 보일범위정리(글) -> str:
+    """`a1:f12` → `A1:F12`. 모양이 틀리면 빈칸 (= 전체)."""
+    m = _보일범위_RE.fullmatch(str(글 or "").strip().replace(" ", ""))
+    if not m:
+        return ""
+    가 = f"{m.group(1).upper()}{int(m.group(2))}"
+    나 = f"{m.group(3).upper()}{int(m.group(4))}" if m.group(3) else 가
+    return 가 if 가 == 나 else f"{가}:{나}"
+
+
+def 보일범위풀기(글, 행수: int, 열수: int) -> tuple[int, int, int, int] | None:
+    from .sheet import 자리
+
+    정리 = 보일범위정리(글)
+    if not 정리:
+        return None
+    가, _, 나 = 정리.partition(":")
+    (r0, c0), (r1, c1) = 자리(가), 자리(나 or 가)
+    r0, r1 = sorted((r0, r1))
+    c0, c1 = sorted((c0, c1))
+    r1, c1 = min(r1, 행수 - 1), min(c1, 열수 - 1)
+    if r0 > r1 or c0 > c1:
+        return None                       # 격자 밖 — 전체를 보인다
+    return r0, c0, r1, c1
+
+
 def 시트_다듬기(들어온것: dict) -> dict:
     """브라우저가 보낸 시트 JSON 을 **믿지 않고** 걸러 받는다.
 
@@ -1072,6 +1109,7 @@ def 시트_다듬기(들어온것: dict) -> dict:
         "행수": 행수,
         "열수": 열수,
         "격자숨김": bool((들어온것 or {}).get("격자숨김")),
+        "보일범위": 보일범위정리((들어온것 or {}).get("보일범위")),
         "시트칸": 칸들,
         "시트열너비": 크기묶음("열너비", lambda k: re.fullmatch(r"[A-Za-z]{1,2}", k)),
         "시트행높이": 크기묶음("행높이", lambda k: k.isdigit()),
@@ -1325,6 +1363,22 @@ def 시트_행열(들어온것: dict, 무엇: str, 위치: int, 개수: int = 1)
         return 나온것
 
     나온것 = {**(들어온것 or {}), "행수": 새행수, "열수": 새열수, "칸": 새칸}
+    범위 = 보일범위풀기((들어온것 or {}).get("보일범위"), 행수, 열수)
+    if 범위 is not None:
+        # 보일 범위도 끼운·뺀 만큼 따라 늘고 준다 (엑셀의 인쇄 영역처럼).
+        r0, c0, r1, c1 = 범위
+        가, 나 = (r0, r1) if 축 == "행" else (c0, c1)
+        if 끼움:
+            가 += 개수 if 가 >= 위치 else 0
+            나 += 개수 if 나 >= 위치 else 0
+        else:
+            가 = 가 - 개수 if 가 >= 위치 + 개수 else min(가, 위치)
+            나 = 나 - 개수 if 나 >= 위치 + 개수 else min(나, 위치 - 1)
+        if 가 > 나:
+            나온것["보일범위"] = ""
+        else:
+            r0, r1, c0, c1 = (가, 나, c0, c1) if 축 == "행" else (r0, r1, 가, 나)
+            나온것["보일범위"] = f"{주소(r0, c0)}:{주소(r1, c1)}"
     if 축 == "행":
         나온것["행높이"] = 크기옮기기((들어온것 or {}).get("행높이"), True)
     else:
@@ -1356,35 +1410,74 @@ class RenderedSheet:
     #: 테두리 선 (`시트_테두리선`). 엑셀로 내보낼 때 병합에 덮인 칸까지 선을 준다.
     가로선: dict = field(default_factory=dict)
     세로선: dict = field(default_factory=dict)
+    #: 보일 범위로 잘랐으면 그 왼쪽 위 자리 (머리글 A·B·1·2 를 원래 자리로 적는다).
+    #: 잘라낸 결과의 주소·서식·선·너비는 **(0,0) 부터 다시 매겨져** 있다.
+    시작행: int = 0
+    시작열: int = 0
 
 
-def render_sheet(b: Block, rows, 아는열: set[str] | None = None) -> RenderedSheet:
+def render_sheet(b: Block, rows, 아는열: set[str] | None = None, *,
+                 잘라보기: bool = False) -> RenderedSheet:
     """시트를 계산한다. 덮인 칸은 내보내지 않는다 (병합된 칸의 왼쪽 위만 그린다).
 
     **덮인 자리를 세는 일은 `sheet.덮인칸` 하나가 한다.** 계산하는 쪽도 그것을
     본다 — 두 벌로 두면 «그려지는 칸» 과 «값이 있는 칸» 이 조용히 갈라진다.
+
+    `잘라보기` 면 **보일 범위**(`시트보일범위`)만 내보낸다 (보기 화면·엑셀).
+    계산은 늘 전체로 한다 — 범위 밖 칸을 가리키는 수식도 맞게 나와야 한다.
+    범위 경계에 걸친 병합은 범위 안쪽만큼 잘린다.
     """
-    from .sheet import 값들, 덮인칸, 주소
+    from .export import col_letter
+    from .sheet import 값들, 덮인칸, 자리 as _자리, 주소
 
     칸들 = b.시트칸
     행수, 열수 = b.시트행수, b.시트열수
     계산값, 오류 = 값들(칸들, rows, 아는열, 행수=행수, 열수=열수)
     덮인 = set(덮인칸(칸들, 행수, 열수))
     가로선, 세로선 = 시트_테두리선(칸들, 행수, 열수)
+    범위 = b.시트보일범위 if 잘라보기 else None
+    r0, c0, r1, c1 = 범위 if 범위 is not None else (0, 0, 행수 - 1, 열수 - 1)
 
-    나온행 = []
+    놓을것: dict[tuple[int, int], tuple] = {}
+    새서식: dict[str, dict] = {}
     for r in range(행수):
-        줄 = []
         for c in range(열수):
             주소글 = 주소(r, c)
             if 주소글 in 덮인:
                 continue
             칸 = 칸들.get(주소글) or {}
             h, w = int(칸.get("세로병합", 1)), int(칸.get("가로병합", 1))
-            줄.append((주소글, 계산값.get(주소글, ""),
-                      시트_칸스타일(칸, 시트_칸테두리(가로선, 세로선, r, c, h, w)),
-                      w, h))
-        나온행.append(줄)
-    return RenderedSheet(제목=b.제목, 행수=행수, 열수=열수, 행=나온행,
-                         열너비=b.시트열너비, 행높이=b.시트행높이, 오류=오류,
-                         칸서식=칸들, 가로선=가로선, 세로선=세로선)
+            # 이 칸(병합이면 그 넓이)과 보일 범위가 겹치는 네모
+            ir0, ic0 = max(r, r0), max(c, c0)
+            ir1, ic1 = min(r + h - 1, r1), min(c + w - 1, c1)
+            if ir0 > ir1 or ic0 > ic1:
+                continue
+            ih, iw = ir1 - ir0 + 1, ic1 - ic0 + 1
+            새주소 = 주소(ir0 - r0, ic0 - c0)
+            놓을것[(ir0 - r0, ic0 - c0)] = (
+                새주소, 계산값.get(주소글, ""),
+                시트_칸스타일(칸, 시트_칸테두리(가로선, 세로선, ir0, ic0, ih, iw)), iw, ih)
+            if 칸:
+                새서식[새주소] = 칸
+    행수2, 열수2 = r1 - r0 + 1, c1 - c0 + 1
+    나온행 = [[놓을것[(r, c)] for c in range(열수2) if (r, c) in 놓을것]
+             for r in range(행수2)]
+    if 범위 is None:
+        return RenderedSheet(제목=b.제목, 행수=행수, 열수=열수, 행=나온행,
+                             열너비=b.시트열너비, 행높이=b.시트행높이, 오류=오류,
+                             칸서식=칸들, 가로선=가로선, 세로선=세로선)
+    열너비 = {}
+    for k, v in b.시트열너비.items():
+        c = _자리(f"{k}1")[1]
+        if c0 <= c <= c1:
+            열너비[col_letter(c - c0)] = v
+    행높이 = {str(int(k) - r0): v for k, v in b.시트행높이.items()
+            if str(k).isdigit() and r0 <= int(k) - 1 <= r1}
+    return RenderedSheet(
+        제목=b.제목, 행수=행수2, 열수=열수2, 행=나온행, 열너비=열너비, 행높이=행높이,
+        오류=오류, 칸서식=새서식,
+        가로선={(r - r0, c - c0): v for (r, c), v in 가로선.items()
+               if r0 <= r <= r1 + 1 and c0 <= c <= c1},
+        세로선={(r - r0, c - c0): v for (r, c), v in 세로선.items()
+               if r0 <= r <= r1 and c0 <= c <= c1 + 1},
+        시작행=r0, 시작열=c0)

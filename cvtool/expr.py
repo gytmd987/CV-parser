@@ -749,10 +749,6 @@ def _f_choose(a: list):
     return a[i]
 
 
-def _시트전용(이름: str):
-    raise ExprError(f"{이름} 은 시트에서 칸 범위와 함께 씁니다 (예: {이름}(A1:C5, …))")
-
-
 def _f_index(a: list):
     """_INDEX(너비, 행, 열, 칸들...) — 시트가 `INDEX(범위, 행, 열)` 을 바꿔 넣는다."""
     너비 = int(_수(a[0]))
@@ -767,8 +763,19 @@ def _f_index(a: list):
 def _찾기번호(찾을, 칸: list, 방식: int) -> int:
     """1부터 센 자리. 못 찾으면 ExprError. 방식: 0 같은 것, 1 이하 중 가장 큰 것, -1 이상 중 가장 작은 것."""
     if 방식 == 0:
+        # 엑셀처럼 대소문자를 안 가리고, 찾을 값에 * ? 가 있으면 패턴으로 본다.
+        찾을글 = _글(찾을).strip()
+        패턴 = _와일드카드있나(찾을글)
+        찾을수 = _숫자면(찾을글)
         for i, v in enumerate(칸, start=1):
-            if _비교("=", v, 찾을) == TRUE:
+            글 = _글(v).strip()
+            if 패턴:
+                if _패턴맞나(글, 찾을글):
+                    return i
+            elif isinstance(찾을수, float) and isinstance(_숫자면(글), float):
+                if _숫자면(글) == 찾을수:
+                    return i
+            elif 글.casefold() == 찾을글.casefold():
                 return i
         raise ExprError(f"찾는 값이 없습니다: {_글(찾을)}")
     고른 = 0
@@ -799,6 +806,109 @@ def _f_vlookup(a: list):
     첫열 = 칸[0::너비]
     줄 = _찾기번호(a[1], 첫열, 1 if _참인가(a[3]) else 0)
     return 칸[(줄 - 1) * 너비 + (열 - 1)]
+
+
+# -- 찾기 (엑셀과 같은 모양) — 칸 범위(`A1:C9`)든 지원자 열(`한글_이름`)이든 받는다 --
+#   INDEX(박사_학교, MATCH("홍길동", 한글_이름, 0))
+#   XLOOKUP("홍길동", 한글_이름, 박사_학교, "없음")
+#   VLOOKUP("홍길동", HSTACK(한글_이름, 박사_학교, 저널_수), 3, FALSE)
+def _모양(v) -> 범위:
+    return v if isinstance(v, 범위) else 범위([v], 1, 1)
+
+
+def _줄(r: 범위, i: int) -> 범위:
+    return 범위(r[i * r.너비:(i + 1) * r.너비], 1, r.너비)
+
+
+def _세로줄(r: 범위, j: int) -> 범위:
+    return 범위(r[j::r.너비], r.높이, 1)
+
+
+def _한줄(r: 범위, 어디: str) -> list:
+    if r.높이 > 1 and r.너비 > 1:
+        raise ExprError(f"{어디} 의 범위는 한 줄이나 한 열이어야 합니다")
+    return list(r)
+
+
+def _f_index2(a: list):
+    """INDEX(범위, 행, [열]). 한 줄·한 열짜리는 번호 하나로. 행이 0 이면 그 열 통째."""
+    r = _모양(a[0])
+    행 = int(_수(a[1], "INDEX 행"))
+    if len(a) > 2:
+        열 = int(_수(a[2], "INDEX 열"))
+    elif r.높이 == 1:
+        행, 열 = 1, 행
+    elif r.너비 == 1:
+        열 = 1
+    else:
+        raise ExprError("여러 줄·여러 열 범위는 INDEX(범위, 행, 열) 로 둘 다 적으세요")
+    if not (0 <= 행 <= r.높이 and 0 <= 열 <= r.너비) or (행 == 0 and 열 == 0):
+        raise ExprError(f"INDEX 가 범위 밖을 가리킵니다 ({행}행 {열}열, 범위는 {r.높이}×{r.너비})")
+    if 행 == 0:
+        return _세로줄(r, 열 - 1)
+    if 열 == 0:
+        return _줄(r, 행 - 1)
+    return r[(행 - 1) * r.너비 + (열 - 1)]
+
+
+def _f_match2(a: list):
+    """MATCH(찾을 값, 범위, [방식]) — 방식 0 이 «똑같은 것» (엑셀과 같다. 안 적으면 1)."""
+    방식 = int(_수(a[2], "MATCH 방식")) if len(a) > 2 else 1
+    return float(_찾기번호(a[0], _한줄(_모양(a[1]), "MATCH"), 방식))
+
+
+def _f_lookup(a: list, 세로: bool):
+    """VLOOKUP / HLOOKUP(찾을 값, 범위, 번호, [대충=TRUE])."""
+    이름 = "VLOOKUP" if 세로 else "HLOOKUP"
+    r = _모양(a[1])
+    번호 = int(_수(a[2], f"{이름} 번호"))
+    한도 = r.너비 if 세로 else r.높이
+    if not 1 <= 번호 <= 한도:
+        raise ExprError(f"{이름} 의 번호가 범위 밖입니다: {번호} (범위는 {r.높이}×{r.너비})")
+    대충 = _참인가(a[3]) if len(a) > 3 else True
+    if 세로:
+        i = _찾기번호(a[0], list(_세로줄(r, 0)), 1 if 대충 else 0)
+        return r[(i - 1) * r.너비 + (번호 - 1)]
+    j = _찾기번호(a[0], list(_줄(r, 0)), 1 if 대충 else 0)
+    return r[(번호 - 1) * r.너비 + (j - 1)]
+
+
+def _f_xlookup(a: list):
+    """XLOOKUP(찾을 값, 찾을 범위, 돌려줄 범위, [없을 때]) — 똑같은 것을 찾는다."""
+    찾을곳 = _한줄(_모양(a[1]), "XLOOKUP 찾을 범위")
+    돌려줄 = _모양(a[2])
+    try:
+        i = _찾기번호(a[0], 찾을곳, 0) - 1
+    except ExprError:
+        if len(a) > 3:
+            return a[3]
+        raise
+    if 돌려줄.너비 == 1 or 돌려줄.높이 == 1:
+        if i >= len(돌려줄):
+            raise ExprError("XLOOKUP 의 두 범위 크기가 다릅니다")
+        return 돌려줄[i]
+    if _모양(a[1]).너비 == 1:                 # 세로로 찾았으면 그 줄을 통째로
+        return _줄(돌려줄, i)
+    return _세로줄(돌려줄, i)
+
+
+def _f_stack(a: list, 가로: bool):
+    """HSTACK(범위…) 옆으로 · VSTACK(범위…) 아래로 붙인다 — VLOOKUP 표를 만들 때."""
+    rs = [_모양(x) for x in a]
+    if 가로:
+        높이 = max(r.높이 for r in rs)
+        값들 = []
+        for i in range(높이):
+            for r in rs:
+                값들.extend(_줄(r, i) if i < r.높이 else [""] * r.너비)
+        return 범위(값들, 높이, sum(r.너비 for r in rs))
+    너비 = max(r.너비 for r in rs)
+    값들 = []
+    for r in rs:
+        for i in range(r.높이):
+            줄 = list(_줄(r, i))
+            값들.extend(줄 + [""] * (너비 - len(줄)))
+    return 범위(값들, sum(r.높이 for r in rs), 너비)
 
 
 def _오늘() -> str:
@@ -873,14 +983,16 @@ FUNCS: dict[str, tuple[int, Callable[[list], object]]] = {
     "WRAP": (2, _f_wrap),
     "N": (1, lambda a: _수(a[0]) if _숫자인가(a[0]) else 0.0),
     "CHOOSE": (2, _f_choose),
-    # -- 칸 범위를 받는 것. **시트에서만** 쓴다 — 시트가 범위를 풀어
-    #    아래 `_INDEX` 같은 속 함수로 바꿔 넣는다. 여기까지 그대로 왔다면
-    #    칸이 없는 자리에서 쓴 것이다.
-    "INDEX": (1, lambda a: _시트전용("INDEX")),
-    "MATCH": (1, lambda a: _시트전용("MATCH")),
-    "VLOOKUP": (1, lambda a: _시트전용("VLOOKUP")),
-    "ROWS": (1, lambda a: _시트전용("ROWS")),
-    "COLUMNS": (1, lambda a: _시트전용("COLUMNS")),
+    # -- 범위에서 찾기. 칸 범위(`A1:C9`)도, 지원자 열(`한글_이름`)도 범위다.
+    "INDEX": (2, _f_index2),
+    "MATCH": (2, _f_match2),
+    "VLOOKUP": (3, lambda a: _f_lookup(a, True)),
+    "HLOOKUP": (3, lambda a: _f_lookup(a, False)),
+    "XLOOKUP": (3, _f_xlookup),
+    "HSTACK": (1, lambda a: _f_stack(a, True)),
+    "VSTACK": (1, lambda a: _f_stack(a, False)),
+    "ROWS": (1, lambda a: float(_모양(a[0]).높이)),
+    "COLUMNS": (1, lambda a: float(_모양(a[0]).너비)),
     "COUNTIF": (2, _f_countif),
     "COUNTIFS": (2, _f_countifs),
     "SUMIF": (2, _f_sumif),
@@ -1006,7 +1118,9 @@ def _두값(op: str, 왼, 오):
 #: 범위를 **그대로** 받는 함수. 나머지는 범위를 칸들로 펼쳐 받는다
 #: (`SUM(A1:A3)` = `SUM(A1, A2, A3)`, `TEXTJOIN(", ", TRUE, FILTER(…))`).
 _범위그대로 = {"COUNTIF", "COUNTIFS", "SUMIF", "SUMIFS", "AVERAGEIF", "AVERAGEIFS",
-             "MAXIFS", "MINIFS", "COUNTBLANK", "SUMPRODUCT", "FILTER", "UNIQUE"}
+             "MAXIFS", "MINIFS", "COUNTBLANK", "SUMPRODUCT", "FILTER", "UNIQUE",
+             "INDEX", "MATCH", "VLOOKUP", "HLOOKUP", "XLOOKUP", "HSTACK", "VSTACK",
+             "ROWS", "COLUMNS"}
 
 
 def _부르기(나무, 값들: dict):

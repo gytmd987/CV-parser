@@ -171,7 +171,10 @@ def 참조밀기(글: str, 축: str, 기준: int, 차: int, *, 행수: int = MAX
 
 #: 칸 자리를 읽는 함수들. 계산기(`expr`)는 칸을 모르므로, 넘기기 전에 여기서
 #: 숫자나 속 함수로 바꿔 넣는다.
-_위치함수 = ("ROW", "COLUMN", "ROWS", "COLUMNS", "INDEX", "MATCH", "VLOOKUP")
+#: 칸 **자리**를 읽는 함수 — 계산기에 넘기기 전에 숫자로 바꾼다. INDEX·MATCH·
+#: VLOOKUP·ROWS 는 이제 계산기가 범위를 그대로 받는다 (`expr._f_index2` …) —
+#: 그래야 지원자 열(`한글_이름`)도 범위로 넘길 수 있다.
+_위치함수 = ("ROW", "COLUMN")
 
 
 def _인자나누기(속: str) -> list[str]:
@@ -220,17 +223,12 @@ def _범위모양(글: str) -> tuple[list[str], int, int]:
 
 
 def 위치함수풀기(글: str, 현재칸: str | None = None) -> str:
-    """ROW·COLUMN·ROWS·COLUMNS·INDEX·MATCH·VLOOKUP 를 계산기가 알아듣게 바꾼다.
+    """ROW·COLUMN 을 숫자로 바꾼다 — 칸의 **자리**는 계산기가 모른다.
 
         ROW()            → 이 칸의 행 번호      ROW(B7)        → 7
         COLUMN()         → 이 칸의 열 번호      COLUMN(C1)     → 3
-        ROWS(A1:A5)      → 5                   COLUMNS(A1:C1) → 3
-        INDEX(A1:C3,2,3) → _INDEX(3, 2, 3, A1,B1,…)   (너비를 같이 넘긴다)
-        MATCH(v, A1:A9)  → _MATCH(1, v, A1,…,A9)
-        VLOOKUP(v, A1:C9, 3, FALSE) → _VLOOKUP(3, v, 3, FALSE, A1,…)
 
-    범위를 칸 목록으로 풀면 **모양(몇 줄 몇 칸)** 이 사라지므로 너비를 앞에
-    붙여 넘긴다. 속 함수가 그 너비로 다시 자른다.
+    INDEX·MATCH·VLOOKUP·ROWS·COLUMNS 는 계산기가 범위를 그대로 받는다.
     """
     if not 글 or not any(f"{이름}(" in 글.upper().replace(" ", "") for 이름 in _위치함수):
         return 글
@@ -247,40 +245,7 @@ def 위치함수풀기(글: str, 현재칸: str | None = None) -> str:
             칸, _h, _w = _범위모양(인자[0])
             r, c = 자리(칸[0])
             return str(r + 1 if 이름 == "ROW" else c + 1)
-        if 이름 in ("ROWS", "COLUMNS"):
-            if len(인자) != 1:
-                raise SheetError(f"{이름} 은 {이름}(A1:C5) 처럼 범위 하나를 받습니다")
-            _칸, h, w = _범위모양(인자[0])
-            return str(h if 이름 == "ROWS" else w)
-        if 이름 == "INDEX":
-            if len(인자) < 2:
-                raise SheetError("INDEX 는 INDEX(범위, 행, [열]) 입니다")
-            칸, h, w = _범위모양(인자[0])
-            if len(인자) == 2:
-                # 한 줄짜리·한 열짜리 범위는 번호 하나로 고른다 (엑셀과 같다)
-                if h == 1:
-                    행, 열 = "1", 인자[1]
-                elif w == 1:
-                    행, 열 = 인자[1], "1"
-                else:
-                    raise SheetError("여러 줄·여러 열 범위는 INDEX(범위, 행, 열) 로 둘 다 적으세요")
-            else:
-                행, 열 = 인자[1], 인자[2]
-            return f"_INDEX({w},{행},{열},{','.join(칸)})"
-        if 이름 == "MATCH":
-            if len(인자) < 2:
-                raise SheetError("MATCH 는 MATCH(찾을 값, 범위, [0]) 입니다")
-            칸, h, w = _범위모양(인자[1])
-            if h > 1 and w > 1:
-                raise SheetError("MATCH 의 범위는 한 줄이나 한 열이어야 합니다")
-            방식 = 인자[2] if len(인자) > 2 else "1"
-            return f"_MATCH({방식},{인자[0]},{','.join(칸)})"
-        # VLOOKUP
-        if len(인자) < 3:
-            raise SheetError("VLOOKUP 은 VLOOKUP(찾을 값, 범위, 열 번호, [FALSE]) 입니다")
-        칸, h, w = _범위모양(인자[1])
-        대충 = 인자[3] if len(인자) > 3 else "TRUE"
-        return f"_VLOOKUP({w},{인자[0]},{인자[2]},{대충},{','.join(칸)})"
+        return f"{이름}()"
 
     for _ in range(20):                      # 안쪽에 또 있을 수 있다 (INDEX(…, MATCH(…)))
         바뀜 = False
@@ -392,6 +357,8 @@ def _집계인가(함수: str, 인자: list[str], 아는열) -> bool:
     """
     if not 인자:
         return 함수 not in E.FUNC_NAMES
+    if 함수 in E.FUNC_NAMES and 함수 not in F.FUNCTIONS and 함수 not in F.ALIASES:
+        return False                         # 계산기에만 있는 이름 (XLOOKUP·INDEX…)
     if F._unquote(인자[0]) in F.TARGETS:
         return True                          # =COUNT(지원자, ...)
     if 함수 in _엑셀조건함수:
