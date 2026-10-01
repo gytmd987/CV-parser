@@ -773,6 +773,17 @@ def 덮인칸(칸들: dict, 행수: int = MAX_ROWS,
     return 나온것
 
 
+def 칸읽기(칸값: dict, 칸들: dict, 행수: int = MAX_ROWS, 열수: int = MAX_COLS):
+    """계산을 마친 시트 값으로 **칸 주소 → 값** 을 읽는 함수 (`값찾기` 자리에 넘긴다).
+
+    병합에 덮인 자리는 주인 칸 값이다 — `값들` 이 계산할 때와 같아야 한다.
+    안 그러면 숫자는 `=COUNTIFS(과제,LEFT(C4,…))` 로 맞게 나오는데, 누르면 C4 를
+    빈칸으로 읽어 명단이 비었다 (C4 가 병합 칸일 때).
+    """
+    덮인 = 덮인칸(칸들, 행수, 열수)
+    return lambda 주소글: 칸값.get(덮인.get(주소글, 주소글), "")
+
+
 def 값들(칸들: dict, rows, 아는열=None, *, 행수: int = MAX_ROWS,
        열수: int = MAX_COLS) -> tuple[dict[str, str], list[str]]:
     """모든 칸을 계산한다. ({주소: 보일 값}, 오류 목록)

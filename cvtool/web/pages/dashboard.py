@@ -516,6 +516,7 @@ def _시트표(b, rows, 아는열, *, 편집: bool = False) -> tuple[str, list[s
     # 보기 화면은 **보일 범위**만 그린다. 편집은 늘 전체 (범위 밖 칸도 고쳐야 한다).
     결과 = render_sheet(b, rows, 아는열, 잘라보기=not 편집)
     문맥 = _드릴문맥.get()
+    칸읽기 = S.칸읽기(결과.계산값, b.시트칸, b.시트행수, b.시트열수)
 
     def _원래주소(주소글: str) -> str:
         """잘라 그린 칸의 주소(A1 부터) → 시트의 원래 주소."""
@@ -545,7 +546,7 @@ def _시트표(b, rows, 아는열, *, 편집: bool = False) -> tuple[str, list[s
                 # 보기 화면 — 사람을 세는 칸은 눌러서 누구인지, 사람 이름은 상세로.
                 원주소 = _원래주소(주소글)
                 주소 = _드릴주소(b, (결과.칸서식.get(주소글) or {}).get("글", ""),
-                             칸=원주소, 값찾기=lambda a: 결과.계산값.get(a, ""))
+                             칸=원주소, 값찾기=칸읽기)
                 이름 = _이름칸(str(값))
                 if 이름:
                     속 = 이름
@@ -866,7 +867,7 @@ def _dash_who_page(me: User, params: dict) -> bytes:
         # 조건에 다른 칸을 썼을 수 있다 — 보기 화면과 같은 줄로 시트를 계산해 둔다.
         칸값, _오류 = S.값들(b.시트칸, rows, 대시보드_열(),
                          행수=b.시트행수, 열수=b.시트열수)
-        값찾기 = lambda a: 칸값.get(a, "")
+        값찾기 = S.칸읽기(칸값, b.시트칸, b.시트행수, b.시트열수)
         행 = 칸주소
     else:
         수식 = b.칸.get(_칸키(행, 열), "")
@@ -875,9 +876,15 @@ def _dash_who_page(me: User, params: dict) -> bytes:
         몸 = "<p class='muted'>이 칸은 사람을 세는 집계 하나가 아니라서 누구인지 보여줄 수 없습니다.</p>"
         사람 = []
     else:
+        못찾음 = ""
         보일열 = ["한글_이름", "현재_소속", "부서", "과제", "최종상태"]
         if isinstance(f, str):
-            사람 = S.조건줄(f, rows, set(대시보드_열()), 값찾기) or []
+            찾은 = S.조건줄(f, rows, set(대시보드_열()), 값찾기)
+            if 찾은 is None:
+                # 조용히 «0명» 을 띄우면 정말 0명인지 못 찾은 건지 모른다.
+                못찾음 = ("<p class='flag'>명단을 계산하지 못했습니다 — 조건에 쓴 칸이나 "
+                       "함수가 값을 못 냅니다. 수식을 확인해 주세요.</p>")
+            사람 = 찾은 or []
             나무, _짝 = S.조건집계짜임(f)
             if 나무.이름 in ("SUMIF", "SUMIFS", "AVERAGEIF", "AVERAGEIFS"):
                 값열 = 나무.인자[0] if 나무.이름.endswith("S") else (
@@ -895,7 +902,7 @@ def _dash_who_page(me: User, params: dict) -> bytes:
                 if c == "한글_이름" else f"<td>{html.escape(str(r.get(c, '')))}</td>"
                 for c in 보일열) + "</tr>"
             for r in 사람)
-        몸 = (f"<div class='scroll'><table data-name='{html.escape(b.제목 or '명단')}'>"
+        몸 = 못찾음 + (f"<div class='scroll'><table data-name='{html.escape(b.제목 or '명단')}'>"
               "<tr>" + "".join(f"<th>{html.escape(c)}</th>" for c in 보일열) + "</tr>"
               + (줄 or f"<tr><td colspan='{len(보일열)}' class='muted'>해당하는 사람이 없습니다.</td></tr>")
               + "</table></div>")
