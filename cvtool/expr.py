@@ -1123,6 +1123,12 @@ _범위그대로 = {"COUNTIF", "COUNTIFS", "SUMIF", "SUMIFS", "AVERAGEIF", "AVER
              "ROWS", "COLUMNS"}
 
 
+#: 범위를 **통째로 펼쳐** 받는 함수 (여러 값을 하나로 묶는 것). 나머지 함수는
+#: 범위를 넣으면 칸마다 계산한다.
+_펼쳐받는 = {"SUM", "AVERAGE", "MEDIAN", "MIN", "MAX", "COUNT", "COUNTA", "CONCAT",
+           "TEXTJOIN", "AND", "OR", "CHOOSE", "IFS", "SWITCH"}
+
+
 def _부르기(나무, 값들: dict):
     이름 = 나무.이름
     if 이름 in ("ROW", "COLUMN"):
@@ -1154,6 +1160,19 @@ def _부르기(나무, 값들: dict):
         )
     최소, 계산 = FUNCS[이름]
     인자 = [_계산(x, 값들) for x in 나무.인자]
+    if 이름 not in _범위그대로 and 이름 not in _펼쳐받는:
+        # 값 하나를 받는 함수에 범위를 넣으면 **칸마다** 계산한다 (엑셀의 배열 계산).
+        # `LEFT(생년월일, 4)` 는 사람마다 앞 네 글자 — `COUNTIF(LEFT(생년월일,4), "1990")`.
+        여럿 = [x for x in 인자 if isinstance(x, 범위) and len(x) != 1]
+        if 여럿:
+            n = len(여럿[0])
+            if any(len(x) != n for x in 여럿):
+                raise ExprError(f"{이름} 에 크기가 다른 범위를 넣었습니다")
+            if len(인자) < 최소:
+                raise ExprError(f"{이름} 에 인자가 모자랍니다 ({최소}개 이상)")
+            낱 = [(x[0] if isinstance(x, 범위) and len(x) == 1 else x) for x in 인자]
+            return 범위([계산([(x[i] if isinstance(x, 범위) else x) for x in 낱])
+                        for i in range(n)], 여럿[0].높이, 여럿[0].너비)
     if 이름 not in _범위그대로:
         펼친 = []
         for x in 인자:

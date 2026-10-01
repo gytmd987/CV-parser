@@ -43,12 +43,13 @@ def test_시트의_세는_칸은_누를_수_있다(판):
     칸 = {"A1": {"글": "공정L"},
          "B1": {"글": "=COUNTIFS(부서,A1)"},                  # 엑셀 모양 + 칸 참조
          "B2": {"글": '=COUNT(채용, 부서="공정L")'},           # 예전 모양
-         "B3": {"글": '=COUNTIFS(부서,"공정L")+1'},            # 섞은 식 — 못 누른다
+         "B3": {"글": '=COUNTIF(부서,"공정L")/COUNTIF(부서,"소재L")'},  # 둘 — 못 누른다
          "B4": {"글": "=SUM(1,2)"}}                           # 사람을 안 센다
     did, bid = _대시(판, "시트", 시트_다듬기({"행수": 5, "열수": 3, "칸": 칸}))
     쪽 = 판.get(f"/dash/view?id={did}")
     링크 = _링크들(쪽)
     assert [t for _h, t in 링크] == ["2", "2"]
+    assert "B3" not in "".join(h for h, _t in 링크)
     for 주소, _t in 링크:
         명단 = 판.get(주소)
         assert "2명" in 명단 and "L0" in 명단 and "L1" in 명단 and "L2" not in 명단
@@ -123,3 +124,38 @@ def test_축표_열_너비를_저장한다(판):
                                 "열너비": {"인원": "70"}})
     판.post("/dash/block/widths", id=str(bid), key=["", "인원"], px=["120", ""])
     assert m.boards.block(bid).열너비 == {"": "120"}
+
+
+@pytest.mark.parametrize("수식", [
+    "=countif(부서,left(a1,3))",                        # 소문자 · 안에 함수
+    "=IFERROR(COUNTIF(부서,A1),0)",                     # 감싼 것
+    "=SUM(COUNTIF(부서,A1))",
+    '=TEXT(COUNTIF(부서,A1),"0명")',
+    "=COUNTIF(부서=LEFT(A1,3))",                        # 예전 모양 · 함수 안 쉼표
+    '=COUNTIFS(LEFT(부서,2),"공정")',                    # 범위 자리에 함수
+])
+def test_함수를_넣거나_감싸도_누르면_명단(판, 수식):
+    칸 = {"A1": {"글": "공정L"}, "B1": {"글": 수식}}
+    did, _ = _대시(판, "시트", 시트_다듬기({"행수": 2, "열수": 2, "칸": 칸}))
+    링크 = _링크들(판.get(f"/dash/view?id={did}"))
+    assert len(링크) == 1, 수식
+    명단 = 판.get(링크[0][0])
+    assert "L0" in 명단 and "L1" in 명단 and "L2" not in 명단, 수식
+
+
+def test_소문자_주소는_대문자로_저장된다():
+    assert 시트_다듬기({"칸": {"B1": {"글": '=countif(부서,a1)&"a1"'}}})["시트칸"]["B1"]["글"] \
+        == '=countif(부서,A1)&"a1"'
+
+
+def test_이름에_다른_값을_붙여도_이름에_링크(판):
+    did, _ = _대시(판, "목록", {"목록대상": "채용", "목록열": [
+        ["이름", '=한글_이름&"("&저널_수&")"', ""],
+        ["뒤에", '="담당: "&한글_이름', ""]]})
+    쪽 = 판.get(f"/dash/view?id={did}")
+    assert "<a class='person' href='/candidate?id=L0' title='상세 보기'>가</a>(" in 쪽
+    assert "담당: <a class='person' href='/candidate?id=L1'" in 쪽
+    칸 = {"A1": {"글": "나 (1990.01)"}, "A2": {"글": "나다"}}       # '나다' 는 다른 낱말
+    did, _ = _대시(판, "시트", 시트_다듬기({"행수": 2, "열수": 1, "칸": 칸}))
+    링크 = _링크들(판.get(f"/dash/view?id={did}"), "person")
+    assert 링크 == [("/candidate?id=L1", "나")]

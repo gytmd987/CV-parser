@@ -125,8 +125,11 @@ def _number(값: str) -> float | None:
 
 
 def _split_args(본문: str) -> list[str]:
-    """따옴표 안의 쉼표는 건너뛰고 인자를 나눈다."""
-    조각, 지금, 따옴표 = [], [], ""
+    """따옴표·괄호 안의 쉼표는 건너뛰고 인자를 나눈다.
+
+    괄호를 안 세면 `부서=LEFT(A1,2)` 가 `부서=LEFT(A1` 과 `2)` 로 쪼개졌다.
+    """
+    조각, 지금, 따옴표, 깊이 = [], [], "", 0
     for ch in 본문:
         if 따옴표:
             지금.append(ch)
@@ -137,7 +140,11 @@ def _split_args(본문: str) -> list[str]:
             따옴표 = ch
             지금.append(ch)
             continue
-        if ch == ",":
+        if ch == "(":
+            깊이 += 1
+        elif ch == ")" and 깊이:
+            깊이 -= 1
+        elif ch == "," and not 깊이:
             조각.append("".join(지금))
             지금 = []
             continue

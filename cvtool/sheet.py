@@ -86,7 +86,21 @@ def 고정떼기(글: str) -> str:
     """
     def 한번(조각: str) -> str:
         return _주소_RE.sub(lambda m: m.group(2) + m.group(4), 조각)
-    return _따옴표_밖에서(글 or "", 한번)
+    return _따옴표_밖에서(주소대문자(글 or ""), 한번)
+
+
+#: 소문자로 적은 칸 주소 (`a1`, `$b$2`). 뒤에 `(` 가 오면 함수 이름이라 뺀다.
+_소문자주소_RE = re.compile(r"(?<![\w$])(\$?[A-Za-z]{1,2}\$?[1-9][0-9]{0,3})(?![\w$(])")
+
+
+def 주소대문자(글: str) -> str:
+    """`=countif(부서,a1)` 의 `a1` 을 `A1` 로 — 엑셀도 소문자 주소를 받아 대문자로 바꾼다.
+
+    따옴표 안은 안 건드린다 (`"a1"` 은 글자다).
+    """
+    if not 글 or not E.is_formula(글):
+        return 글
+    return _따옴표_밖에서(글, lambda 조각: _소문자주소_RE.sub(lambda m: m.group(1).upper(), 조각))
 
 
 def 옮기기(글: str, 행차: int, 열차: int, *, 행수: int = MAX_ROWS,
@@ -647,44 +661,84 @@ class 집계문맥(dict):
         return 없으면
 
 
-def 조건집계짜임(수식: str):
-    """수식이 **통째로** 엑셀 모양 조건 집계 하나면 (나무, 범위·조건 짝들), 아니면 None.
+def _열을쓰나(n) -> bool:
+    """이 식이 지원자 열(칸 주소가 아닌 이름)을 읽나 — 사람을 세는 범위인가."""
+    if isinstance(n, E.Col):
+        return (n.이름.upper() not in ("TRUE", "FALSE")
+                and not _주소하나_RE.fullmatch(n.이름))
+    if isinstance(n, E.Bin):
+        return _열을쓰나(n.왼) or _열을쓰나(n.오)
+    if isinstance(n, E.Neg):
+        return _열을쓰나(n.안)
+    if isinstance(n, E.Call):
+        return n.이름 != "_범위" and any(_열을쓰나(x) for x in n.인자)
+    return False
 
-    범위 자리는 열 이름이어야 한다 (`부서`). 칸 범위(`A1:A5`)는 사람이 아니라서 None.
+
+def _조건집계들(n) -> list:
+    """식 안의 엑셀 모양 조건 집계 호출들 (안쪽까지)."""
+    나온 = []
+    if isinstance(n, E.Call):
+        if n.이름 in _엑셀조건함수:
+            나온.append(n)
+        for x in n.인자:
+            나온 += _조건집계들(x)
+    elif isinstance(n, E.Bin):
+        나온 += _조건집계들(n.왼) + _조건집계들(n.오)
+    elif isinstance(n, E.Neg):
+        나온 += _조건집계들(n.안)
+    return 나온
+
+
+def 조건집계짜임(수식: str):
+    """수식 안에 **사람을 세는** 엑셀 모양 조건 집계가 딱 하나면 (그 호출, 범위·조건 짝들).
+
+    `=COUNTIFS(부서, "A")` 는 물론 `=IFERROR(COUNTIF(…),0)` · `=SUM(COUNTIF(…))` ·
+    `=COUNTIF(…)+0` 처럼 **감싸도** 센 사람은 분명하다. 둘 이상
+    (`=COUNTIF(…)/COUNTIF(…)`)이면 어느 쪽인지 정할 수 없어 None.
+
+    범위 자리는 지원자 열을 읽어야 한다 (`부서`, `LEFT(생년월일,4)`). 칸 범위
+    (`A1:A5`)만 세는 것은 사람이 아니라서 None.
     """
     글 = 위치함수풀기(고정떼기((수식 or "").strip()))
     if not E.is_formula(글):
         return None
     try:
-        나무 = E.parse(글)
-    except E.ExprError:
+        나무 = E.parse(범위묶기(글))
+    except (E.ExprError, SheetError):
         return None
-    if not (isinstance(나무, E.Call) and 나무.이름 in _엑셀조건함수):
+    찾은 = _조건집계들(나무)
+    if len(찾은) != 1:
         return None
+    나무 = 찾은[0]
     인자 = 나무.인자
     짝 = 인자 if 나무.이름 in ("COUNTIF", "COUNTIFS") else (
         인자[1:] if 나무.이름 in ("SUMIFS", "AVERAGEIFS") else 인자[:2])
-    if len(짝) < 2 or len(짝) % 2 or not all(isinstance(짝[i], E.Col) for i in range(0, len(짝), 2)):
+    if len(짝) < 2 or len(짝) % 2 or not all(_열을쓰나(짝[i]) for i in range(0, len(짝), 2)):
         return None
     return 나무, 짝
 
 
 def 조건줄(수식: str, rows, 아는열=None, 값찾기=None) -> list[dict] | None:
-    """엑셀 모양 조건 집계 하나(`=COUNTIFS(부서, "A", …)`)가 **센 사람들**. 아니면 None.
+    """수식 안의 조건 집계 하나(`=COUNTIFS(부서, "A", …)`)가 **센 사람들**. 아니면 None.
 
-    대시보드에서 숫자를 누르면 누구인지 보여줄 때 쓴다. 조건 값에 함수·칸이
-    있어도 된다 — 계산해서 쓴다. 섞은 식(`=COUNTIFS(…)/2`)은 None.
+    대시보드에서 숫자를 누르면 누구인지 보여줄 때 쓴다. 조건 값과 범위에
+    함수·칸이 있어도 된다 — 계산해서 쓴다.
     """
     짜임 = 조건집계짜임(수식)
     if 짜임 is None:
         return None
     나무, 짝 = 짜임
     # 조건 값에 칸(`A3`)을 썼으면 시트의 그 칸 값으로 푼다.
-    칸값 = ({a: 값찾기(a) for a in 참조들(위치함수풀기(고정떼기((수식 or "").strip())))}
-          if 값찾기 is not None else {})
+    글 = 범위묶기(위치함수풀기(고정떼기((수식 or "").strip())))
+    칸값 = ({a: 값찾기(a) for a in 참조들(글)} if 값찾기 is not None else {})
     문맥 = 집계문맥(칸값, rows, 아는열)
     try:
         값들 = [E._계산(x, 문맥) for x in 짝]
+        # 범위 자리는 **사람마다 하나씩**이어야 한다 — 줄과 짝을 맞춰 고른다.
+        if not all(isinstance(값들[i], E.범위) and len(값들[i]) == len(문맥._줄)
+                   for i in range(0, len(값들), 2)):
+            return None
         맞음 = E._조건짝(값들, 나무.이름)
     except E.ExprError:
         return None

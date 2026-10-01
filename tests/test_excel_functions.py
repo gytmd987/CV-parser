@@ -89,7 +89,9 @@ def test_열_하나만_쓰면_묶으라고_알려준다():
 def test_조건줄은_센_사람():
     assert [r["지원자_ID"] for r in S.조건줄('=COUNTIFS(부서,"abc",과제,"qw")', 줄, 열)] == ["1"]
     assert [r["지원자_ID"] for r in S.조건줄('=SUMIFS(저널_수,부서,"abc")', 줄, 열)] == ["1", "2"]
-    assert S.조건줄('=COUNTIFS(부서,"abc")/2', 줄, 열) is None     # 섞은 식
+    # 감싸도 센 사람은 분명하다 — 조건 집계가 하나뿐이면 그 사람들
+    assert [r["지원자_ID"] for r in S.조건줄('=COUNTIFS(부서,"abc")/2', 줄, 열)] == ["1", "2"]
+    assert S.조건줄('=COUNTIF(부서,"abc")/COUNTIF(부서,"xyz")', 줄, 열) is None  # 둘
     assert S.조건줄('=COUNTIF(A1:A3,"abc")', 줄, 열) is None       # 사람이 아니다
 
 

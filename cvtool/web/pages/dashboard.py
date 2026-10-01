@@ -664,11 +664,18 @@ def _블록그리기(b, rows, 축값, 아는열) -> str:
             cls = 폭클래스(i) + (" multi" if "\n" in v else "")
             속 = ("<br>".join(html.escape(줄) for 줄 in v.split("\n"))
                  if "\n" in v else html.escape(v))
-            # 그 줄 사람의 이름이면 그 사람 상세로 (동명이인이어도 줄의 사람이 분명하다).
-            if _드릴문맥.get() and 줄번호 < len(결과.ids) and v.strip() and \
-                    v.strip() in 결과.이름들[줄번호]:
-                속 = (f"<a class='person' href='{_사람주소(결과.ids[줄번호])}'"
-                     f" title='상세 보기'>{html.escape(v)}</a>")
+            # 그 줄 사람의 이름이 **들어 있으면** 그 이름에 상세 링크 (동명이인이어도
+            # 줄의 사람이 분명하다). `=한글_이름&" "&생년월일` 처럼 붙인 칸도 된다.
+            이름 = ""
+            if _드릴문맥.get() and 줄번호 < len(결과.ids) and 결과.ids[줄번호]:
+                이름 = next((n for n in sorted(결과.이름들[줄번호], key=len, reverse=True)
+                           if n and n in v), "")
+            if 이름:
+                앞, _, 뒤 = v.partition(이름)
+                링크 = (f"<a class='person' href='{_사람주소(결과.ids[줄번호])}'"
+                      f" title='상세 보기'>{html.escape(이름)}</a>")
+                감싸 = lambda x: "<br>".join(html.escape(줄) for 줄 in x.split("\n"))
+                속 = 감싸(앞) + 링크 + 감싸(뒤)
             elif "\n" not in v:
                 속 = _이름칸(v) or 속
             # 조건서식. 칸 규칙이 줄 규칙을 이긴다 — 더 좁게 가리킨 쪽이 이긴다.
@@ -1029,6 +1036,16 @@ def _이름칸(글: str) -> str | None:
     조각 = [x.strip() for x in t.split(",")]
     if len(조각) > 1 and all(x in 맵 for x in 조각):
         return ", ".join(하나(x) for x in 조각)
+    # 이름 뒤에 다른 값을 붙인 칸 (`홍길동(1990.01)`, `홍길동 19900101`) — 앞의
+    # 이름에만 링크를 건다. 이름 바로 뒤가 글자면 다른 낱말이다 (`가나` ≠ `가`+`나`).
+    글 = str(글 or "")
+    앞공백 = len(글) - len(글.lstrip())
+    for n in sorted((n for n in 맵 if t.startswith(n)), key=len, reverse=True):
+        다음 = t[len(n):len(n) + 1]
+        if 다음 and (다음.isalpha() or 다음 == "_"):
+            continue
+        return (html.escape(글[:앞공백]) + 하나(n)
+                + html.escape(글[앞공백 + len(n):]))
     return None
 
 
