@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextvars
 import html
 import json
+import re
 import threading
 import urllib.parse
 
@@ -906,6 +907,21 @@ def _dash_who_page(me: User, params: dict) -> bytes:
               "<tr>" + "".join(f"<th>{html.escape(c)}</th>" for c in 보일열) + "</tr>"
               + (줄 or f"<tr><td colspan='{len(보일열)}' class='muted'>해당하는 사람이 없습니다.</td></tr>")
               + "</table></div>")
+    # 시트는 **이 수식이 읽은 칸 값**과 시트에 보였던 값을 같이 적는다. 숫자와
+    # 명단 수가 어긋나면 어디서 갈렸는지 화면에서 바로 보인다.
+    풀이 = ""
+    if b.종류 == "시트" and 값찾기 is not None:
+        참조 = S.참조들(S.고정떼기(수식))
+        보인값 = 값찾기(행)
+        조각 = [f"{a} = «{값찾기(a)}»" for a in 참조[:6]]
+        if 조각:
+            풀이 += ("<p class='muted'>읽은 칸: " + html.escape(" · ".join(조각)) + "</p>")
+        if (f is not None and str(보인값).replace(".0", "").strip().isdigit()
+                and re.fullmatch(r"\s*=\s*COUNTIFS?\s*\(.*\)\s*", S.고정떼기(수식),
+                                 re.I | re.S)
+                and int(float(보인값)) != len(사람)):
+            풀이 += (f"<p class='flag'>시트에는 <b>{html.escape(str(보인값))}</b> 으로 "
+                   f"보이는데 명단은 {len(사람)}명입니다. 이 화면을 캡처해 알려 주세요.</p>")
     어디 = " × ".join(x for x in (행, 열) if x)
     뒤로 = f"/dash/view?id={b.dashboard_id}" + "".join(
         f"&{키}={urllib.parse.quote(거르개[열이름])}"
@@ -922,7 +938,7 @@ def _dash_who_page(me: User, params: dict) -> bytes:
         + "</p>"
         + ("<p class='muted'>비율(PCT)은 <b>조건에 맞은 사람</b>(분자)을 보여 줍니다.</p>"
            if f is not None and not isinstance(f, str) and f.함수 == "PCT" else "")
-        + 몸 + "</div>",
+        + 풀이 + 몸 + "</div>",
         me=me,
     )
 
