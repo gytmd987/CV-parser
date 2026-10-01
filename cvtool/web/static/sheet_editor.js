@@ -529,6 +529,10 @@ function 시트편집기(칸){
       칸에초점();                          /* 적던 것을 버리고 칸 글로 되돌린다 */
     }
   });
+  /* 칸을 고른 채 **수식칸을 누르면 바로 고치기** — 누른 자리에 커서가 선다.
+     (예전에는 옮기는 중이라 커서가 안 보이고 방향키가 칸을 옮겨서, 칸을 두 번
+     눌러야만 고칠 수 있었다.) */
+  수식칸.addEventListener('mousedown', function(){ if(이동중 && 기준) 적기모드(); });
   수식칸.addEventListener('compositionstart', function(){ 적기모드(); });
   수식칸.addEventListener('input', function(){ 적기모드(); 넣은참조 = null; 높이맞추기(); });
   /* 다른 데로 초점이 나가면 적은 것을 넣는다 (칸 참조를 누를 때는 안 나간다) */
