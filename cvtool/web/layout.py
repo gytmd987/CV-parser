@@ -252,6 +252,16 @@ button.tiny{padding:1px 6px;font-size:12px;min-width:22px;line-height:1.3}
 #fxdrop .it:hover,#fxdrop .it.on{background:#eff6ff}
 #fxdrop .it b{font-weight:650;color:var(--txt)}
 #fxdrop .it i{font-style:normal;font-size:11px;color:var(--muted);margin-left:auto}
+#fxdrop .it .desc{color:var(--muted);font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:320px}
+#fxdrop .foot{padding:3px 9px;color:var(--muted);font-size:11px;border-top:1px solid var(--line,#e5e7eb)}
+#fxsig{position:absolute;z-index:121;background:#fffbe6;border:1px solid #e9d98a;border-radius:6px;
+padding:6px 10px;font-size:12.5px;max-width:620px;box-shadow:0 4px 14px rgba(0,0,0,.12);pointer-events:none}
+#fxsig .sig{font-family:Consolas,'D2Coding',monospace}
+#fxsig .sig .fn{font-weight:700;color:#1d4ed8}
+#fxsig .sig b{background:#fde68a;border-radius:3px;padding:0 2px}
+#fxsig .what{color:#374151;margin-top:2px}
+#fxsig .ex{color:var(--muted);margin-top:2px}
+#fxsig .ex code{font-size:12px}
 #fxdrop .head{padding:4px 9px;color:var(--muted);font-size:11.5px}
 .fxout{display:block;font-size:12px;margin-top:3px;min-height:16px;word-break:break-all;white-space:pre-line}
 /* 대시보드 표 모양 — 만드는 사람이 고른다 */
@@ -645,3 +655,11 @@ def _busy_count() -> int:
 #: 없는 주소, 또는 주소별 처리 함수가 아무것도 돌려주지 않고 끝났을 때 (404).
 def _없는주소(self):
     return self._send(_page("없음", "<div class='card'>페이지가 없습니다.</div>"), code=404)
+
+
+def 함수설명자료(이름들) -> dict:
+    """수식 안내가 쓸 함수 설명 {이름: [인자들, 되풀이, 설명, 예]} (`funcdocs.py`)."""
+    from ..funcdocs import 함수설명
+
+    return {n: list(함수설명[n]) for n in 이름들 if n in 함수설명}
+

@@ -2,6 +2,10 @@
 (function(){
   var 목록 = window.수식목록 || {열: [], 행함수: [], 집계함수: [], 대상: []};
   var 상자 = null, 지금칸 = null, 후보 = [], 고른것 = -1;
+  /* 함수 설명 {이름: [인자들, 되풀이, 설명, 예]} — `funcdocs.py` 가 채운다 */
+  var 설명 = 목록.설명 || {};
+  function 막기(t){ return String(t).replace(/[&<>"']/g, function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
 
   function 낱말(el){
     var 앞 = el.value.slice(0, el.selectionStart);
@@ -18,7 +22,11 @@
     function 담기(n, 갈래, 함수){
       /* `채용` 은 열이면서 대상이다. 두 번 뜨면 잘못 만든 것처럼 보인다 —
          한 줄로 합치고 갈래만 이어 적는다. */
-      if(본것[n]){ 본것[n].갈래 += ' · ' + 갈래; return; }
+      if(본것[n]){
+        if((' · ' + 본것[n].갈래 + ' · ').indexOf(' · ' + 갈래 + ' · ') < 0) 본것[n].갈래 += ' · ' + 갈래;
+        if(함수) 본것[n].함수 = 1;
+        return;
+      }
       본것[n] = {글: n, 갈래: 갈래, 함수: 함수 || 0};
       것.push(본것[n]);
     }
@@ -64,9 +72,12 @@
     지금칸 = el;
     고른것 = 0;
     상자.innerHTML = 후보.map(function(x, i){
+      var 뜻 = x.함수 && 설명[x.글] ? 설명[x.글][2] : '';
       return "<div class='it" + (i === 0 ? ' on' : '') + "' data-i='" + i + "'>"
-           + '<b>' + x.글 + '</b><i>' + x.갈래 + '</i></div>';
-    }).join('');
+           + '<b>' + 막기(x.글) + '</b>'
+           + (뜻 ? "<span class='desc'>" + 막기(뜻) + '</span>' : '')
+           + '<i>' + x.갈래 + '</i></div>';
+    }).join('') + "<div class='foot'>Tab 넣기 · ↑↓ 고르기 · Esc 닫기</div>";
     var r = el.getBoundingClientRect();
     상자.style.left = (r.left + window.scrollX) + 'px';
     상자.style.top = (r.bottom + window.scrollY + 3) + 'px';
@@ -127,4 +138,71 @@
   }, true);
   window.addEventListener('scroll', 닫기, true);
   window.addEventListener('resize', 닫기);
+
+  /* -- 인자 안내 (엑셀처럼) ---------------------------------------------------
+     커서가 함수 괄호 안에 있으면 `COUNTIFS(범위1, 조건1, …)` 를 띄우고 **지금
+     적는 인자**를 굵게 한다. 함수 안의 함수면 가장 안쪽 것을 보여 준다. */
+  var 안내 = null;
+  function 지금함수(글){
+    var 쌓임 = [], 따 = '';
+    for(var i = 0; i < 글.length; i++){
+      var c = 글[i];
+      if(따){ if(c === 따) 따 = ''; continue; }
+      if(c === '"'){ 따 = c; continue; }
+      if(c === '('){
+        var m = 글.slice(0, i).match(/([A-Za-z_][A-Za-z0-9_]*)\s*$/);
+        쌓임.push({이름: m ? m[1].toUpperCase() : '', 번째: 0});
+      }else if(c === ')'){ 쌓임.pop(); }
+      else if(c === ',' && 쌓임.length){ 쌓임[쌓임.length - 1].번째++; }
+    }
+    for(var j = 쌓임.length - 1; j >= 0; j--) if(설명[쌓임[j].이름]) return 쌓임[j];
+    return null;
+  }
+  function 안내닫기(){ if(안내){ 안내.remove(); 안내 = null; } }
+  function 안내그리기(el){
+    if(!el || !el.classList || !el.classList.contains('fx') || el.classList.contains('nav')
+       || document.activeElement !== el){ 안내닫기(); return; }
+    var 지금 = 지금함수(el.value.slice(0, el.selectionStart));
+    if(!지금){ 안내닫기(); return; }
+    var d = 설명[지금.이름], 인자 = d[0], 되풀이 = d[1];
+    /* 되풀이되는 짝(범위2, 조건2 …)도 몇 번째인지 맞춰 굵게 한다 */
+    var 몇 = 지금.번째, 굵게 = 몇;
+    if(몇 >= 인자.length && 되풀이) 굵게 = 인자.length - 되풀이 + ((몇 - 인자.length) % 되풀이);
+    var 조각 = 인자.map(function(a, i){
+      var t = 막기(a);
+      if(몇 >= 인자.length && 되풀이 && i === 굵게){
+        /* 짝을 넘어섰으면 번호를 맞춰 보인다: 범위1 → 범위3 */
+        var 차례 = Math.floor((몇 - (인자.length - 되풀이)) / 되풀이) + 1;
+        t = 막기(a.replace(/1(\]?)$/, 차례 + '$1').replace(/^\[/, '').replace(/\]$/, ''));
+      }
+      return i === 굵게 ? '<b>' + t + '</b>' : t;
+    });
+    if(되풀이) 조각.push(몇 >= 인자.length ? '<b>…</b>' : '…');
+    if(!안내){
+      안내 = document.createElement('div'); 안내.id = 'fxsig';
+      document.body.appendChild(안내);
+    }
+    안내.innerHTML = "<div class='sig'><span class='fn'>" + 지금.이름 + '</span>('
+      + 조각.join(', ') + ')</div>'
+      + "<div class='what'>" + 막기(d[2]) + '</div>'
+      + (d[3] ? "<div class='ex'>예: <code>" + 막기(d[3]) + '</code></div>' : '');
+    var r = el.getBoundingClientRect();
+    안내.style.left = (r.left + window.scrollX) + 'px';
+    안내.style.top = (r.top + window.scrollY - 안내.offsetHeight - 4) + 'px';
+  }
+  ['input', 'keyup', 'click', 'focusin'].forEach(function(ev){
+    document.addEventListener(ev, function(e){
+      if(e.target.classList && e.target.classList.contains('fx')) 안내그리기(e.target);
+    });
+  });
+  document.addEventListener('focusout', function(e){
+    if(e.target.classList && e.target.classList.contains('fx')) setTimeout(function(){
+      if(!document.activeElement || !document.activeElement.classList
+         || !document.activeElement.classList.contains('fx')) 안내닫기();
+    }, 120);
+  });
+  document.addEventListener('keydown', function(e){
+    if(e.key === 'Escape' && 안내 && !상자) 안내닫기();
+  });
+  window.addEventListener('scroll', function(){ if(안내) 안내그리기(document.activeElement); }, true);
 })();

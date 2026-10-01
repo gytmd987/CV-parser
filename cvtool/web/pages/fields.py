@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import html
+import json
 import urllib.parse
 
 from ...auth import User
@@ -15,7 +16,7 @@ from ...store import CUSTOM_SCOPES, CUSTOM_TYPES, DEFAULT_LONG_COLUMNS as store_
 
 from ..state import audit, recruit, store
 from ..columns import _긴글가능, 기본숨김, 모든열, 열목록, 표열
-from ..layout import _page, _알림, _없는주소, _정적JS
+from ..layout import _page, _알림, _없는주소, _정적JS, 함수설명자료
 from ..router import 라우트
 
 
@@ -57,10 +58,24 @@ def _수식편집(col: str, 수식: str) -> str:
         "<form method='post' action='/fields/formula' style='display:flex;gap:6px;"
         "align-items:center;flex-wrap:wrap;margin-top:4px'>"
         f"<input type='hidden' name='col' value='{html.escape(col)}'>"
-        f"<input type='text' name='formula' value='{html.escape(수식)}'"
-        " style='width:230px' placeholder='수식 (없으면 비움) 예: =IF(과제&lt;&gt;&quot;&quot;,&quot;Y&quot;,&quot;N&quot;)'>"
+        f"<input type='text' name='formula' class='fx' data-kind='row' value='{html.escape(수식)}'"
+        " autocomplete='off' style='width:230px' placeholder='수식 (없으면 비움) 예: =IF(과제&lt;&gt;&quot;&quot;,&quot;Y&quot;,&quot;N&quot;)'>"
         "<button type='submit' class='sec'>수식 저장</button></form>"
     )
+
+
+#: 열 수식 칸의 자동완성·인자 안내 (대시보드 편집과 같은 스크립트).
+_FXAC_JS = '\n<script>' + _정적JS("formula_autocomplete.js") + '</script>'
+
+
+def _수식도우미() -> str:
+    from ... import expr
+
+    자료 = {"열": sorted(모든열()), "행함수": list(expr.PUBLIC_FUNC_NAMES),
+          "집계함수": [], "대상": []}
+    자료["설명"] = 함수설명자료(자료["행함수"])
+    return ("<script>window.수식목록 = " + json.dumps(자료, ensure_ascii=False)
+            + ";</script>" + _FXAC_JS)
 
 
 #: 열 순서를 **끌어서** 정한다.
@@ -228,7 +243,8 @@ def _fields_page(me: User, error: str = "", msg: str = "") -> bytes:
         f"<select name='type'>{유형옵션}</select>"
         "<input type='text' name='choices' placeholder=\"선택지 (선택 유형만, | 로 구분)\""
         " style='width:280px'>"
-        "<input type='text' name='formula' style='width:260px'"
+        "<input type='text' name='formula' class='fx' data-kind='row' autocomplete='off'"
+        " style='width:260px'"
         " placeholder='수식 (선택) 예: =IF(과제&lt;&gt;\"\",\"Y\",\"N\")'>"
         "<button type='submit'>추가</button></form>"
         "<p class='muted'><b>구분</b>을 고르면 그 표에 붙습니다 — "
@@ -264,7 +280,7 @@ def _fields_page(me: User, error: str = "", msg: str = "") -> bytes:
         "고칠 수 있는 것과 없는 것의 경계는 하나입니다 — <b>형식 검사와 추출 스키마</b>. "
         "단계 상태 목록과 추가한 열의 선택지·유형·이름은 고칠 수 있고, 지원자 정보 열의 "
         "선택지는 추출 스키마에 걸려 있어 못 고칩니다. 안 쓰는 열은 <b>숨김</b>으로 두세요.</p>"
-        "</div>",
+        "</div>" + _수식도우미(),
         me=me,
     )
 

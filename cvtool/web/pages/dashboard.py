@@ -24,7 +24,7 @@ from ...timeutil import now_kst
 
 from ..state import audit, auth, boards, mailing, recruit, registry, store
 from ..columns import MAIL_COLUMN, 덧값, 머리글, 모든열, 수식열채우기, 열폭
-from ..layout import _page, _알림, _없는주소, _정적JS
+from ..layout import _page, _알림, _없는주소, _정적JS, 함수설명자료
 from ..router import 라우트
 
 
@@ -1867,6 +1867,7 @@ def _수식목록() -> str:
         "집계함수": list(F.CALLABLE),
         "대상": list(F.TARGETS),
     }
+    자료["설명"] = 함수설명자료(자료["행함수"] + 자료["집계함수"])
     return ("<script>window.수식목록 = "
             + json.dumps(자료, ensure_ascii=False) + ";</script>")
 
