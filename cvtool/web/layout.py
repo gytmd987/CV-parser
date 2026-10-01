@@ -305,6 +305,10 @@ table.sheet th{background:#f1f4f8;color:#5b6472;font-weight:600;text-align:cente
   font-size:12px;user-select:none;overflow:hidden}
 table.sheet td{height:26px;overflow:hidden;overflow-wrap:anywhere}
 table.sheet th.corner{width:44px}
+/* 머리글(A·B·1·2)은 칸과 맞닿은 변을 **양보한다** (none 은 겹친 선 다툼에서 늘 진다).
+   안 그러면 표 맨 위·맨 왼쪽 칸에 그은 테두리가 머리글의 연한 선에 져서 지워졌다. */
+table.sheet th[data-col],table.sheet th.corner{border-bottom:none}
+table.sheet th[data-row],table.sheet th.corner{border-right:none}
 /* 보기에서 격자 숨김 — 내가 그은 테두리(인라인 style)만 남는다 */
 table.sheet.plain td{border:1px solid transparent}
 table.sheet.editing td.outview{opacity:.45;background-image:repeating-linear-gradient(45deg,transparent 0 6px,rgba(100,116,139,.08) 6px 12px)}

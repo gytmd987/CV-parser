@@ -535,9 +535,10 @@ def _시트표(b, rows, 아는열, *, 편집: bool = False) -> tuple[str, list[s
                 속성 += f" data-cell='{주소글}' tabindex='0'"
             속 = "<br>".join(html.escape(x) for x in str(값).split("\n"))
             칸들.append(f"<td{속성}>{속}</td>")
-        # 격자를 숨긴 보기에서는 A·B·1·2 머리글을 **아예 안 그린다.** CSS 로
-        # 가리면 열 너비(머리글에 걸린)도 같이 사라져 칸이 다 좁아졌다.
-        맨몸 = (not 편집) and b.시트격자숨김
+        # 보기 화면에는 A·B·1·2 머리글을 **아예 안 그린다** — 표만 보인다.
+        # (CSS 로 가리면 열 너비도 같이 사라져 칸이 다 좁아졌다.) 머리글이
+        # 있으면 표 가장자리 테두리가 머리글의 연한 선에 져서 지워지기도 했다.
+        맨몸 = not 편집
         줄스타일 = f" style='height:{html.escape(높이)}px'" if 높이 else ""
         번호 = 결과.시작행 + r + 1
         줄머리 = "" if 맨몸 else (
@@ -548,7 +549,7 @@ def _시트표(b, rows, 아는열, *, 편집: bool = False) -> tuple[str, list[s
     # 표 폭은 그 합이다. 예전에는 표 폭이 «알아서» 라 브라우저가 열들을 화면
     # 폭에 맞춰 눌렀고, 칸에 최소 90px 이 걸려 있어서 — 끌어도 좁아지지 않았고,
     # 열이 많아 화면을 채우면 넓어지지도 않았다. 넘치면 가로로 스크롤한다.
-    맨몸 = (not 편집) and b.시트격자숨김
+    맨몸 = not 편집
     폭들 = [_px(결과.열너비.get(col_letter(c))) or 시트_기본열너비
            for c in range(결과.열수)]
     열묶음 = ("" if 맨몸 else f"<col style='width:{시트_머리열너비}px'>") + "".join(
@@ -557,7 +558,7 @@ def _시트표(b, rows, 아는열, *, 편집: bool = False) -> tuple[str, list[s
     # `data-name` 을 안 붙인다. 그걸 붙이면 표 위에 «찾기 · 엑셀 내려받기» 막대가
     # 저절로 달라붙는데, 그 내려받기는 화면 글자를 TSV 로 긁어 만드는 길이라
     # 색도 병합도 안 실린다. 시트에는 서버가 만드는 제 내려받기가 따로 있다.
-    반 = "sheet" + (" editing" if 편집 else (" plain" if 맨몸 else ""))
+    반 = "sheet" + (" editing" if 편집 else (" plain" if b.시트격자숨김 else ""))
     머리줄 = "" if 맨몸 else f"<tr><th class='corner'></th>{머리}</tr>"
     표 = (f"<div class='scroll'><table class='{반}' style='width:{표폭}px'>"
          f"<colgroup>{열묶음}</colgroup>"
@@ -1460,9 +1461,10 @@ def _시트편집(b) -> str:
         + 단추("열삽입", "열 삽입", "고른 열 왼쪽에 끼웁니다 (안 골랐으면 맨 오른쪽)")
         + 단추("열삭제", "열 삭제", "고른 열을 뺍니다")
         + "<span class='sep'></span>"
-        + "<label class='muted' title='보기 화면에서 연한 격자선과 A·B·1·2 머리글을 숨깁니다."
-          " 내가 그은 테두리만 남습니다'><input type='checkbox' data-sheet='격자숨김'"
-        + (" checked" if b.시트격자숨김 else "") + "> 보기에서 격자 숨기기</label>"
+        + "<label class='muted' title='보기 화면에서 연한 격자선을 숨깁니다."
+          " 내가 그은 테두리만 남습니다 (A·B·1·2 머리글은 보기에 늘 안 나옵니다)'>"
+          "<input type='checkbox' data-sheet='격자숨김'"
+        + (" checked" if b.시트격자숨김 else "") + "> 보기에서 격자선 숨기기</label>"
         + "<span class='sep'></span>"
         + "<label class='muted' title='보기 화면과 엑셀 내려받기에 이 범위만 나갑니다."
           " 비우면 전체. 범위 밖 칸은 계산용으로 써도 됩니다 (편집에서는 흐리게 보입니다)'>"

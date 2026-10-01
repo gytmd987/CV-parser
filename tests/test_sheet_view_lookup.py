@@ -103,7 +103,7 @@ def test_행을_끼우면_범위도_밀린다():
     assert 시트_행열(설정, "열삭제", 0, 1)["보일범위"] == "A2:B4"
 
 
-def test_보기_화면은_잘라서_머리글은_원래_자리(web_client):
+def test_보기_화면은_잘라서_표만(web_client):
     m = web_client.module
     did = m.boards.add("범위판", "admin")
     bid = m.boards.add_block(did, "시트", 제목="S", 설정=시트_다듬기(
@@ -111,7 +111,9 @@ def test_보기_화면은_잘라서_머리글은_원래_자리(web_client):
          "칸": {"C3": {"글": "보임"}, "A1": {"글": "안보임"}}}))
     쪽 = web_client.get(f"/dash/view?id={did}")
     assert "보임" in 쪽 and "안보임" not in 쪽
-    assert re.search(r"<th data-col='A'>C</th><th data-col='B'>D</th>", 쪽)
+    표 = re.search(r"<table class='sheet[^']*'.*?</table>", 쪽, re.S).group(0)
+    assert "<th" not in 표                    # A·B·1·2 머리글 없이 표만
+    assert 표.count("<col ") == 2             # 보일 범위 두 열만
     편집 = web_client.get(f"/dash/edit?id={did}")
     assert "안보임" in 편집 and "data-sheet='보일범위'" in 편집 and "C3:D4" in 편집
     assert m.boards.block(bid).설정["보일범위"] == "C3:D4"
