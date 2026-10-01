@@ -669,7 +669,7 @@ def 조건집계짜임(수식: str):
     return 나무, 짝
 
 
-def 조건줄(수식: str, rows, 아는열=None) -> list[dict] | None:
+def 조건줄(수식: str, rows, 아는열=None, 값찾기=None) -> list[dict] | None:
     """엑셀 모양 조건 집계 하나(`=COUNTIFS(부서, "A", …)`)가 **센 사람들**. 아니면 None.
 
     대시보드에서 숫자를 누르면 누구인지 보여줄 때 쓴다. 조건 값에 함수·칸이
@@ -679,7 +679,10 @@ def 조건줄(수식: str, rows, 아는열=None) -> list[dict] | None:
     if 짜임 is None:
         return None
     나무, 짝 = 짜임
-    문맥 = 집계문맥({}, rows, 아는열)
+    # 조건 값에 칸(`A3`)을 썼으면 시트의 그 칸 값으로 푼다.
+    칸값 = ({a: 값찾기(a) for a in 참조들(위치함수풀기(고정떼기((수식 or "").strip())))}
+          if 값찾기 is not None else {})
+    문맥 = 집계문맥(칸값, rows, 아는열)
     try:
         값들 = [E._계산(x, 문맥) for x in 짝]
         맞음 = E._조건짝(값들, 나무.이름)

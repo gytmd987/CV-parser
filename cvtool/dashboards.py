@@ -751,6 +751,10 @@ class RenderedList:
     #: 조건서식 결과. 줄마다 하나, 칸마다 하나. 빈 문자열이면 안 칠한다.
     행색: list[str] = field(default_factory=list)
     칸색: list[list[str]] = field(default_factory=list)
+    #: 줄마다의 지원자_ID (`행` 과 같은 순서) — 이름을 누르면 그 사람 상세로 간다.
+    ids: list[str] = field(default_factory=list)
+    #: 줄마다 그 사람의 이름들 (한글·영문) — 어느 칸이 «이름» 인지 알아본다.
+    이름들: list[tuple[str, str]] = field(default_factory=list)
 
 
 def render_list(b: Block, rows, 아는열: set[str] | None = None) -> RenderedList:
@@ -819,7 +823,10 @@ def render_list(b: Block, rows, 아는열: set[str] | None = None) -> RenderedLi
     # 줄 번호는 **여기서** 매긴다 — 거르고 정렬하고 자른 뒤라 화면에 보이는
     # 차례와 늘 같다. 조건서식과 칸 수식이 같은 루프를 도므로 `=ROW()` 를
     # 색칠 규칙에서도 쓸 수 있다.
+    줄ids, 줄이름 = [], []
     for 번호, (_cid, 값들) in enumerate(골라낸, start=1):
+        줄ids.append(_cid)
+        줄이름.append((값들.get("한글_이름", ""), 값들.get("영문_이름", "")))
         값들[expr.줄번호_키] = 번호
         # 위에서부터 보다가 처음 맞는 것을 쓴다 (엑셀도 규칙에 순서가 있다).
         줄스타일 = ""
@@ -875,7 +882,8 @@ def render_list(b: Block, rows, 아는열: set[str] | None = None) -> RenderedLi
         if 대상 != ROW_TARGET and 대상 not in 머리이름:
             오류.append(f"색칠 규칙이 가리키는 열이 없습니다: {대상}")
     return RenderedList(제목=b.제목, 머리=머리이름, 폭=폭들, 행=표행,
-                        오류=오류, 전체=전체, 행색=행색, 칸색=칸색)
+                        오류=오류, 전체=전체, 행색=행색, 칸색=칸색,
+                        ids=줄ids, 이름들=줄이름)
 
 
 def _색스타일(배경: str, 글자: str) -> str:
@@ -1414,6 +1422,8 @@ class RenderedSheet:
     #: 잘라낸 결과의 주소·서식·선·너비는 **(0,0) 부터 다시 매겨져** 있다.
     시작행: int = 0
     시작열: int = 0
+    #: 모든 칸의 계산값 {원래 주소: 보일 값} — 누르면 «누구인지» 로 갈 때 칸 참조를 푼다.
+    계산값: dict = field(default_factory=dict)
 
 
 def render_sheet(b: Block, rows, 아는열: set[str] | None = None, *,
@@ -1465,7 +1475,8 @@ def render_sheet(b: Block, rows, 아는열: set[str] | None = None, *,
     if 범위 is None:
         return RenderedSheet(제목=b.제목, 행수=행수, 열수=열수, 행=나온행,
                              열너비=b.시트열너비, 행높이=b.시트행높이, 오류=오류,
-                             칸서식=칸들, 가로선=가로선, 세로선=세로선)
+                             칸서식=칸들, 가로선=가로선, 세로선=세로선,
+                             계산값=계산값)
     열너비 = {}
     for k, v in b.시트열너비.items():
         c = _자리(f"{k}1")[1]
@@ -1480,4 +1491,4 @@ def render_sheet(b: Block, rows, 아는열: set[str] | None = None, *,
                if r0 <= r <= r1 + 1 and c0 <= c <= c1},
         세로선={(r - r0, c - c0): v for (r, c), v in 세로선.items()
                if r0 <= r <= r1 and c0 <= c <= c1 + 1},
-        시작행=r0, 시작열=c0)
+        시작행=r0, 시작열=c0, 계산값=계산값)

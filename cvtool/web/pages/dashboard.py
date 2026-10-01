@@ -515,6 +515,13 @@ def _시트표(b, rows, 아는열, *, 편집: bool = False) -> tuple[str, list[s
     """
     # 보기 화면은 **보일 범위**만 그린다. 편집은 늘 전체 (범위 밖 칸도 고쳐야 한다).
     결과 = render_sheet(b, rows, 아는열, 잘라보기=not 편집)
+    문맥 = _드릴문맥.get()
+
+    def _원래주소(주소글: str) -> str:
+        """잘라 그린 칸의 주소(A1 부터) → 시트의 원래 주소."""
+        r, c = S.자리(주소글)
+        return S.주소(결과.시작행 + r, 결과.시작열 + c)
+
     # 편집일 때는 머리글에 자리를 달아 둔다 — 끌어서 너비·높이를 바꾼다.
     # 잘라 그렸으면 머리글은 **원래 자리**로 적는다 (C3:F9 면 C·D·E·F, 3·4…).
     머리 = "".join(
@@ -534,6 +541,17 @@ def _시트표(b, rows, 아는열, *, 편집: bool = False) -> tuple[str, list[s
             if 편집:
                 속성 += f" data-cell='{주소글}' tabindex='0'"
             속 = "<br>".join(html.escape(x) for x in str(값).split("\n"))
+            if not 편집 and 문맥 is not None:
+                # 보기 화면 — 사람을 세는 칸은 눌러서 누구인지, 사람 이름은 상세로.
+                원주소 = _원래주소(주소글)
+                주소 = _드릴주소(b, (결과.칸서식.get(주소글) or {}).get("글", ""),
+                             칸=원주소, 값찾기=lambda a: 결과.계산값.get(a, ""))
+                이름 = _이름칸(str(값))
+                if 이름:
+                    속 = 이름
+                elif 주소 and str(값) not in ("", "?"):
+                    속 = (f"<a class='drill' href='{주소}' title='누구인지 보기'>"
+                         f"{html.escape(str(값))}</a>")
             칸들.append(f"<td{속성}>{속}</td>")
         # 보기 화면에는 A·B·1·2 머리글을 **아예 안 그린다** — 표만 보인다.
         # (CSS 로 가리면 열 너비도 같이 사라져 칸이 다 좁아졌다.) 머리글이
@@ -603,8 +621,10 @@ def _블록그리기(b, rows, 축값, 아는열) -> str:
         except (F.FormulaError, expr.ExprError, SheetError, ValueError) as exc:
             보임, 아래 = "?", f"<div class='flag'>{html.escape(str(exc))}</div>"
         주소 = _드릴주소(b, b.수식)
-        숫자 = (f"<a class='drill' href='{주소}' title='누구인지 보기 · {html.escape(b.수식)}'>"
-              f"{html.escape(보임)}</a>" if 주소 else html.escape(보임))
+        # 이름이 나오면(LIST) 이름마다 상세로, 아니면 세는 숫자는 누구인지로.
+        숫자 = _이름칸(보임) or (
+            f"<a class='drill' href='{주소}' title='누구인지 보기 · {html.escape(b.수식)}'>"
+            f"{html.escape(보임)}</a>" if 주소 else html.escape(보임))
         return (
             f"<div class='card'><h2>{html.escape(b.제목)}</h2>"
             f"<div style='font-size:38px;font-weight:800;line-height:1.2'"
@@ -628,8 +648,12 @@ def _블록그리기(b, rows, 축값, 아는열) -> str:
                 return ""                       # 직접 정했으면 짐작하지 않는다
             return 열폭(결과.머리[i] if i < len(결과.머리) else "")
 
+        # 편집 화면 미리보기에서 머리글 경계를 끌어 너비를 바꾼다 (`col_resize.js`).
+        # 열쇠는 **설정의 몇 번째 열**인가 — 수식이 빈 줄은 표에 안 나오므로 건너뛴다.
+        원번호 = [n for n, (_h, 식, _w) in enumerate(b.목록열) if str(식).strip()]
         머리 = "".join(
-            f"<th class='{폭클래스(i)}'{폭스타일(i)}>{머리글(c)}</th>"
+            f"<th class='{폭클래스(i)}'{폭스타일(i)}"
+            f" data-wkey='{원번호[i] if i < len(원번호) else i}'>{머리글(c)}</th>"
             for i, c in enumerate(결과.머리)
         )
 
@@ -640,6 +664,13 @@ def _블록그리기(b, rows, 축값, 아는열) -> str:
             cls = 폭클래스(i) + (" multi" if "\n" in v else "")
             속 = ("<br>".join(html.escape(줄) for 줄 in v.split("\n"))
                  if "\n" in v else html.escape(v))
+            # 그 줄 사람의 이름이면 그 사람 상세로 (동명이인이어도 줄의 사람이 분명하다).
+            if _드릴문맥.get() and 줄번호 < len(결과.ids) and v.strip() and \
+                    v.strip() in 결과.이름들[줄번호]:
+                속 = (f"<a class='person' href='{_사람주소(결과.ids[줄번호])}'"
+                     f" title='상세 보기'>{html.escape(v)}</a>")
+            elif "\n" not in v:
+                속 = _이름칸(v) or 속
             # 조건서식. 칸 규칙이 줄 규칙을 이긴다 — 더 좁게 가리킨 쪽이 이긴다.
             #
             # 줄 색도 **칸마다** 칠한다. <tr> 에 걸고 물려받게 하면 얼룩말 무늬나
@@ -668,7 +699,7 @@ def _블록그리기(b, rows, 축값, 아는열) -> str:
             f"<div class='card'><h2>{html.escape(b.제목)} "
             f"<span class='muted'>{센것}</span></h2>{경고}"
             f"<div class='scroll'><table {_표모양(b, 결과.폭)}"
-            f" data-name='{html.escape(b.제목 or '목록')}'>"
+            f" data-wblock='{b.id}' data-name='{html.escape(b.제목 or '목록')}'>"
             f"<tr>{머리}</tr>{몸}</table></div></div>"
         )
 
@@ -689,9 +720,12 @@ def _블록그리기(b, rows, 축값, 아는열) -> str:
             )
             # 사람마다 접을 수 있다. 처음 몇 명만 펼쳐 두고 나머지는 이름 한 줄 —
             # 200명이 전부 펼쳐지면 화면이 50장 길이가 된다.
+            상세 = (f" <a class='person plink' href='{_사람주소(결과.ids[n])}'"
+                  " onclick='event.stopPropagation()'>상세 ↗</a>"
+                  if _드릴문맥.get() and n < len(결과.ids) and 결과.ids[n] else "")
             카드.append(
                 f"<details class='pcard'{' open' if n < 펼침 else ''}>"
-                f"<summary>{html.escape(머리)}</summary>"
+                f"<summary>{html.escape(머리)}{상세}</summary>"
                 f"<table {_표모양(b)}>{줄}</table></details>"
             )
         몸 = "".join(카드) or "<p class='muted'>조건에 맞는 사람이 없습니다.</p>"
@@ -718,8 +752,9 @@ def _블록그리기(b, rows, 축값, 아는열) -> str:
         n = _px(너비들[i]) if i < len(너비들) else 0
         return f" style='width:{n}px'" if n else ""
 
-    머리 = f"<th{폭(0)}></th>" + "".join(
-        f"<th{폭(i + 1)}>{html.escape(c)}</th>" for i, c in enumerate(결과.머리))
+    머리 = f"<th{폭(0)} data-wkey=''></th>" + "".join(
+        f"<th{폭(i + 1)} data-wkey='{html.escape(c)}'>{html.escape(c)}</th>"
+        for i, c in enumerate(결과.머리))
     def 칸수식(r: str, i: int) -> str:
         c = 결과.머리[i] if i < len(결과.머리) else ""
         if b.종류 == "축표":
@@ -729,8 +764,12 @@ def _블록그리기(b, rows, 축값, 아는열) -> str:
     def 칸속(r: str, i: int, v: str) -> str:
         # 칸이 사람을 세는 집계 하나면 눌러서 **누구인지** 본다.
         주소 = _드릴주소(b, 칸수식(r, i), r, 결과.머리[i] if i < len(결과.머리) else "")
-        return (f"<a class='drill' href='{주소}' title='누구인지 보기'>{html.escape(v)}</a>"
-                if 주소 and v not in ("", "?") else html.escape(v))
+        이름 = _이름칸(v)
+        if 이름:
+            return 이름
+        if 주소 and v not in ("", "?"):
+            return f"<a class='drill' href='{주소}' title='누구인지 보기'>{html.escape(v)}</a>"
+        return html.escape(v)
 
     몸 = "".join(
         f"<tr><th style='text-align:left{';width:' + str(_px(너비들[0])) + 'px' if _px(너비들[0]) else ''}'>"
@@ -743,7 +782,7 @@ def _블록그리기(b, rows, 축값, 아는열) -> str:
     return (
         f"<div class='card'><h2>{html.escape(b.제목)}</h2>{경고}"
         f"<div class='scroll'><table {_표모양(b, 너비들)}"
-        f" data-name='{html.escape(b.제목 or '표')}'>"
+        f" data-wblock='{b.id}' data-name='{html.escape(b.제목 or '표')}'>"
         f"<tr>{머리}</tr>{몸}</table></div></div>"
     )
 
@@ -752,7 +791,7 @@ def _블록그리기(b, rows, 축값, 아는열) -> str:
 _드릴함수 = ("COUNT", "PCT", "LIST", "AVG", "SUM", "MIN", "MAX")
 
 
-def _드릴대상(수식: str):
+def _드릴대상(수식: str, 값찾기=None):
     """수식이 **통째로 집계 하나**면 그 Formula, 아니면 None.
 
     `=COUNT(채용, 부서="A")` 는 누구를 셌는지가 분명하다. `=COUNT(…)/COUNT(…)`
@@ -763,8 +802,14 @@ def _드릴대상(수식: str):
     글 = (수식 or "").strip()
     if not expr.is_formula(글):
         return None
+    # 계산기와 **같은 잣대**로 «사람을 세는 집계» 인지 본다. 모양만 보면
+    # `=SUM(1,2)` 도 집계(SUM)로 읽혀 누를 수 있게 됐다.
+    부름 = F._CALL_RE.match(고정떼기(글))
+    아는열 = (_드릴문맥.get() or {}).get("열") or 대시보드_열()
     try:
-        f = F.parse(_칸값넣기(고정떼기(글), None))
+        f = (F.parse(_칸값넣기(고정떼기(글), 값찾기))
+             if 부름 and S._집계인가(부름.group(1).upper(),
+                                   F._split_args(부름.group(2)), 아는열) else None)
     except (F.FormulaError, expr.ExprError, SheetError, ValueError):
         f = None
     if f is not None:
@@ -773,12 +818,17 @@ def _드릴대상(수식: str):
     return 글 if S.조건집계짜임(글) is not None else None
 
 
-def _드릴주소(b, 수식: str, 행: str = "", 열: str = "") -> str:
-    """보기 화면에서만 주소를 만든다 (편집 화면의 결과 미리보기에서는 안 누른다)."""
+def _드릴주소(b, 수식: str, 행: str = "", 열: str = "", 칸: str = "",
+          값찾기=None) -> str:
+    """보기 화면에서만 주소를 만든다 (편집 화면의 결과 미리보기에서는 안 누른다).
+
+    시트는 `칸`(원래 주소)을 넘긴다 — 조건 값에 다른 칸을 썼으면(`부서=A3`)
+    `값찾기` 로 그 칸 값을 풀어 본다.
+    """
     문맥 = _드릴문맥.get()
-    if not 문맥 or _드릴대상(수식) is None:
+    if not 문맥 or _드릴대상(수식, 값찾기) is None:
         return ""
-    쿼리 = {"id": b.id, "r": 행, "c": 열}
+    쿼리 = {"id": b.id, "r": 행, "c": 열, "cell": 칸}
     for 키, 열이름, _축 in 대시거르개_목록:
         if 열이름 in 문맥["거르개"]:
             쿼리[키] = 문맥["거르개"][열이름]
@@ -796,22 +846,31 @@ def _dash_who_page(me: User, params: dict) -> bytes:
         return _page("없음", "<div class='card'>블록을 찾을 수 없습니다.</div>", me=me)
     행 = (params.get("r") or [""])[0]
     열 = (params.get("c") or [""])[0]
+    거르개 = _대시거르개(params)
+    rows, _축 = _거른줄(대시보드_행(), 대시보드_축(), 거르개)
+    값찾기 = None
     if b.종류 == "숫자":
         수식 = b.수식
     elif b.종류 == "축표":
         수식 = b.칸수식.replace("{행}", 행).replace("{열}", 열)
+    elif b.종류 == "시트":
+        칸주소 = (params.get("cell") or [""])[0].strip().upper()
+        수식 = (b.시트칸.get(칸주소) or {}).get("글", "")
+        # 조건에 다른 칸을 썼을 수 있다 — 보기 화면과 같은 줄로 시트를 계산해 둔다.
+        칸값, _오류 = S.값들(b.시트칸, rows, 대시보드_열(),
+                         행수=b.시트행수, 열수=b.시트열수)
+        값찾기 = lambda a: 칸값.get(a, "")
+        행 = 칸주소
     else:
         수식 = b.칸.get(_칸키(행, 열), "")
-    f = _드릴대상(수식)
-    거르개 = _대시거르개(params)
-    rows, _축 = _거른줄(대시보드_행(), 대시보드_축(), 거르개)
+    f = _드릴대상(수식, 값찾기)
     if f is None:
         몸 = "<p class='muted'>이 칸은 사람을 세는 집계 하나가 아니라서 누구인지 보여줄 수 없습니다.</p>"
         사람 = []
     else:
         보일열 = ["한글_이름", "현재_소속", "부서", "과제", "최종상태"]
         if isinstance(f, str):
-            사람 = S.조건줄(f, rows, set(대시보드_열())) or []
+            사람 = S.조건줄(f, rows, set(대시보드_열()), 값찾기) or []
             나무, _짝 = S.조건집계짜임(f)
             if 나무.이름 in ("SUMIF", "SUMIFS", "AVERAGEIF", "AVERAGEIFS"):
                 값열 = 나무.인자[0] if 나무.이름.endswith("S") else (
@@ -929,6 +988,50 @@ def _표모양(b, 너비들=()) -> str:
 _드릴문맥: contextvars.ContextVar = contextvars.ContextVar("드릴문맥", default=None)
 
 
+def _이름맵(rows) -> dict[str, list[str]]:
+    """{이름: [지원자_ID…]} — 한글·영문 이름 둘 다. 보기 화면에서 이름에 링크를 건다."""
+    맵: dict[str, list[str]] = {}
+    for r in rows.지원자:
+        cid = str(r.get("지원자_ID") or "")
+        for 키 in ("한글_이름", "영문_이름"):
+            n = str(r.get(키) or "").strip()
+            if n and cid and cid not in 맵.get(n, []):
+                맵.setdefault(n, []).append(cid)
+    return 맵
+
+
+def _사람주소(cid: str) -> str:
+    return f"/candidate?id={urllib.parse.quote(cid)}"
+
+
+def _이름칸(글: str) -> str | None:
+    """칸 글이 **사람 이름**(또는 `가, 나` 처럼 이름 나열)이면 링크를 건 HTML, 아니면 None.
+
+    보기 화면에서만 건다 (편집 화면의 미리보기에서는 누르면 편집을 떠난다).
+    같은 이름이 여럿이면 그 이름으로 인재 Pool 을 찾아 준다 — 아무나 고르면 틀린
+    사람에게 간다.
+    """
+    문맥 = _드릴문맥.get()
+    맵 = (문맥 or {}).get("이름")
+    t = str(글 or "").strip()
+    if not 맵 or not t or "\n" in t:
+        return None
+
+    def 하나(n: str) -> str:
+        ids = 맵[n]
+        주소 = (_사람주소(ids[0]) if len(ids) == 1
+              else "/?q=" + urllib.parse.quote(n))
+        뜻 = "상세 보기" if len(ids) == 1 else f"같은 이름 {len(ids)}명 — 인재 Pool 에서 찾기"
+        return f"<a class='person' href='{주소}' title='{뜻}'>{html.escape(n)}</a>"
+
+    if t in 맵:
+        return 하나(t)
+    조각 = [x.strip() for x in t.split(",")]
+    if len(조각) > 1 and all(x in 맵 for x in 조각):
+        return ", ".join(하나(x) for x in 조각)
+    return None
+
+
 #: 대시보드 전체에 거는 거르개. (주소 열쇠, 줄의 열 이름, 축 이름)
 대시거르개_목록 = (("y", "등록년도", "등록년도"), ("dept", "부서", "부서"),
                ("proj", "과제", "과제"))
@@ -968,7 +1071,7 @@ def _dash_view_page(did: int, me: User, 거르개: dict | None = None) -> bytes:
     rows, 축값 = _거른줄(전체줄, 전체축, 거르개)
     아는열 = 대시보드_열()
     블록들 = boards.blocks(did)
-    _드릴문맥.set({"did": did, "거르개": 거르개})
+    _드릴문맥.set({"did": did, "거르개": 거르개, "이름": _이름맵(전체줄), "열": 아는열})
     몸 = "".join(_블록그리기(b, rows, 축값, 아는열) for b in 블록들)
     if not 블록들:
         몸 = ("<div class='card'><p class='muted'>블록이 없습니다. "
@@ -1751,7 +1854,10 @@ def _블록편집(b, 축값, 미리볼사람: str = "", 지금모양: str = "") 
     # 오가며 확인하던 왕복을 없앤다. «저장 없이 미리보기» 가 이 자리를 갈아 끼운다.
     결과칸 = (
         "<details class='blockout' open><summary class='muted'>"
-        "<b>이렇게 보입니다</b> <span class='bo-note'>(저장된 설정)</span></summary>"
+        "<b>이렇게 보입니다</b> <span class='bo-note'>(저장된 설정)</span>"
+        + (" <span class='muted'>· 머리글 오른쪽 경계를 끌면 열 너비가 바로 저장됩니다</span>"
+           if b.종류 in ("목록", "축표", "표") else "")
+        + "</summary>"
         f"<div class='bo-body'>{지금모양}</div></details>"
     )
     return f"<div class='card' id='b{b.id}'>{앞머리}{머리}{가운데}{꼬리}{결과칸}</div>"
@@ -1840,7 +1946,7 @@ def _dash_edit_page(did: int, me: User, error: str = "", msg: str = "") -> bytes
                    for b in 블록들)
            or "<div class='card'><p class='muted'>블록이 없습니다. 위에서 추가하세요.</p></div>")
         + _지운블록칸(did)
-        + _수식목록() + _FX_JS + _FXAC_JS
+        + _수식목록() + _FX_JS + _FXAC_JS + _열너비끌기_JS
         + (f"<script>{_SHEET_JS}</script>"
            if any(b.종류 == "시트" for b in 블록들) else ""),
         me=me,
@@ -1898,6 +2004,8 @@ def _열목록도움() -> str:
 #: 그 다음 **중간에 든** 이름을 보여준다. 칸이 비어 있으면 열 이름 전체를
 #: 띄운다 — 무엇을 쓸 수 있는지 둘러보는 자리다.
 _FXAC_JS = '\n<script>' + _정적JS("formula_autocomplete.js") + '</script>'
+#: 미리보기 표의 머리글 경계를 끌어 열 너비를 정한다 (편집 화면에만).
+_열너비끌기_JS = '\n<script>' + _정적JS("col_resize.js") + '</script>'
 
 
 _FX_JS = '\n<script>' + _정적JS("formula_preview.js") + '</script>'
@@ -2003,6 +2111,44 @@ def get_dash_sheet_xlsx(self, me, path):
                f"attachment; filename*=UTF-8''{이름}"},
     )
     return _없는주소(self)
+
+
+@라우트("POST", '/dash/block/widths', 권한='대시보드_조회', 거부말='대시보드는 채용담당자 이상만 다룰 수 있습니다.', json=True)
+def post_dash_block_widths(self, me, path):
+    """미리보기에서 열 경계를 끌어 정한 너비를 **바로** 저장한다.
+
+    목록은 `목록열` 의 n번째 열 폭, 축표·표는 `열너비[열 이름]` 이다.
+    """
+    if not can(me, "대시보드_편집"):
+        return self._json({"ok": False, "error": "대시보드를 고칠 권한이 없습니다."}, code=403)
+    data = urllib.parse.parse_qs(
+        self._read_body().decode("utf-8", "replace"), keep_blank_values=True)
+    try:
+        b = boards.block(int((data.get("id") or ["0"])[0]))
+    except ValueError:
+        b = None
+    if b is None or b.종류 not in ("목록", "축표", "표"):
+        return self._json({"ok": False, "error": "블록을 찾을 수 없습니다."}, code=404)
+    열쇠들 = data.get("key") or []
+    폭들 = [min(2000, max(30, _px(x))) if _px(x) else 0
+           for x in (data.get("px") or [])] + [0] * len(열쇠들)
+    설정 = json.loads(json.dumps(b.설정))           # 깊은 복사
+    if b.종류 == "목록":
+        줄들 = [list(줄) + ["", "", ""] for 줄 in (설정.get("목록열") or [])]
+        for 키, 폭 in zip(열쇠들, 폭들):
+            if 키.isdigit() and int(키) < len(줄들):
+                줄들[int(키)][2] = str(폭) if 폭 else ""
+        설정["목록열"] = [줄[:3] for 줄 in 줄들]
+    else:
+        너비 = dict(설정.get("열너비") or {})
+        for 키, 폭 in zip(열쇠들, 폭들):
+            if 폭:
+                너비[키] = str(폭)
+            else:
+                너비.pop(키, None)
+        설정["열너비"] = 너비
+    boards.save_block(b.id, 제목=b.제목, 설정=설정)
+    return self._json({"ok": True})
 
 
 @라우트("POST", '/dash/add', 권한='대시보드_조회', 거부말='대시보드는 채용담당자 이상만 다룰 수 있습니다.')

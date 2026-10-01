@@ -254,6 +254,12 @@ button.tiny{padding:1px 6px;font-size:12px;min-width:22px;line-height:1.3}
 #fxdrop .it i{font-style:normal;font-size:11px;color:var(--muted);margin-left:auto}
 #fxdrop .it .desc{color:var(--muted);font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:320px}
 #fxdrop .foot{padding:3px 9px;color:var(--muted);font-size:11px;border-top:1px solid var(--line,#e5e7eb)}
+a.person{color:inherit;text-decoration:underline dotted;text-underline-offset:3px}
+a.person:hover{color:var(--accent)}
+a.person.plink{font-size:12px;font-weight:400;margin-left:6px;text-decoration:none;color:var(--accent)}
+.blockout table[data-wblock] th[data-wkey]{position:relative}
+.blockout table[data-wblock] th.wgrab{cursor:col-resize;box-shadow:inset -3px 0 0 var(--accent)}
+body.wdragging,body.wdragging *{cursor:col-resize !important;user-select:none}
 #fxsig{position:absolute;z-index:121;background:#fffbe6;border:1px solid #e9d98a;border-radius:6px;
 padding:6px 10px;font-size:12.5px;max-width:620px;box-shadow:0 4px 14px rgba(0,0,0,.12);pointer-events:none}
 #fxsig .sig{font-family:Consolas,'D2Coding',monospace}

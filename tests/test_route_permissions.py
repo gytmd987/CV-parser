@@ -109,6 +109,7 @@ POST_정책 = {
     "/dash/block/save": 거부,
     "/dash/sheet/calc": 거부,
     "/dash/block/preview": 거부,
+    "/dash/block/widths": 거부,
     "/dash/block/move": 거부,
     "/dash/block/copy": 거부,
     "/dash/block/delete": 거부,
