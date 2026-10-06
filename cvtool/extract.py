@@ -23,6 +23,7 @@ from . import normalize as N
 from .config import settings
 from .ingestion.parsers import extract_text
 from .schemas import (
+    Award,
     경력_요약_만들기,
     학위상태_ENUM,
     현재_신분_ENUM,
@@ -202,7 +203,18 @@ _RESEARCH_HINT = """앞의 정리 내용과 이력서 원문에서 논문과 특
 3. **명사구 하나씩 짧게.** 문장으로 쓰지 마라. 굳어진 영문 이름은 원문 그대로.
 4. 중요한 것부터 **10개까지만.** 넘치면 덜 중요한 것을 빼라.
 5. 연구분야 키워드와 같은 말을 그대로 되풀이하지 마라.
-6. **지어내지 마라.** 원문에 근거가 없으면 빈 배열로 둬라."""
+6. **지어내지 마라.** 원문에 근거가 없으면 빈 배열로 둬라.
+
+[수상] — 이 사람이 **받은 상**을 하나씩. `수상` `Awards` `Honors` `수상경력`
+`Prizes` 같은 항목과, 논문·과제 설명 안에 적힌 수상(예: Best Paper Award)까지.
+- 상명: 상 이름 그대로 (예: "최우수 논문상", "Best Paper Award", "금상").
+  번역하지 마라.
+- 수여처: **대회 이름**이 있으면 대회 이름 (예: "2023 캡스톤디자인 경진대회",
+  "2023 ○○학회 추계학술대회"). 대회가 아니면 **상을 준 곳** (예: "대한기계학회",
+  "한국연구재단"). 모르면 빈 문자열.
+- 연월: 받은 때 YYYYMM. 월을 모르면 YYYY 만. 모르면 빈 문자열.
+- 장학금·연구비 선정·펠로십도 «상» 으로 적혀 있으면 넣어라. 자격증·수료증은 빼라.
+- 같은 상이 두 번 적혀 있으면 한 번만. 없으면 빈 배열. **지어내지 마라.**"""
 
 _CAREER_HINT = """앞의 정리 내용과 이력서 원문에서 **일한 경력**을 채워라.
 
@@ -225,7 +237,7 @@ _ALL_HINT = """앞의 정리 내용과 이력서 원문에서 **네 부분을 �
 
   basic      인적사항
   education  학력
-  research   논문 · 특허 · 연구분야 키워드 · 보유기술
+  research   논문 · 특허 · 연구분야 키워드 · 보유기술 · 수상
   career     일한 경력
 
 네 부분 모두 반드시 내야 한다. **하나라도 비우거나 건너뛰지 마라.**
@@ -612,6 +624,23 @@ def _assemble(
         if str(k).strip() and str(k).strip().lower() not in 쓸모없는말
     ]
     보유기술 = list(dict.fromkeys(보유기술))[:보유기술_최대]
+
+    # 수상 — 상 이름이 없는 줄은 버리고, 같은 상(이름·수여처·연월)은 한 번만.
+    수상들: list[Award] = []
+    본상 = set()
+    for a in research.get("수상") or []:
+        if not isinstance(a, dict):
+            continue
+        상명 = N.text(a.get("상명", ""))
+        if not 상명:
+            continue
+        수여처 = N.text(a.get("수여처", ""))
+        연월 = N.yyyymm(a.get("연월", ""))
+        열쇠 = (상명.casefold(), 수여처.casefold(), 연월)
+        if 열쇠 in 본상:
+            continue
+        본상.add(열쇠)
+        수상들.append(Award(상명=상명, 수여처=수여처, 연월=연월))
     if not 키워드:
         # 조용히 빈칸으로 두면 아무도 모른다. 이 사람이 뭘 하는 사람인지가
         # 매칭·검색에서 가장 많이 쓰이는 값이라 반드시 눈에 띄어야 한다.
@@ -711,6 +740,7 @@ def _assemble(
         특허=특허,
         연구분야_키워드=N.multi(키워드),
         보유기술=N.multi(보유기술),
+        수상=수상들,
         구글_스칼라_링크=scholar_url(
             # 원문에 적힌 이름 — 영문이 있으면 영문이 먼저다 (논문에 그렇게 실린다)
             N.text(basic.get("영문_이름", "")) or N.text(basic.get("한글_이름", "")),

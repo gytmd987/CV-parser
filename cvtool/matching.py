@@ -128,6 +128,7 @@ def candidate_profile(rec, registry=None) -> str:
             넣기(f"{단계}", " ".join(x for x in (학교, 전공, 상태) if x))
     넣기("연구분야 키워드", row.get("연구분야_키워드"))
     넣기("보유기술", row.get("보유기술"))
+    넣기("수상", row.get("수상실적"))
     넣기("1저자 해외논문", row.get("1저자_해외논문_제출처"))
 
     # 최근 경력을 앞세운다. 요약은 전부 이어 붙인 것이라 뒤에 둔다.

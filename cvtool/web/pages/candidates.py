@@ -725,11 +725,55 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
             f"<td>{html.escape(pt.연도)}</td><td>{html.escape(pt.번호)}</td></tr>"
             for pt in rec.특허
         )
+    # 수상 — 논문·특허와 같은 모양의 목록. 명칭 관리는 안 한다 (적힌 그대로).
+    def _수상줄(n: int, a) -> str:
+        지우기 = ("" if a is None else
+                f"<label><input type='checkbox' form='awardform'"
+                f" name='수상del_{n}' value='1' onchange='markDirty(this)'> 삭제</label>")
+        ㅊ = lambda 이름, 값, 폭, 안내: _논문칸(f"수상{이름}_{n}", 값, 폭, 안내, 폼="awardform")
+        연월 = (a.연월 if a else "")
+        보일연월 = (f"{연월[:4]}.{연월[4:6]}" if len(연월) == 6 and 연월[4:] != "00"
+                 else 연월[:4])
+        return (
+            f"<tr><td>{ㅊ('상명', a.상명 if a else '', '100%', '상 이름')}</td>"
+            f"<td>{ㅊ('수여처', a.수여처 if a else '', '100%', '대회명 또는 주관처')}</td>"
+            f"<td>{ㅊ('연월', 보일연월, '90px', 'YYYY.MM')}</td>"
+            f"<td>{지우기}</td></tr>"
+        )
+
+    if 수정가능:
+        수상행 = "".join([_수상줄(i, a) for i, a in enumerate(rec.수상, start=1)]
+                      + [_수상줄(len(rec.수상) + 1, None)])
+    else:
+        수상행 = "".join(
+            f"<tr><td>{html.escape(a.상명)}</td><td>{html.escape(a.수여처) or '-'}</td>"
+            f"<td>{html.escape(a.한줄().rsplit(' (', 1)[-1].rstrip(')') if a.연월 else '-')}</td></tr>"
+            for a in sorted(rec.수상, key=lambda a: a.연월 or "", reverse=True))
+    수상폼 = (
+        "<form method='post' action='/candidate/awards' id='awardform' class='mergebar'>"
+        f"<input type='hidden' name='id' value='{html.escape(지원자_ID)}'>"
+        f"<input type='hidden' name='끝' value='{len(rec.수상) + 1}'>"
+        "<button type='submit'>수상 목록 저장</button>"
+        "<span class='muted'>맨 아랫줄에 적으면 <b>새 수상</b>이 됩니다. "
+        "상 이름을 비우면 그 줄은 저장되지 않습니다.</span></form>"
+        if 수정가능 else "")
+    수상표 = (
+        "<h2 style='margin-top:14px'>수상 "
+        f"<span class='muted'>{len(rec.수상)}건</span></h2>" + 수상폼
+        + "<div class='scroll'><table data-name='수상'>"
+        "<tr><th>상</th><th>대회명 / 주관처</th><th style='width:100px'>연월</th>"
+        + ("<th style='width:60px'></th>" if 수정가능 else "") + "</tr>"
+        + 수상행 + "</table></div>"
+        + "<p class='muted'>표의 <b>수상실적</b> 열에는 <code>"
+        + html.escape(rec.수상_요약() or "무슨 상, 대회명 ('yy.m)")
+        + "</code> 처럼 최근 것부터 들어갑니다.</p>"
+        if (rec.수상 or 수정가능) else "")
+
     센것 = {**rec.논문_수(registry), **rec.특허_수()}
     출원수 = rec.특허_출원_건수()
     심사중수 = sum(1 for v in 논문보기 if v["게재상태"] == "심사중")
     실적카드 = ""
-    if 논문보기 or rec.특허 or 수정가능:
+    if 논문보기 or rec.특허 or rec.수상 or 수정가능:
         논문머리 = ("<tr><th style='width:90px'>저자</th><th style='width:80px'>유형</th>"
                  "<th>제목 / 제출처</th><th style='width:80px'>연도</th>"
                  "<th style='width:80px'>국내해외</th>"
@@ -780,6 +824,7 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
             + (("<h2 style='margin-top:14px'>특허</h2>" + 특허폼
                 + "<div class='scroll'><table data-name='특허'>" + 특허머리
                 + 특허행 + "</table></div>") if (rec.특허 or 수정가능) else "")
+            + 수상표
             + "<p class='muted'>표의 <b>저널_수 · 학회_수 · "
               "특허_등록_국내_수 · 특허_등록_해외_수</b> 열은 "
               "여기 있는 것을 셉니다 — <b>심사중 논문은 빼고</b> 셉니다. "
@@ -1624,6 +1669,60 @@ def post_candidate_patents(self, me, path):
                      비고=요약)
         return self._redirect(
             f"{뒤로}&msg={urllib.parse.quote('특허 목록: ' + 요약)}#실적")
+    return self._redirect(
+        f"{뒤로}&msg={urllib.parse.quote('바뀐 내용이 없습니다.')}#실적")
+    return _없는주소(self)
+
+
+@라우트("POST", '/candidate/awards', 권한='지원자_수정')
+def post_candidate_awards(self, me, path):
+    # 수상 목록 통째로 받기 (특허 목록과 같은 모양).
+    data = urllib.parse.parse_qs(
+        self._read_body().decode("utf-8", "replace"), keep_blank_values=True
+    )
+    cid = (data.get("id") or [""])[0]
+    뒤로 = f"/candidate?id={urllib.parse.quote(cid)}"
+    rec = store.get(cid)
+    if rec is None:
+        return self._redirect("/")
+    try:
+        끝 = int((data.get("끝") or ["0"])[0])
+    except ValueError:
+        끝 = 0
+
+    옛것 = list(rec.수상)
+    새목록 = []
+    고침 = 지움 = 더함 = 0
+    for i in range(1, 끝 + 1):
+        if (data.get(f"수상del_{i}") or [""])[0]:
+            지움 += 1
+            continue
+        한줄 = {칸: (data.get(f"수상{칸}_{i}") or [""])[0] for 칸 in ("상명", "수여처", "연월")}
+        try:
+            상 = edit.validate_award(한줄)
+        except ValidationError as exc:
+            return self._redirect(
+                f"{뒤로}&err={urllib.parse.quote(f'수상 {i}번째 줄 — {exc}')}#실적")
+        if 상 is None:            # 상 이름이 빈 줄 (추가용 빈 줄)
+            continue
+        옛줄 = 옛것[i - 1] if i <= len(옛것) else None
+        if 옛줄 is None:
+            더함 += 1
+        elif 상.model_dump() != 옛줄.model_dump():
+            고침 += 1
+        새목록.append(상)
+
+    if 고침 or 지움 or 더함:
+        rec.수상 = 새목록
+        store.save(rec)
+        요약 = " · ".join(
+            x for x in (f"{고침}줄 고침" if 고침 else "",
+                        f"{더함}줄 추가" if 더함 else "",
+                        f"{지움}줄 삭제" if 지움 else "") if x)
+        audit.record(me.아이디, "지원자", cid, 항목="수상",
+                     이전값=f"{len(옛것)}건", 새값=f"{len(새목록)}건", 비고=요약)
+        return self._redirect(
+            f"{뒤로}&msg={urllib.parse.quote('수상 목록: ' + 요약)}#실적")
     return self._redirect(
         f"{뒤로}&msg={urllib.parse.quote('바뀐 내용이 없습니다.')}#실적")
     return _없는주소(self)

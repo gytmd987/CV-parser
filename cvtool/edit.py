@@ -438,6 +438,23 @@ def validate_patent(값들: dict) -> Patent | None:
                   국가=(값들.get("국가") or "").strip(), **고른것)
 
 
+def validate_award(값들: dict):
+    """수상 한 줄을 검사해 `Award` 로. 상 이름이 비었으면 None (추가용 빈 줄).
+
+    연월은 `2023.5` · `2023년 5월` · `202305` · `2023` 어느 모양이든 받아 YYYYMM 으로.
+    """
+    from .schemas import Award
+
+    상명 = N.text(값들.get("상명") or "")
+    if not 상명:
+        return None
+    원연월 = (값들.get("연월") or "").strip()
+    연월 = N.yyyymm(원연월) if 원연월 else ""
+    if 원연월 and not 연월:
+        raise ValidationError(f"수상 연월을 읽을 수 없습니다: {원연월!r} (예: 2023.05)")
+    return Award(상명=상명, 수여처=N.text(값들.get("수여처") or ""), 연월=연월)
+
+
 # ---------------------------------------------------------------------------
 # 사용자 정의 열
 # ---------------------------------------------------------------------------

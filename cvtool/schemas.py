@@ -64,6 +64,9 @@ COLUMNS: list[str] = [
     # 직접 다룰 줄 아는 장비·기법·도구 (최대 10개). 연구분야(무엇을 연구하나)와
     # 갈라 둔다 — 현업이 찾는 것은 대개 «이 장비를 쓸 줄 아나» 다.
     "보유기술",
+    # 수상 목록을 한 칸으로: `무슨 상, 대회명 ('yy.m)` 을 최근 것부터. 명칭 관리는
+    # 안 한다 — 이력서에 적힌 이름 그대로. 고치는 건 상세 화면의 수상 목록에서.
+    "수상실적",
     # 1저자 해외 저널 중 **가장 높은** IF. 명칭 관리에서 IF 를 고치면 여기도
     # 곧바로 따라온다 (저장된 값이 아니라 볼 때마다 사전에서 다시 읽는다).
     "임팩트_팩터",
@@ -191,7 +194,7 @@ TEXT_COLUMNS: set[str] = {
 #: 계산해서 나오는 열 (사람이 표에서 직접 못 고친다)
 COUNT_COLUMNS: tuple[str, ...] = (
     "저널_수", "저널_주저자_수", "학회_수", "학회_주저자_수",
-    "특허_등록_국내_수", "특허_등록_해외_수",
+    "특허_등록_국내_수", "특허_등록_해외_수", "수상실적",
 )
 
 # ---------------------------------------------------------------------------
@@ -299,8 +302,22 @@ SECTION_RESEARCH: dict = {
         # 최대 10개는 안내문과 조립(`extract._assemble`)에서 지킨다. maxItems 를
         # 스키마에 넣지 않는 까닭: guided_json 백엔드마다 지원이 달라 통째로 실패할 수 있다.
         "보유기술": {"type": "array", "items": {"type": "string"}},
+        # 받은 상. 이름은 이력서에 적힌 그대로 — 명칭 관리를 안 한다.
+        "수상": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "상명": {"type": "string"},
+                    # 대회 이름, 없으면 상을 준 곳 (학회·기관·재단)
+                    "수여처": {"type": "string"},
+                    "연월": {"type": "string"},
+                },
+                "required": ["상명"],
+            },
+        },
     },
-    "required": ["논문", "연구분야_키워드", "보유기술"],
+    "required": ["논문", "연구분야_키워드", "보유기술", "수상"],
 }
 
 SECTION_CAREER: dict = {
@@ -382,6 +399,25 @@ class Patent(BaseModel):
     국내해외: str = "불명"      # 국내 / 해외 / 불명
 
 
+class Award(BaseModel):
+    """받은 상 하나. 이름은 이력서에 적힌 그대로 둔다 (명칭 관리 안 함)."""
+
+    상명: str = ""
+    #: 대회 이름, 없으면 상을 준 곳 (학회·기관·재단)
+    수여처: str = ""
+    #: YYYYMM (월을 모르면 YYYY00), 모르면 빈칸
+    연월: str = ""
+
+    def 한줄(self) -> str:
+        """`무슨 상, 대회명 ('yy.m)` — 모르는 조각은 뺀다."""
+        글 = ", ".join(x for x in (self.상명.strip(), self.수여처.strip()) if x)
+        연, 월 = self.연월[:4], self.연월[4:6]
+        if len(연) == 4 and 연.isdigit():
+            때 = f"'{연[2:]}" + (f".{int(월)}" if 월.isdigit() and int(월) else "")
+            글 = f"{글} ({때})" if 글 else f"({때})"
+        return 글
+
+
 class Career(BaseModel):
     회사: str = ""
     직무: str = ""
@@ -441,6 +477,8 @@ class CVRecord(BaseModel):
     특허: list[Patent] = Field(default_factory=list)
     연구분야_키워드: str = ""
     보유기술: str = ""
+    #: 받은 상 전부. 옛 레코드에는 없다 — 빈 목록으로 읽힌다.
+    수상: list[Award] = Field(default_factory=list)
     #: 경력 **전부**. 요약 글자만 들고 있으면 어디부터 어디까지가 회사 이름인지
     #: 알 수 없어 명칭 사전을 먹일 수가 없다 (논문·특허와 같은 이유로 목록이다).
     #: 옛 레코드에는 없다 — 그때는 빈 목록으로 읽히고 저장된 요약을 그대로 쓴다.
@@ -646,6 +684,13 @@ class CVRecord(BaseModel):
                 counts[v["등급"]] = counts.get(v["등급"], 0) + 1
         return counts
 
+    def 수상_요약(self) -> str:
+        """`무슨 상, 대회명 ('yy.m)` 을 **최근 것부터** 한 칸에 (연월 모르는 것은 뒤로)."""
+        from .normalize import MULTI_SEP
+
+        차례 = sorted(self.수상, key=lambda a: a.연월 or "", reverse=True)
+        return MULTI_SEP.join(x for x in (a.한줄() for a in 차례) if x)
+
     def 학위상태_보기(self) -> str:
         """표에 낼 박사 학위상태. 졸업일이 지났으면 졸업이다.
 
@@ -688,6 +733,7 @@ class CVRecord(BaseModel):
         # 사전이 없어도 날짜는 똑같이 흘러가므로 registry 블록 밖이다.
         data["박사_학위상태"] = self.학위상태_보기()
         data["경력_요약"] = self.경력_요약_보기(registry)
+        data["수상실적"] = self.수상_요약()
         # 세어 나오는 값. 0 은 빈칸으로 둔다 — 표가 0 으로 도배되면 안 읽힌다.
         for 열, 값 in {**self.논문_수(registry), **self.특허_수()}.items():
             data[열] = 값 or ""
