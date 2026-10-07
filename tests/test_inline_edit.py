@@ -230,7 +230,7 @@ def test_edit_custom_cell_unknown_field(web, cid):
 # --- 화면 렌더링 -------------------------------------------------------------
 def test_dashboard_renders_editable_cells(web, cid):
     page = web.get("/")
-    assert "data-col='한글_이름'" in page
+    assert "data-col='이메일'" in page                # 이름은 맨 앞 링크 열이고, 나머지는 바로 고친다
     assert "/api/cell" in page                       # 저장 스크립트가 붙어 있다
 
 
@@ -1533,6 +1533,7 @@ def test_the_scholar_link_opens_instead_of_editing(web, cid):
     rec = web.module.store.get(cid)
     rec.구글_스칼라_링크 = "https://scholar.google.com/scholar?q=Gil+Dong+Hong+KAIST"
     web.module.store.save(rec)
+    web.module.store.set_column("구글_스칼라_링크", 숨김=False)   # 처음엔 화면에서 숨겨 둔다
     page = web.get("/")
     assert "구글 스칼라 ↗" in page
     assert "scholar.google.com/scholar?q=Gil+Dong+Hong+KAIST" in page

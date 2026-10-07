@@ -38,11 +38,29 @@ from ..jobs import _enqueue, _set_status, _status, _status_lock
 from ..columns import (
     열이름도움,
     _cell, _editable, _tsv_to_xlsx, _볼수있나, _표값맵, MAIL_COLUMN, MANAGE_COLUMNS, 라벨, 머리글, 열폭,
-    추가열, 표열,
+    추가열, 엑셀열, 표열,
 )
 from ..layout import _busy_count, _page, _status_table, _알림, _없는주소, _정적JS, 홈
 from ..router import 라우트, 로그인만
 from ..multipart import parse_multipart
+
+
+def _시작하기(me: User) -> str:
+    """지원자가 한 명도 없을 때 — 무엇부터 하면 되는지 세 걸음으로."""
+    올리기 = ("<a class='btn' href='/upload'>CV 올리러 가기</a>"
+            if can(me, "지원자_등록") else "")
+    return (
+        "<div class='onboard'><h2>처음이시군요. 이렇게 시작하면 돼요.</h2>"
+        "<ol class='obsteps'>"
+        "<li><b>CV 올리기</b><span>오른쪽 위 <b>+ 지원자 추가</b> 에서 PDF·워드 파일을 "
+        "올리면 이름·학력·논문이 자동으로 정리돼요.</span></li>"
+        "<li><b>검토 표시 확인</b><span>자동으로 읽다 헷갈린 곳에는 <span class='pill "
+        "p-검토필요'>검토</span> 가 붙어요. 열어서 맞는지만 봐 주세요.</span></li>"
+        "<li><b>채용 시작</b><span>이번에 볼 사람을 체크하고 <b>채용 시작</b> 을 누르면 "
+        "채용 현황에서 단계별로 관리할 수 있어요.</span></li></ol>"
+        f"<p>{올리기} <a class='btn sec' href='/help#start' data-help='start'>사용법 보기</a></p>"
+        "</div>"
+    )
 
 
 def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "",
@@ -82,15 +100,28 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
     채용중 = recruit.started()
     채용가능 = can(me, "채용현황_수정")
     이름표 = 라벨(COLS)
+    # 이름은 맨 앞 **고정 열**에 링크로 둔다 — 누르면 상세. 이름 열이 따로 또 있으면
+    # 같은 이름이 두 번 보이므로 표 열에서는 뺀다 (이름 고치기는 상세에서).
+    COLS = [c for c in COLS if c != "한글_이름"]
+    끝낸검토 = store.review_done_map()
     head = "".join(
         f"<th class='{열폭(c)}' title='{html.escape(열이름도움(c))}'>{머리글(이름표[c])}</th>" for c in COLS)
     body_rows = []
     for rec in records:
         row = rec.to_row(registry)
         cid = rec.지원자_ID
+        이름 = rec.한글_이름 or rec.영문_이름 or "(이름 없음)"
+        남은검토 = review.display(rec.검토_사유, 끝낸검토.get(cid, set()))
+        배지 = ""
+        if rec.검토_필요 == "Y" and 남은검토 and 남은검토 != review.DONE_MARK:
+            배지 += ("<span class='pill p-검토필요' title='자동으로 읽다 헷갈린 곳이 있어요 — "
+                   "열어서 확인해 주세요'>검토</span>")
+        if cid in 채용중:
+            배지 += "<span class='pill p-처리중'>채용 중</span>"
         cells = [
-            f"<td><input type='checkbox' name='ids' value='{html.escape(cid)}'></td>",
-            f"<td><a href='/candidate?id={urllib.parse.quote(cid)}'>상세</a></td>",
+            f"<td class='ck'><input type='checkbox' name='ids' value='{html.escape(cid)}'></td>",
+            f"<td class='pname'><a href='/candidate?id={urllib.parse.quote(cid)}'"
+            f" title='눌러서 자세히 보기'>{html.escape(이름)}</a>{배지}</td>",
         ]
         for c in COLS:
             폭 = 열폭(c)
@@ -175,30 +206,39 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
     if records:
         # 줄마다 있는 단추는 이 표 **밖의** 폼으로 보낸다. 폼 안에 폼을 넣으면
         # 브라우저가 안쪽을 버려서 엉뚱한 동작이 실행된다 (전에 그랬다).
+        #
+        # 여러 명에게 하는 일(메일·채용 시작·삭제)은 **체크했을 때만** 막대로 나온다.
+        # 아무도 안 골랐는데 늘 떠 있으면 무엇을 눌러야 하는지 오히려 헷갈린다.
         table = f"""
-        <form method='post' action='/candidates/delete'>
+        <form method='post' action='/candidates/delete' class='selform'>
           <input type='hidden' name='back' value='{html.escape("/" + 조건쿼리)}'>
-          <p class='bar'>{묶음단추}<button type='submit' class='danger ghost'
+          <div class='selbar'>
+            <span class='selnone muted'>왼쪽 칸을 체크하면 여러 명에게 메일 보내기 · 채용 시작 ·
+              삭제를 한꺼번에 할 수 있어요.</span>
+            <span class='selsome'><b class='selcount'>0명</b> 선택됨
+              {묶음단추}<button type='submit' class='danger ghost'
                onclick="return window.confirm('선택한 지원자를 삭제합니다. 되돌릴 수 없습니다.')"
-               >선택 삭제</button>
-             <span class='muted'>체크한 사람에게 적용합니다.</span></p>
+               >선택 삭제</button></span>
+          </div>
           <div class='scroll'><table data-name='인재 Pool'
                 data-export='/export.xlsx{조건쿼리}'>
-            <tr><th><input type='checkbox' onclick="selectVisible(this)"
+            <tr><th class='ck'><input type='checkbox' onclick="selectVisible(this)"
                 title='보이는 줄만 선택합니다'>
-            </th><th></th>{head}</tr>
+            </th><th class='pname'>이름</th>{head}</tr>
             {''.join(body_rows)}
           </table></div>
         </form>"""
     elif 전체:
-        table = "<p class='muted'>검색 조건에 맞는 지원자가 없습니다.</p>"
+        table = ("<div class='empty'><b>검색 조건에 맞는 지원자가 없어요.</b>"
+                 "<span>검색어를 줄이거나 <a href='/'>초기화</a> 해 보세요.</span></div>")
     else:
-        table = "<p class='muted'>아직 등록된 지원자가 없습니다. CV를 업로드하세요.</p>"
+        table = _시작하기(me)
 
     안내 = (
-        "<p class='muted'>표의 칸을 눌러 바로 고칠 수 있습니다. "
-        "Enter 로 저장, Esc 로 취소. 여러 줄 칸은 Enter 가 줄바꿈이고 "
-        "<b>Ctrl+Enter</b> 로 저장합니다. 회색 칸(계산·자동 항목)은 고칠 수 없습니다.</p>"
+        "<span class='tip' tabindex='0' data-tip='칸을 누르면 그 자리에서 고칠 수 있어요.\n"
+        "Enter 저장 · Esc 취소 · 여러 줄 칸은 Ctrl+Enter 로 저장\n"
+        "회색 칸(논문 수처럼 계산된 값)은 고칠 수 없어요.\n"
+        "열 제목을 누르면 정렬하거나 걸러 볼 수 있어요.'>i</span>"
         if 수정가능 else ""
     )
     checked = " checked" if review_only else ""
@@ -212,18 +252,16 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
     return _page(
         "인재 Pool",
         f"""{알림}{''.join(warns)}{처리중알림}
+        <h1 class='pt'>인재 Pool <span class='sub'>{len(records)}명{f' / 전체 {전체}명' if len(records) != 전체 else ''} · 채용 중 {len(채용중)}명</span>{안내}</h1>
         <div class='card'>
-          <h2>인재 Pool {len(records)}명{f' / 전체 {전체}명' if len(records) != 전체 else ''}<span class='muted'> · 채용 중 {len(채용중)}명</span></h2>
-          <form method='get' action='/' style='margin-bottom:12px'>
-            <input type='text' name='q' value='{html.escape(q)}' placeholder='이름·소속·학교·파일명 검색'>
+          <form method='get' action='/' class='bar searchbar'>
+            <input type='search' name='q' value='{html.escape(q)}' placeholder='이름 · 소속 · 학교 · 파일명으로 찾기' style='width:300px'>
             <select name='year'><option value=''>전체 년도</option>{연도선택}</select>
-            <label class='muted'><input type='checkbox' name='review' value='1'{checked}>
+            <label class='muted chk'><input type='checkbox' name='review' value='1'{checked}>
               검토 필요만</label>
-            <button type='submit'>검색</button>
-            <a class='btn sec' href='/'>초기화</a>
+            <button type='submit' class='sec'>검색</button>
+            {"<a class='btn sec' href='/'>초기화</a>" if 조건 else ""}
           </form>
-
-          {안내}
           {table}
         </div>""",
         me=me,
@@ -1231,7 +1269,7 @@ def get_export_xlsx(self, me, path):
         (params.get("year") or [""])[0],
         registry=registry,
     )
-    열 = 표열()
+    열 = 엑셀열()
     data = records_to_xlsx(records, registry,
                            (store.field_names(), _표값맵()),
                            열=열, 라벨=라벨(열))

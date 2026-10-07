@@ -471,6 +471,37 @@ textarea.cellbox{width:100%;min-width:240px;resize:vertical;font:inherit}
  background:#fff;max-height:420px;overflow:auto;font:12pt/1.7 "맑은 고딕",sans-serif}
 .mailbody img{max-width:100%}
 pre.rubric{background:var(--bg);border:1px solid var(--line);border-radius:var(--r-s);padding:10px 12px;font-size:12px;white-space:pre-wrap;margin:8px 0 0;color:var(--muted)}
+/* --- 인재 Pool ------------------------------------------------------------ */
+.searchbar{margin-bottom:12px}
+.searchbar label.chk{display:inline-flex;align-items:center;gap:4px;margin:0 4px}
+.selbar{display:flex;align-items:center;gap:8px;min-height:40px;margin:0 0 10px;padding:6px 10px;
+ border:1px dashed var(--line);border-radius:var(--r-s);background:#fbfcfd}
+.selbar .selsome{display:none;align-items:center;gap:8px;flex-wrap:wrap}
+.selbar.has{border-style:solid;border-color:#bfd3fb;background:var(--accent-w)}
+.selbar.has .selnone{display:none}
+.selbar.has .selsome{display:flex}
+.selbar .selcount{color:var(--accent-d)}
+td.ck,th.ck{width:38px;text-align:center}
+td.pname,th.pname{position:sticky;left:0;background:var(--card);z-index:2;min-width:130px;
+ max-width:220px;box-shadow:1px 0 0 var(--grid)}
+th.pname{z-index:3;background:#f8f9fb}
+td.pname a{font-weight:650;color:var(--txt)}
+td.pname a:hover{color:var(--accent)}
+td.pname .pill{margin-left:6px;font-size:10.5px;padding:1px 7px;vertical-align:1px}
+.scroll table tr:hover td.pname{background:var(--accent-w)}
+.empty{padding:28px;text-align:center;color:var(--muted);display:flex;flex-direction:column;gap:4px}
+.empty b{color:var(--txt2)}
+.onboard{padding:8px 4px}
+.onboard h2{font-size:18px}
+ol.obsteps{list-style:none;counter-reset:o;padding:0;margin:14px 0 18px;display:grid;
+ grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+ol.obsteps li{counter-increment:o;border:1px solid var(--line);border-radius:var(--r);
+ padding:14px 16px 14px 52px;position:relative;background:var(--bg);display:flex;
+ flex-direction:column;gap:4px;line-height:1.6}
+ol.obsteps li::before{content:counter(o);position:absolute;left:16px;top:14px;width:26px;
+ height:26px;border-radius:50%;background:var(--accent);color:#fff;font-weight:700;
+ display:flex;align-items:center;justify-content:center;font-size:13px}
+ol.obsteps li span{color:var(--txt2);font-size:13px}
 /* --- 사용법 (오른쪽에서 열리는 창 · /help 화면) --------------------------- */
 #helpdim{position:fixed;inset:0;background:rgba(15,23,42,.28);z-index:300}
 #helpdrawer{position:fixed;top:0;right:0;bottom:0;width:min(560px,94vw);background:var(--card);

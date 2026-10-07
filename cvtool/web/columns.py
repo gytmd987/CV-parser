@@ -200,15 +200,37 @@ def 지원자열(registry_=None) -> list[str]:
 MANAGE_HIDDEN_BY_DEFAULT = ("지원자_ID", "등록일시", "원본_파일명", "보관_만료일")
 
 
+#: 처음 볼 때 **화면 표에서만** 숨겨 두는 열. 대부분 비어 있거나 가끔만 보는 값이라,
+#: 다 펼쳐 두면 정작 봐야 할 열이 화면 밖으로 밀렸다. 엑셀 내려받기에는 그대로
+#: 나간다(`엑셀열`). 표 항목에서 숨김을 풀면 화면에도 나온다.
+SCREEN_HIDDEN_BY_DEFAULT = (
+    "영문_이름", "생년월일", "전화번호", "현재_소속_상세", "현재_지도교수",
+    "박사_석박통합", "박사_지도교수", "박사_시작", "석사_지도교수", "석사_시작", "석사_졸업",
+    "학사_학교", "학사_전공", "학사_시작", "학사_졸업",
+    "경력_시작", "경력_종료", "구글_스칼라_링크", "검토_필요",
+)
+
+
 def 기본숨김(col: str, cfg: dict) -> bool:
-    """설정을 한 번도 안 건드린 관리 정보 열인가."""
-    return col in MANAGE_HIDDEN_BY_DEFAULT and col not in cfg
+    """설정을 한 번도 안 건드린 열 중 처음부터 숨겨 두는 열인가."""
+    return (col in MANAGE_HIDDEN_BY_DEFAULT or col in SCREEN_HIDDEN_BY_DEFAULT) \
+        and col not in cfg
 
 
 def 표열(registry_=None) -> list[str]:
     """지원자 표에 실제로 나갈 열 (숨김·순서 설정 반영)."""
     cfg = store.column_config()
     return store.arrange([c for c in 지원자열(registry_) if not 기본숨김(c, cfg)])
+
+
+def 엑셀열(registry_=None) -> list[str]:
+    """엑셀 내려받기 열 — 화면에서만 처음부터 숨긴 열(`SCREEN_HIDDEN_BY_DEFAULT`)도 담는다.
+
+    사람이 표 항목에서 직접 숨긴 열은 엑셀에도 안 나간다 (예전과 같다).
+    """
+    cfg = store.column_config()
+    return store.arrange([c for c in 지원자열(registry_)
+                          if not (c in MANAGE_HIDDEN_BY_DEFAULT and c not in cfg)])
 
 
 #: 열 이름별 너비 등급. 값이 짧은 열에 넓은 자리를 주면 정작 긴 글이 잘린다.

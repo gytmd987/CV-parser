@@ -146,7 +146,22 @@ function selectVisible(head){
     if(c){ c.checked = head.checked; if(c.checked) 센것++; }
   });
   showPicked(tb);
+  selbarUpdate(head);
 }
+
+/* 인재 Pool — 사람을 체크했을 때만 «메일 · 채용 시작 · 삭제» 막대가 나온다 */
+function selbarUpdate(el){
+  var 폼 = el && el.closest ? el.closest('form.selform') : null;
+  if(!폼) return;
+  var n = 폼.querySelectorAll('input[name=ids]:checked').length;
+  var 막대 = 폼.querySelector('.selbar');
+  if(!막대) return;
+  막대.classList.toggle('has', n > 0);
+  var 수 = 막대.querySelector('.selcount'); if(수) 수.textContent = n + '명';
+}
+document.addEventListener('change', function(e){
+  if(e.target && e.target.name === 'ids') selbarUpdate(e.target);
+});
 
 // 지금 몇 명 골랐는지 표 위에 적어 둔다.
 function showPicked(tb){
