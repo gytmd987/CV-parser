@@ -561,6 +561,38 @@ button.stchip{background:var(--sb,var(--bg));color:var(--sc,var(--txt2));border:
 button.stchip:hover{background:var(--sb,var(--bg));border-color:var(--sc,var(--line))}
 button.stchip.on{border-color:var(--sc);box-shadow:0 0 0 2px var(--sb)}
 button.stchip.all{background:var(--card);color:var(--txt2);border-color:var(--line)}
+/* --- 대시보드 --------------------------------------------------------------- */
+h1.pt .btn{font-size:13px;font-weight:550}
+.dfilter{padding:12px 18px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:16px;
+ margin-bottom:16px}
+.tiles>.card{margin:0;padding:16px 18px}
+.tiles>.card h2{font-size:13px;color:var(--muted);font-weight:650;margin-bottom:4px}
+.tiles>.card>div[style*='font-size:38px']{font-size:34px !important;letter-spacing:-.02em}
+details.addblock{display:inline-block;position:relative}
+details.addblock>summary{list-style:none;display:inline-block}
+details.addblock>summary::-webkit-details-marker{display:none}
+details.addblock .kgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));
+ gap:8px;margin-top:10px;width:min(920px,86vw)}
+button.kcard{background:var(--card);color:var(--txt);border:1px solid var(--line);text-align:left;
+ display:flex;flex-direction:column;gap:3px;padding:10px 12px;border-radius:var(--r);font-weight:400}
+button.kcard b{font-size:14px;color:var(--accent-d)}
+button.kcard span{font-size:12px;color:var(--muted);line-height:1.45}
+button.kcard:hover{border-color:var(--accent);background:var(--accent-w)}
+.helprow{display:flex;gap:18px;flex-wrap:wrap;margin-top:14px}
+.helprow>details{flex:0 1 auto}
+.helprow>details[open]{flex-basis:100%}
+.card.bcard{padding-top:12px}
+details.bedit>summary.bsum{list-style:none;cursor:pointer;display:flex;align-items:center;gap:8px;
+ padding:4px 0}
+details.bedit>summary.bsum::-webkit-details-marker{display:none}
+summary.bsum .bkind{font-size:11px;font-weight:700;color:var(--accent-d);background:var(--accent-w);
+ border-radius:99px;padding:1px 9px}
+summary.bsum b{font-size:15px}
+summary.bsum .bopen{margin-left:auto;font-size:12.5px;color:var(--accent);border:1px solid #cfdcf6;
+ border-radius:var(--r-s);padding:3px 10px}
+details.bedit[open]>summary.bsum .bopen::before{content:'접기 · '}
+details.bedit[open]>summary.bsum{border-bottom:1px solid var(--line2);margin-bottom:10px;padding-bottom:10px}
 /* --- 사용법 (오른쪽에서 열리는 창 · /help 화면) --------------------------- */
 #helpdim{position:fixed;inset:0;background:rgba(15,23,42,.28);z-index:300}
 #helpdrawer{position:fixed;top:0;right:0;bottom:0;width:min(560px,94vw);background:var(--card);

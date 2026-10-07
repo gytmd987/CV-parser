@@ -509,3 +509,12 @@ document.addEventListener('DOMContentLoaded', function(){
     if(c){ var b = c.querySelector('.tiny-edit'); if(b) roToggle(b); }
   }
 });
+
+/* 대시보드 편집 — 방금 더하거나 저장한 블록(#b번호)은 설정을 펼쳐 둔다 */
+document.addEventListener('DOMContentLoaded', function(){
+  var m = /^#b(\d+)$/.exec(location.hash);
+  if(!m) return;
+  var 카드 = document.getElementById('b' + m[1]);
+  var 접힘 = 카드 && 카드.querySelector('details.bedit');
+  if(접힘){ 접힘.open = true; 카드.scrollIntoView({block: 'start'}); }
+});

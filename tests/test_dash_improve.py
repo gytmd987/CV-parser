@@ -72,7 +72,7 @@ def test_편집_화면에_블록_결과가_붙는다(판):
     쪽 = 판.get(f"/dash/edit?id={did}")
     assert "이렇게 보입니다" in 쪽 and "3명" in 쪽
     assert "href='/dash/who" not in 쪽           # 편집 화면에서는 누르는 곳이 없다
-    assert "어떤 블록을 고를까요?" in 쪽          # 블록 설명
+    assert "＋ 블록 추가" in 쪽 and "class='kcard'" in 쪽   # 종류마다 설명이 붙은 카드
 
 
 def test_저장_없이_미리보기는_저장하지_않는다(판):

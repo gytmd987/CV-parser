@@ -1113,7 +1113,21 @@ def _dash_view_page(did: int, me: User, 거르개: dict | None = None) -> bytes:
     아는열 = 대시보드_열()
     블록들 = boards.blocks(did)
     _드릴문맥.set({"did": did, "거르개": 거르개, "이름": _이름맵(전체줄), "열": 아는열})
-    몸 = "".join(_블록그리기(b, rows, 축값, 아는열) for b in 블록들)
+    # 숫자 블록이 이어져 있으면 **가로로 나란히** 타일로 놓는다. 카드 한 장에 숫자
+    # 하나씩 세로로 쌓으면 한 화면에 두세 개밖에 안 보였다.
+    조각: list[str] = []
+    타일: list[str] = []
+    for b in 블록들:
+        if b.종류 == "숫자":
+            타일.append(_블록그리기(b, rows, 축값, 아는열))
+            continue
+        if 타일:
+            조각.append("<div class='tiles'>" + "".join(타일) + "</div>")
+            타일 = []
+        조각.append(_블록그리기(b, rows, 축값, 아는열))
+    if 타일:
+        조각.append("<div class='tiles'>" + "".join(타일) + "</div>")
+    몸 = "".join(조각)
     if not 블록들:
         몸 = ("<div class='card'><p class='muted'>블록이 없습니다. "
               f"<a href='/dash/edit?id={did}'>편집</a> 에서 추가하세요.</p></div>")
@@ -1127,11 +1141,12 @@ def _dash_view_page(did: int, me: User, 거르개: dict | None = None) -> bytes:
         return (f"<label class='rt-lbl'>{html.escape(열)} "
                 f"<select name='{키}' onchange='this.form.submit()'>{opts}</select></label>")
     거르개폼 = (
-        "<form method='get' action='/dash/view' class='bar' style='margin-top:8px'>"
+        "<form method='get' action='/dash/view' class='bar' style='margin:0'>"
         f"<input type='hidden' name='id' value='{did}'>"
         + "".join(고르개(*x) for x in 대시거르개_목록)
         + (f"<a class='btn sec' href='/dash/view?id={did}'>거르개 풀기</a>" if 거르개 else "")
-        + "<span class='muted'>모든 블록에 걸립니다. 주소를 저장해 두면 그 조건으로 다시 열립니다.</span>"
+        + "<span class='tip' tabindex='0' data-tip='고르면 모든 블록이 그 사람들로 다시 계산돼요.\n"
+          "이 주소를 즐겨찾기해 두면 같은 조건으로 다시 열려요.'>i</span>"
         "</form>"
     )
     기준 = (f"인재 Pool {len(rows.지원자)}명 · 채용 중 {len(rows.채용)}명 기준"
@@ -1139,12 +1154,13 @@ def _dash_view_page(did: int, me: User, 거르개: dict | None = None) -> bytes:
              if 거르개 else ""))
     return _page(
         d.이름,
-        f"<div class='card'><h2>{html.escape(d.이름)}"
-        f"<span class='muted'> {html.escape(d.설명)}</span></h2>"
-        f"<p><a class='btn sec' href='/dash'>목록</a> "
-        f"<a class='btn sec' href='/dash/edit?id={did}'>편집</a> "
-        f"<span class='muted'>{기준} · {html.escape(now_kst().strftime('%Y-%m-%d %H:%M'))}"
-        "</span></p>" + 거르개폼 + "</div>" + 몸,
+        f"<h1 class='pt'>{html.escape(d.이름)}"
+        f"<span class='sub'>{html.escape(d.설명)}</span><span style='flex:1'></span>"
+        f"<a class='btn sec' href='/dash'>목록</a>"
+        f"<a class='btn sec' href='/dash/edit?id={did}'>편집</a></h1>"
+        f"<div class='card dfilter'>{거르개폼}"
+        f"<p class='muted' style='margin:6px 0 0'>{기준} · "
+        f"{html.escape(now_kst().strftime('%Y-%m-%d %H:%M'))}</p></div>" + 몸,
         me=me,
         폭=d.폭,
     )
@@ -1673,7 +1689,7 @@ def _시트편집(b) -> str:
         "<form method='post' action='/dash/block/delete' style='display:inline'"
         " onsubmit=\"return confirm('이 블록을 지웁니다.')\">"
         f"<input type='hidden' name='id' value='{b.id}'>"
-        "<button class='danger'>블록 삭제</button></form></p>"
+        "<button class='danger ghost'>블록 삭제</button></form></p>"
         + _수식도움() + _열목록도움() + "</div>"
     )
 
@@ -1734,7 +1750,7 @@ def _블록편집(b, 축값, 미리볼사람: str = "", 지금모양: str = "") 
         "<form method='post' action='/dash/block/delete' style='display:inline'"
         " onsubmit=\"return confirm('이 블록을 지웁니다.')\">"
         f"<input type='hidden' name='id' value='{b.id}'>"
-        "<button class='danger'>블록 삭제</button></form></p>"
+        "<button class='danger ghost'>블록 삭제</button></form></p>"
     )
 
     if b.종류 == "시트":
@@ -1901,7 +1917,13 @@ def _블록편집(b, 축값, 미리볼사람: str = "", 지금모양: str = "") 
         + "</summary>"
         f"<div class='bo-body'>{지금모양}</div></details>"
     )
-    return f"<div class='card' id='b{b.id}'>{앞머리}{머리}{가운데}{꼬리}{결과칸}</div>"
+    # 설정은 접어 두고 **결과(미리보기)** 만 보인다. 블록이 여럿이면 설정이 다 펼쳐진
+    # 화면이 끝없이 길어져서 무엇이 어느 블록인지 찾기 어려웠다. 제목 줄을 누르면 펼친다.
+    요약 = (f"<summary class='bsum'><span class='bkind'>{html.escape(b.종류)}</span>"
+          f"<b>{html.escape(b.제목 or '(제목 없음)')}</b>"
+          "<span class='bopen'>설정 열기</span></summary>")
+    return (f"<div class='card bcard' id='b{b.id}'><details class='bedit'>{요약}"
+            f"{앞머리}{머리}{가운데}{꼬리}</details>{결과칸}</div>")
 
 
 def _지운블록칸(did: int) -> str:
@@ -1927,18 +1949,13 @@ def _dash_edit_page(did: int, me: User, error: str = "", msg: str = "") -> bytes
         return _page("없음", "<div class='card'>대시보드를 찾을 수 없습니다.</div>", me=me)
     축값 = 대시보드_축()
     블록들 = boards.blocks(did)
-    종류단추 = "".join(
-        f"<button name='kind' value='{k}' title='{html.escape(BLOCK_HELP.get(k, ''))}'>"
-        f"{k}</button> " for k in BLOCK_KINDS
-    )
-    # 무엇을 골라야 할지가 처음 쓰는 사람의 가장 큰 벽이다. 버튼 옆에 한 줄씩.
-    종류설명 = (
-        "<details><summary class='muted'>어떤 블록을 고를까요?</summary>"
-        "<table style='margin-top:6px'>"
-        + "".join(f"<tr><th style='width:80px'>{k}</th>"
-                  f"<td>{html.escape(BLOCK_HELP.get(k, ''))}</td></tr>" for k in BLOCK_KINDS)
-        + "</table></details>"
-    )
+    # 블록 추가 — 단추 일곱 개를 늘어놓지 않고 하나로 둔다. 누르면 종류마다 한 줄
+    # 설명이 붙은 카드가 펼쳐진다 (무엇을 골라야 할지가 처음 쓰는 사람의 가장 큰 벽이다).
+    종류카드 = "".join(
+        f"<button name='kind' value='{k}' class='kcard'><b>{k}</b>"
+        f"<span>{html.escape(BLOCK_HELP.get(k, ''))}</span></button>" for k in BLOCK_KINDS)
+    종류단추 = ("<details class='addblock'><summary class='btn'>＋ 블록 추가</summary>"
+              f"<div class='kgrid'>{종류카드}</div></details>")
     알림 = _알림(msg=msg)
     오류 = _알림(err=error)
 
@@ -1964,8 +1981,11 @@ def _dash_edit_page(did: int, me: User, error: str = "", msg: str = "") -> bytes
     return _page(
         f"{d.이름} 편집",
         알림 + 오류
+        + f"<h1 class='pt'>{html.escape(d.이름)} <span class='sub'>편집 중</span>"
+        "<span style='flex:1'></span>"
+        f"<a class='btn sec' href='/dash'>목록</a>"
+        f"<a class='btn sec' href='/dash/view?id={did}'>보기 화면 →</a></h1>"
         + "<div class='card'>"
-        f"<h2>{html.escape(d.이름)} 편집</h2>"
         "<form method='post' action='/dash/rename' style='display:flex;gap:8px;flex-wrap:wrap'>"
         f"<input type='hidden' name='id' value='{did}'>"
         f"<input type='text' name='name' value='{html.escape(d.이름)}' style='width:260px'>"
@@ -1975,13 +1995,11 @@ def _dash_edit_page(did: int, me: User, error: str = "", msg: str = "") -> bytes
         + "".join(f"<option{' selected' if w == (d.너비 or '보통') else ''}>{w}</option>"
                   for w in WIDTHS)
         + "</select></label>"
-        "<button type='submit'>이름·설명 저장</button></form>"
-        f"<p style='margin-top:10px'><a class='btn' href='/dash/view?id={did}'>보기</a> "
-        "<a class='btn sec' href='/dash'>목록</a></p>"
-        "<form method='post' action='/dash/block/add' style='margin-top:10px'>"
-        f"<input type='hidden' name='dash' value='{did}'>"
-        f"<p>블록 추가: {종류단추}</p></form>" + 종류설명
-        + _수식도움() + _틀도움() + _열목록도움() + 미리보기고르기 + "</div>"
+        "<button type='submit' class='sec'>이름·설명 저장</button></form>"
+        "<form method='post' action='/dash/block/add' style='margin-top:14px'>"
+        f"<input type='hidden' name='dash' value='{did}'>{종류단추}</form>"
+        + "<div class='helprow'>" + _수식도움() + _틀도움() + _열목록도움() + "</div>"
+        + 미리보기고르기 + "</div>"
         + ("".join(_블록편집(b, 축값, 미리볼사람,
                             "" if b.종류 == "시트" else _블록그리기(b, 줄묶음, 축값, 아는열))
                    for b in 블록들)
@@ -2292,11 +2310,11 @@ def post_dash_add_묶음(self, me, path):
         try:
             설정 = {"줄": 기본_프로필틀, "머리": 기본_프로필머리} \
                 if 종류 == "프로필" else {}
-            boards.add_block(did, 종류, 제목=종류, 설정=설정)
+            새 = boards.add_block(did, 종류, 제목=종류, 설정=설정)
         except ValueError as exc:
             return self._redirect(f"/dash/edit?id={did}&err="
                                   + urllib.parse.quote(str(exc)))
-        return self._redirect(f"/dash/edit?id={did}")
+        return self._redirect(f"/dash/edit?id={did}#b{새}")
 
     if path == "/dash/block/move":
         bid = 정수("id")
