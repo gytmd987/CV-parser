@@ -481,3 +481,31 @@ function enhanceTables(){
   dirtyGuard();
 }
 document.addEventListener('DOMContentLoaded', enhanceTables);
+
+/* 지원자 상세 «기본 정보» — 읽기 ↔ 편집. 읽기에서는 빈 항목을 감춘다.
+   고친 칸(노랗게 표시된 칸)이 있으면 읽기로 못 돌아간다 — 저장 안 한 것을 숨기지 않게. */
+function roMarkBlank(card){
+  card.querySelectorAll('table.kv tr').forEach(function(tr){
+    var 칸 = tr.querySelector('input:not([type=hidden]),select,textarea');
+    var 글 = 칸 ? (칸.value || '').trim() : tr.querySelector('td') ?
+             (tr.querySelector('td').textContent || '').trim() : '';
+    tr.classList.toggle('blank', !글 || 글 === '-' || 글 === '(빈칸)');
+  });
+}
+function roToggle(btn){
+  var card = btn.closest('.card');
+  if(card.classList.contains('ro')){
+    card.classList.remove('ro'); btn.textContent = '읽기 모드로';
+  }else{
+    if(card.querySelector('.dirty')){ alert('고친 내용이 있어요. 먼저 «고친 내용 저장» 을 눌러 주세요.'); return; }
+    roMarkBlank(card); card.classList.add('ro'); btn.textContent = '편집';
+  }
+}
+document.addEventListener('DOMContentLoaded', function(){
+  document.querySelectorAll('.card.ro').forEach(roMarkBlank);
+  /* 검토 카드에서 «기본 정보» 로 가는 링크를 누르면 바로 편집할 수 있게 */
+  if(location.hash === '#추출결과'){
+    var c = document.querySelector('#추출결과.ro');
+    if(c){ var b = c.querySelector('.tiny-edit'); if(b) roToggle(b); }
+  }
+});

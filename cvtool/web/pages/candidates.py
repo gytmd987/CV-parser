@@ -592,7 +592,7 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
         )
 
     사용자카드 = (
-        f"<div class='card'><h2>추가 항목</h2><table>{''.join(사용자행)}</table></div>"
+        f"<div class='card' id='추가항목'><h2>추가 항목</h2><table>{''.join(사용자행)}</table></div>"
         if 사용자열 else ""
     )
 
@@ -630,10 +630,9 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
         머리 = (f"검토 필요 <span class='pill p-검토필요'>{len(남은검토)}건</span>"
               if 남은검토 else "검토 완료 <span class='pill p-완료'>전부 확인함</span>")
         안내 = (
-            "<p class='muted'>LLM 이 <b>확신하지 못한 것</b>들입니다. 아래 표에서 "
-            "해당 항목이 <span class='pill p-검토필요'>검토</span> 로 표시돼 있습니다. "
-            "값을 고치거나 그대로 둔 뒤 <b>확인함</b> 을 누르세요. "
-            "전부 확인하면 이 지원자는 검토 필요에서 빠집니다.</p>"
+            "<p class='muted'>자동으로 읽다가 <b>확신하지 못한 곳</b>이에요. 원본과 비교해 "
+            "맞으면 <b>확인함</b>, 틀리면 아래 <b>기본 정보</b> 에서 고친 뒤 확인함을 "
+            "누르세요. 해당 항목에는 <span class='pill p-검토필요'>검토</span> 표시가 있어요.</p>"
             if 남은검토 else
             "<p class='muted'>모두 확인했습니다. 이 지원자는 검토 필요가 아닙니다.</p>"
         )
@@ -849,7 +848,7 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
                 "<b>국내/해외를 «불명» 으로 두면 개수에서 빠집니다.</b></span></form>"
             )
         실적카드 = (
-            "<div class='card'><h2>연구 실적 <span class='muted'>"
+            "<div class='card' id='실적'><h2>연구 실적 <span class='muted'>"
             f"저널 {센것['저널_수']}편(주저자 {센것['저널_주저자_수']}) · "
             f"학회 {센것['학회_수']}편(주저자 {센것['학회_주저자_수']}) · "
             f"특허 등록 국내 {센것['특허_등록_국내_수']} · "
@@ -904,7 +903,7 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
         + "".join(숨은칸)
         + "<button type='submit'>고친 내용 저장</button>"
         "<span class='muted'>여러 칸을 고치고 <b>한 번만</b> 누르세요. "
-        "고친 칸은 노랗게 표시됩니다.</span></form>"
+        "고친 칸은 노랗게 표시돼요.</span></form>"
         if 수정가능 else ""
     )
 
@@ -938,7 +937,7 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
     중복 = store.duplicate_note(지원자_ID)
     if 중복:
         관리 += f"<tr><th>중복 후보</th><td class='flag' style='white-space:normal'>{html.escape(중복)}</td></tr>"
-    관리카드 = (f"<div class='card'><h2>관리 정보</h2><table>{관리}</table></div>"
+    관리카드 = (f"<div class='card' id='관리'><h2>관리 정보</h2><table>{관리}</table></div>"
              if 관리정보 else "")
 
     매칭 = store.matches(지원자_ID)
@@ -995,7 +994,7 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
             if can(me, "지원자_등록") else ""
         )
         매칭카드 = (
-            "<div class='card'><h2>연구 과제 매칭</h2>" + 안내
+            "<div class='card' id='매칭'><h2>연구 과제 매칭</h2>" + 안내
             + f"<p>{다시} <a class='btn sec' href='/match'>과제 매칭 화면</a></p>"
             "<div class='scroll'><table data-name='과제 매칭'>"
             "<tr><th style='width:44px'>순위</th><th>과제</th>"
@@ -1047,7 +1046,7 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
             )
 
     메일카드 = (
-        "<div class='card'><h2>메일</h2>"
+        "<div class='card' id='메일'><h2>메일</h2>"
         + ("<div class='warn'>탈락 메일을 보낸 지원자입니다. "
            "이후 어떤 메일도 보낼 수 없습니다.</div>"
            if mailing.rejected(지원자_ID) else "")
@@ -1071,7 +1070,7 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
         for e in 이력
     ) or "<tr><td colspan=4 class='muted'>아직 수정 내역이 없습니다.</td></tr>"
     이력카드 = (
-        "<div class='card'><h2>변경 이력</h2><div class='scroll'><table>"
+        "<div class='card' id='이력'><h2>변경 이력</h2><div class='scroll'><table>"
         "<tr><th>일시</th><th>사용자</th><th>종류</th><th>내용</th></tr>"
         + 이력행 + "</table></div></div>"
         if can(me, "변경이력_조회") else ""
@@ -1120,32 +1119,89 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
         if 수정가능 else ""
     )
     첨부카드 = (
-        f"<div class='card'><h2>첨부파일</h2><ul>{첨부목록}</ul>{올리기}"
+        f"<div class='card' id='첨부'><h2>첨부파일</h2><ul>{첨부목록}</ul>{올리기}"
         "<p class='muted'>CV 원본과 별개로 자기소개서·포트폴리오 등을 붙일 수 있습니다. "
         "지원자를 삭제하면 함께 지워집니다.</p></div>"
     )
 
     알림 = _알림(msg=msg)
+
+    # --- 맨 위 프로필 머리 — 이 사람이 누구인지 한눈에 ---------------------------
+    def 칩들(글: str, cls: str, 최대: int = 8) -> str:
+        조각 = [x.strip() for x in (글 or "").split("|") if x.strip()]
+        return "".join(f"<span class='chip {cls}'>{html.escape(x)}</span>"
+                       for x in 조각[:최대])
+
+    한줄 = " · ".join(x for x in (row.get("현재_신분", ""), row.get("현재_소속", ""),
+                                 row.get("현재_소속_상세", "")) if x and x != "불명")
+    박사 = " ".join(x for x in (row.get("박사_학교", ""), row.get("박사_전공", "")) if x)
+    박사 = (f"박사 {박사}" + (f" ({row.get('박사_학위상태')})"
+                            if row.get("박사_학위상태") else "")) if 박사 else ""
+    연락 = " · ".join(html.escape(x) for x in (rec.이메일, rec.전화번호) if x)
+    배정 = ""
+    if 진행.시작함:
+        부서명 = {d["id"]: d["이름"] for d in auth.departments()}
+        과제명 = {p_["id"]: p_["이름"] for p_ in auth.projects()}
+        배정 = " · ".join(x for x in (부서명.get(진행.부서_id, ""),
+                                     과제명.get(진행.project_id, ""), 진행.최종상태) if x)
+    상태 = ((f"<span class='pill p-처리중'>채용 중</span>"
+            + (f" <span class='muted'>{html.escape(배정)}</span>" if 배정 else ""))
+           if 진행.시작함 else "<span class='pill p-대기중'>인재 Pool</span>")
+    검토딱지 = ("<a class='pill p-검토필요' href='#검토'>검토할 것 있음</a>"
+             if 검토카드 and "p-검토필요" in 검토카드.split("</h2>", 1)[0] else "")
+    채용단추 = ""
+    if can(me, "채용현황_수정") and not 진행.시작함:
+        채용단추 = ("<form method='post' action='/candidates/start' style='display:inline'>"
+                f"<input type='hidden' name='id' value='{html.escape(지원자_ID)}'>"
+                "<button>채용 시작</button></form> ")
+    메일단추 = ("<a class='btn sec' href='#메일'>메일</a> " if can(me, "메일_발송") else "")
+    머리카드 = f"""
+        <div class='card phead'>
+          <div class='ph-top'>
+            <div class='ph-who'>
+              <h1>{html.escape(rec.한글_이름 or '(이름 미상)')}
+                {f"<span class='en'>{html.escape(rec.영문_이름)}</span>" if rec.영문_이름 else ""}</h1>
+              <div class='ph-line'>{html.escape(한줄) or "<span class='muted'>소속 정보 없음</span>"}</div>
+              {f"<div class='ph-line'>{html.escape(박사)}</div>" if 박사 else ""}
+              {f"<div class='ph-line muted'>{연락}</div>" if 연락 else ""}
+              <div class='ph-chips'>{칩들(rec.연구분야_키워드, 'kw')}{칩들(rec.보유기술, 'sk', 6)}</div>
+            </div>
+            <div class='ph-side'>
+              <div>{상태} {검토딱지}</div>
+              <div class='ph-acts'>{채용단추}{메일단추}{원본버튼}{재분석}</div>
+              <div class='ph-acts2'><a href='/'>← 목록으로</a>{삭제}</div>
+            </div>
+          </div>
+          {"<p class='muted' style='margin:10px 0 0'>수정 권한이 없어 읽기 전용입니다.</p>" if not 수정가능 else ""}
+        </div>"""
+    # --- 섹션 바로가기 — 화면이 길어서 원하는 곳으로 바로 간다 -----------------------
+    바로가기 = [(이름, 열쇠) for 이름, 열쇠, 있음 in (
+        ("검토", "검토", bool(검토카드)), ("기본 정보", "추출결과", True),
+        ("추가 항목", "추가항목", bool(사용자카드)), ("연구 실적", "실적", bool(실적카드)),
+        ("과제 매칭", "매칭", bool(매칭카드)), ("첨부", "첨부", True),
+        ("메일", "메일", bool(메일카드)), ("관리 정보", "관리", bool(관리카드)),
+        ("변경 이력", "이력", bool(이력카드))) if 있음]
+    바로가기줄 = ("<nav class='secnav'>" + "".join(
+        f"<a href='#{열쇠}'>{이름}</a>" for 이름, 열쇠 in 바로가기) + "</nav>")
+    편집단추 = ("<button type='button' class='sec tiny-edit' onclick='roToggle(this)'>"
+              "편집</button>" if 수정가능 else "")
     return _page(
         f"지원자 {rec.한글_이름 or rec.지원자_ID}",
         f"""{알림}{오류}
-        <div class='card'>
-          <h2>{html.escape(rec.한글_이름 or '(이름 미상)')}
-              <span class='muted'>{html.escape(rec.지원자_ID)}</span></h2>
-          <p class='bar'><a class='btn sec' href='/'>← 목록으로</a>
-             {원본버튼}{재분석}<span style='flex:1'></span>{삭제}</p>
-          {'<p class=muted>수정 권한이 없어 읽기 전용입니다.</p>' if not 수정가능 else ''}
-        </div>
+        {머리카드}
+        {바로가기줄}
         {검토카드}
-        {관리카드}
-        <div class='card' id='추출결과'><h2>추출 결과</h2>
+        <div class='card{" ro" if 수정가능 else ""}' id='추출결과'>
+          <h2 class='hrow'>기본 정보 {편집단추}
+            <span class='ro-note muted'>빈 항목은 <b>편집</b> 을 누르면 보여요</span></h2>
           {저장바}
-          <table>{''.join(항목행)}</table></div>
+          <table class='kv'>{''.join(항목행)}</table></div>
         {사용자카드}
         {실적카드}
         {매칭카드}
         {첨부카드}
         {메일카드}
+        {관리카드}
         {이력카드}""",
         me=me,
     )

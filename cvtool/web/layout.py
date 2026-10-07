@@ -502,6 +502,41 @@ ol.obsteps li::before{content:counter(o);position:absolute;left:16px;top:14px;wi
  height:26px;border-radius:50%;background:var(--accent);color:#fff;font-weight:700;
  display:flex;align-items:center;justify-content:center;font-size:13px}
 ol.obsteps li span{color:var(--txt2);font-size:13px}
+/* --- 지원자 상세 ------------------------------------------------------------ */
+.phead{padding:20px 22px}
+.ph-top{display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap}
+.ph-who{flex:1;min-width:280px}
+.ph-who h1{margin:0 0 6px;font-size:24px;letter-spacing:-.02em;font-weight:780}
+.ph-who h1 .en{font-size:14px;color:var(--muted);font-weight:500;margin-left:8px}
+.ph-line{color:var(--txt2);font-size:14px;line-height:1.7}
+.ph-chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:10px}
+.chip{font-size:12px;padding:2px 9px;border-radius:99px;border:1px solid var(--line);
+ background:var(--bg);color:var(--txt2)}
+.chip.kw{background:#eef4ff;border-color:#d6e3fb;color:#24406e}
+.ph-side{display:flex;flex-direction:column;gap:10px;align-items:flex-end;min-width:240px}
+.ph-acts{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.ph-acts form{display:inline}
+.ph-acts2{display:flex;gap:12px;align-items:center;font-size:13px}
+.ph-acts2 button{padding:4px 10px;font-size:12.5px}
+nav.secnav{position:sticky;top:51px;z-index:40;display:flex;gap:4px;flex-wrap:wrap;
+ background:rgba(245,246,248,.94);backdrop-filter:blur(4px);padding:8px 2px;margin:-6px 0 12px}
+nav.secnav a{font-size:13px;padding:4px 11px;border-radius:99px;color:var(--txt2);
+ border:1px solid transparent}
+nav.secnav a:hover{background:var(--card);border-color:var(--line);text-decoration:none}
+.card[id]{scroll-margin-top:104px}
+h2.hrow{display:flex;align-items:center;gap:10px}
+h2.hrow .ro-note{font-weight:400;display:none}
+table.kv th{width:180px;background:#fafbfc;font-weight:600;vertical-align:top;padding-top:10px}
+/* 읽기 모드 — 입력칸을 글처럼 보이게 하고, 빈 항목·저장 막대를 감춘다.
+   «편집» 을 누르면 원래 입력칸으로 돌아간다 (같은 칸이라 저장 길은 그대로다). */
+.ro .mergebar,.ro button[form=unpinform]{display:none}
+.ro h2.hrow .ro-note{display:inline}
+.ro table.kv tr.blank{display:none}
+.ro table.kv input,.ro table.kv select,.ro table.kv textarea{border:0;background:none;
+ padding:0;box-shadow:none;pointer-events:none;appearance:none;-webkit-appearance:none;
+ color:var(--txt);font-size:14px;resize:none;width:100%}
+.ro table.kv input::placeholder,.ro table.kv textarea::placeholder{color:transparent}
+.ro table.kv select{background-image:none}
 /* --- 사용법 (오른쪽에서 열리는 창 · /help 화면) --------------------------- */
 #helpdim{position:fixed;inset:0;background:rgba(15,23,42,.28);z-index:300}
 #helpdrawer{position:fixed;top:0;right:0;bottom:0;width:min(560px,94vw);background:var(--card);

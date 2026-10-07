@@ -751,7 +751,7 @@ def test_field_worker_can_open_their_own_candidate(web, 현업, cid):
     c, did, pid = 현업
     web.module.recruit.set_assignment(cid, did, pid, "admin")
     본문 = c.get("/candidate?id=" + urllib.parse.quote(cid))
-    assert "추출 결과" in 본문
+    assert "기본 정보" in 본문
 
 
 def test_field_worker_does_not_see_management_cards(web, 현업, cid):
