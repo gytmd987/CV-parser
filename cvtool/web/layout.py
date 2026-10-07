@@ -57,7 +57,7 @@ header a{color:var(--muted);text-decoration:none;font-weight:550;font-size:13.5p
 header .brand{color:var(--txt);font-weight:750;font-size:15px;letter-spacing:-.01em;
  margin-right:10px;padding-right:16px;border-right:1px solid var(--line);
  border-bottom:0;align-self:center;padding-top:0;padding-bottom:0}
-header a:hover{color:var(--txt)}
+header a:hover{color:var(--txt);text-decoration:none}
 /* 지금 보고 있는 탭. 색만으로 알려주지 않고 굵기와 아래 밑줄이 함께 바뀐다. */
 header a.on{color:var(--accent);font-weight:700;border-bottom-color:var(--accent)}
 /* 갈 곳이 둘인 탭. 마우스를 올리거나 키보드로 들어오면 아래로 펴진다.
@@ -70,6 +70,19 @@ header .tab:hover .sub,header .tab:focus-within .sub{display:flex}
 header .tab .sub a{padding:9px 14px;border-bottom:0;font-weight:500}
 header .tab .sub a:hover{background:var(--bg);color:var(--accent);text-decoration:none}
 header .sp{flex:1}
+/* 오른쪽 «+ 지원자 추가» — 이 앱의 첫 일이라 하나만 파랗게 */
+header a.hbtn{align-self:center;background:var(--accent);color:#fff;border-radius:var(--r-s);
+ padding:6px 12px;margin:0 6px 0 4px;border-bottom:0;font-weight:650}
+header a.hbtn:hover{background:var(--accent-d);color:#fff;text-decoration:none}
+/* 설정 — 가끔 쓰는 화면을 모은다. 오른쪽 끝이라 아래로 펼 때 오른쪽에 맞춘다 */
+header .tab .sub.right{left:auto;right:0}
+header .tab .sub a.cur{color:var(--accent);font-weight:700}
+header .caret{font-style:normal;font-size:10px;margin-left:3px;color:#9aa1ab}
+/* 사용법 — 작은 동그라미 물음표 */
+header a.helpbtn{align-self:center;width:26px;height:26px;padding:0;margin:0 6px;
+ justify-content:center;border:1.5px solid #cbd1d9;border-radius:50%;font-weight:750;
+ font-size:13.5px;color:var(--muted);border-bottom:1.5px solid #cbd1d9}
+header a.helpbtn:hover{border-color:var(--accent);color:var(--accent);text-decoration:none}
 /* 오른쪽 끝의 '누구로 들어와 있나'. 두 글자가 아래위로 어긋나 보이지 않게
    같은 줄에 세우고, 역할은 작은 딱지로 붙인다. */
 header .who{display:flex;align-items:center;gap:6px;color:var(--muted);
@@ -458,6 +471,51 @@ textarea.cellbox{width:100%;min-width:240px;resize:vertical;font:inherit}
  background:#fff;max-height:420px;overflow:auto;font:12pt/1.7 "맑은 고딕",sans-serif}
 .mailbody img{max-width:100%}
 pre.rubric{background:var(--bg);border:1px solid var(--line);border-radius:var(--r-s);padding:10px 12px;font-size:12px;white-space:pre-wrap;margin:8px 0 0;color:var(--muted)}
+/* --- 사용법 (오른쪽에서 열리는 창 · /help 화면) --------------------------- */
+#helpdim{position:fixed;inset:0;background:rgba(15,23,42,.28);z-index:300}
+#helpdrawer{position:fixed;top:0;right:0;bottom:0;width:min(560px,94vw);background:var(--card);
+ z-index:301;box-shadow:-12px 0 32px rgba(15,23,42,.18);display:flex;flex-direction:column;
+ animation:helpin .18s ease-out}
+@keyframes helpin{from{transform:translateX(24px);opacity:.4}to{transform:none;opacity:1}}
+#helpdrawer .hhead{display:flex;align-items:center;gap:10px;padding:14px 18px;
+ border-bottom:1px solid var(--line)}
+#helpdrawer .hhead b{font-size:16px;flex:1}
+#helpdrawer .hhead a{font-size:12.5px}
+#helpdrawer .hhead button{background:none;border:0;color:var(--muted);font-size:20px;
+ padding:0 4px;line-height:1}
+#helpdrawer .hscroll{overflow:auto;padding:4px 20px 30px;flex:1}
+.htoc{display:flex;flex-wrap:wrap;gap:6px;padding:12px 0 14px;border-bottom:1px solid var(--line2)}
+.htoc a{font-size:12.5px;padding:3px 10px;border:1px solid var(--line);border-radius:99px;
+ color:var(--txt2);background:var(--bg)}
+.htoc a:hover{border-color:var(--accent);color:var(--accent);text-decoration:none}
+.hsec{padding:18px 0 6px;border-bottom:1px dashed var(--line2);line-height:1.75;font-size:14px}
+.hsec h3{margin:0 0 8px;font-size:17px;letter-spacing:-.01em}
+.hsec.now h3::after{content:'지금 보고 있는 화면';font-size:11px;font-weight:600;
+ color:var(--accent);background:var(--accent-w);border-radius:99px;padding:2px 8px;
+ margin-left:8px;vertical-align:middle}
+.hsec ul,.hsec ol{padding-left:20px;margin:6px 0}
+.hsec li{margin:5px 0}
+.hsec ol.steps{counter-reset:s;list-style:none;padding-left:0}
+.hsec ol.steps li{counter-increment:s;position:relative;padding-left:34px;margin:10px 0}
+.hsec ol.steps li::before{content:counter(s);position:absolute;left:0;top:1px;width:23px;
+ height:23px;border-radius:50%;background:var(--accent);color:#fff;font-size:12px;
+ font-weight:700;display:flex;align-items:center;justify-content:center}
+.hsec .k{display:inline-block;border:1px solid #cdd3db;border-bottom-width:2px;border-radius:5px;
+ padding:0 6px;font-size:12.5px;font-weight:600;background:#fff;line-height:1.6;white-space:nowrap}
+.hsec kbd{font:600 11.5px ui-monospace,Consolas,monospace;border:1px solid #cdd3db;
+ border-bottom-width:2px;border-radius:4px;padding:0 5px;background:#fff}
+.hsec code{background:#f1f3f6;border-radius:4px;padding:1px 5px;font-size:12.5px}
+.hsec .tipbox{background:#f0f6ff;border:1px solid #d6e4fb;border-radius:8px;padding:10px 13px;
+ color:#24406e;font-size:13.5px}
+.hsec .tipbox::before{content:'도움말  ';font-weight:700}
+.hsec table.mini{width:auto;font-size:13px;margin:6px 0}
+.hsec table.mini th,.hsec table.mini td{max-width:none;white-space:normal;padding:6px 10px;
+ position:static}
+.hsec dl.faq dt{font-weight:700;margin-top:12px}
+.hsec dl.faq dd{margin:4px 0 0 0;color:var(--txt2)}
+.hsec .badge{font-size:11px;font-weight:700;border-radius:99px;padding:1px 7px}
+.hsec .badge.warn{background:#fef3c7;color:#92400e}
+.helppage{max-width:860px;margin:0 auto}
 #toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#16191d;
  color:#fff;padding:11px 18px;border-radius:var(--r);opacity:0;pointer-events:none;
  transition:opacity .15s,transform .15s;z-index:99;box-shadow:var(--sh-l);font-size:13.5px}
@@ -480,10 +538,12 @@ pre.rubric{background:var(--bg);border:1px solid var(--line);border-radius:var(-
 def _탭들(me: User | None, badge: str,
         메일배지: str = "") -> list[tuple[str, str, tuple[str, ...],
                                        tuple[tuple[str, str], ...]]]:
-    학회 = "/names?kind=" + urllib.parse.quote("학회·저널")
+    """**매일 쓰는** 탭. 가끔 쓰는 설정 화면은 `_설정들` 이 오른쪽 «설정» 메뉴로 모은다.
+
+    열 개가 한 줄에 같은 무게로 늘어서 있으니 처음 온 사람이 어디부터 봐야 할지
+    몰랐다. 일이 흘러가는 차례(보고 → 뽑고 → 연락하고 → 들여다본다)대로 넷만 둔다.
+    """
     후보 = [
-        # 일이 흘러가는 순서대로: 넣고 → 보고 → 뽑고 → 들여다본다
-        ("지원자 추가", "/upload", ("/upload",), (), can(me, "지원자_등록")),
         ("인재 Pool", "/", ("/", "/candidate", "/attachment", "/export.xlsx"),
          (), can(me, "지원자_목록")),
         ("채용 현황", "/recruit", ("/recruit",), (),
@@ -493,17 +553,23 @@ def _탭들(me: User | None, badge: str,
           (f"메일 발송이력{메일배지}", "/mail/log")),
          can(me, "메일_템플릿")),
         ("대시보드", "/dash", ("/dash",), (), can(me, "대시보드_조회")),
-        (f"명칭 관리{badge}", 학회, ("/names",), (), can(me, "명칭_관리")),
-        # 과제 파일 관리는 이 아래 하위 화면으로 들어갔다 (/match/*)
-        ("부서·과제", "/org", ("/org", "/match"),
-         (("부서·과제 편집", "/org/edit"), ("과제 정보 관리", "/match")),
-         can(me, "부서과제_관리")),
-        ("계정", "/users", ("/users",), (), can(me, "계정_현업추가")),
-        ("표 항목", "/fields", ("/fields",), (), can(me, "열_구성")),
-        ("변경 이력", "/history", ("/history",), (), can(me, "변경이력_조회")),
     ]
     return [(라벨, 주소, 소속, 하위)
             for 라벨, 주소, 소속, 하위, 보임 in 후보 if 보임]
+
+
+def _설정들(me: User | None, badge: str) -> list[tuple[str, str, tuple[str, ...]]]:
+    """오른쪽 «설정» 메뉴에 모을 화면 (라벨, 주소, 이 항목에 속하는 경로들)."""
+    학회 = "/names?kind=" + urllib.parse.quote("학회·저널")
+    후보 = [
+        (f"명칭 관리{badge}", 학회, ("/names",), can(me, "명칭_관리")),
+        ("부서·과제", "/org", ("/org",), can(me, "부서과제_관리")),
+        ("과제 정보 (매칭)", "/match", ("/match",), can(me, "부서과제_관리")),
+        ("표 항목", "/fields", ("/fields",), can(me, "열_구성")),
+        ("계정", "/users", ("/users",), can(me, "계정_현업추가")),
+        ("변경 이력", "/history", ("/history",), can(me, "변경이력_조회")),
+    ]
+    return [(라벨, 주소, 소속) for 라벨, 주소, 소속, 보임 in 후보 if 보임]
 
 
 def _지금탭(경로: str, 소속: tuple[str, ...]) -> bool:
@@ -563,6 +629,28 @@ def _page(title: str, body: str, nav: bool = True, me: User | None = None,
         # 하위가 안 펴진다고 아예 못 들어가는 자리가 되면 안 된다.
         폄 = "".join(f"<a href='{ㅈ}'>{ㄹ}</a>" for ㄹ, ㅈ in 하위)
         링크.append(f"<span class='tab'>{본체}<span class='sub'>{폄}</span></span>")
+
+    # 오른쪽: 지원자 추가(이 앱의 첫 일) · 설정 · 사용법 · 누구 · 로그아웃
+    오른쪽 = []
+    if can(me, "지원자_등록"):
+        오른쪽.append("<a class='hbtn' href='/upload'"
+                    + (" aria-current='page'" if 경로.startswith("/upload") else "")
+                    + ">+ 지원자 추가</a>")
+    설정 = _설정들(me, badge)
+    if 설정:
+        지금설정 = next((주소 for _l, 주소, 소속 in 설정 if _지금탭(경로, 소속)), "")
+        폄 = "".join(f"<a href='{주소}'" + (" class=cur" if 주소 == 지금설정 else "")
+                    + f">{라벨}</a>" for 라벨, 주소, _s in 설정)
+        오른쪽.append(
+            "<span class='tab gear'>"
+            f"<a href='{설정[0][1]}'" + (" class=on" if 지금설정 else "")
+            + f">설정{badge} <i class='caret'>▾</i></a>"
+            f"<span class='sub right'>{폄}</span></span>")
+    from .pages.help import 장고르기          # 화면들이 다 읽힌 뒤라 여기서 부른다
+
+    오른쪽.append(f"<a class='helpbtn' href='/help#{장고르기(경로)}'"
+                f" data-help='{장고르기(경로)}' title='사용법 보기'"
+                " aria-label='사용법'>?</a>")
     누구 = (
         f"<span class='who'>{html.escape(me.이름)}"
         f"<b>{html.escape(me.역할)}</b></span>"
@@ -570,7 +658,8 @@ def _page(title: str, body: str, nav: bool = True, me: User | None = None,
     )
     header = (
         "<header><span class='brand'>지원자 관리</span>" + "".join(링크)
-        + f"<span class='sp'></span>{누구}<a href='/logout'>로그아웃</a></header>"
+        + "<span class='sp'></span>" + "".join(오른쪽)
+        + f"{누구}<a href='/logout'>로그아웃</a></header>"
         if nav
         else ""
     )
@@ -579,9 +668,13 @@ def _page(title: str, body: str, nav: bool = True, me: User | None = None,
         f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
         f"<title>{html.escape(title)}</title><style>{_CSS}</style></head>"
         f"<body{f' style=--mainw:{폭}' if 폭 else ''}>{header}<main>{body}</main>"
-        + (f"<script>{_TABLE_JS}{_INLINE_JS}</script>" if nav else "")
+        + (f"<script>{_TABLE_JS}{_INLINE_JS}{_HELP_JS}</script>" if nav else "")
         + "</body></html>"
     ).encode("utf-8")
+
+
+#: 오른쪽 위 «?» — 옆에서 사용법이 열린다.
+_HELP_JS = _정적JS("help.js")
 
 
 def _status_table() -> str:

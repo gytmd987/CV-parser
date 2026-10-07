@@ -39,7 +39,7 @@ from .router import 라우터, 통과
 #: 모듈들도 이 차례대로 다시 읽어야 화면들이 새 DB(`state.store` …)를 가리킨다.
 _모듈차례 = (
     "state", "jobs", "columns", "mail_targets", "layout",
-    "pages.login", "pages.match", "pages.org", "pages.names", "pages.mail",
+    "pages.login", "pages.help", "pages.match", "pages.org", "pages.names", "pages.mail",
     "pages.recruit", "pages.fields", "pages.dashboard", "pages.candidates",
 )
 _다시읽기 = "_모듈들" in globals()

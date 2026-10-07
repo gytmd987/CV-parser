@@ -268,7 +268,7 @@ def test_이력_주소가_이상해도_전체가_나온다(web):
 def test_탭에_하위_목록이_붙는다(web):
     쪽 = web.get("/mail")
     assert "메일 템플릿 관리" in 쪽 and "메일 발송이력" in 쪽
-    assert "부서·과제 편집" in 쪽 and "과제 정보 관리" in 쪽
+    assert "부서·과제" in 쪽 and "과제 정보 (매칭)" in 쪽       # 오른쪽 «설정» 메뉴
     assert "class='tab'" in 쪽
 
 

@@ -44,6 +44,7 @@ GET_정책 = {
     "/login": 공개,
     "/logout": 공개,
     "/favicon.ico": 공개,
+    "/help": 허용,                   # 사용법 — 누구나 본다
     "/recruit": 허용,
     "/recruit/export.xlsx": 허용,
     "/recruit/columns": 거부,

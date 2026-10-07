@@ -693,13 +693,18 @@ def test_home_is_not_a_duplicate_of_the_applicant_tab(web):
 
 
 def test_the_current_tab_is_marked(web):
-    """지금 어느 탭을 보고 있는지 눈에 보여야 한다."""
-    for 경로, 라벨 in (("/", "인재 Pool"), ("/recruit", "채용 현황"),
-                    ("/fields", "표 항목"), ("/history", "변경 이력")):
+    """지금 어느 탭을 보고 있는지 눈에 보여야 한다. 설정 화면은 «설정» 에 불이 켜지고
+    펼친 목록에서 그 항목이 표시된다."""
+    def 켜진(머리, 표시):
+        return [조각.split(">", 1)[1].split("<", 1)[0].strip()
+                for 조각 in 머리.split("<a ")[1:]
+                if 조각.startswith("href=") and 표시 in 조각.split(">", 1)[0]]
+    for 경로, 라벨, 항목 in (("/", "인재 Pool", None), ("/recruit", "채용 현황", None),
+                          ("/fields", "설정", "표 항목"), ("/history", "설정", "변경 이력")):
         머리 = web.get(경로).split("<main>", 1)[0]
-        켜진것 = [조각.split(">", 1)[1].split("<", 1)[0]
-               for 조각 in 머리.split("<a ")[1:] if 조각.startswith("href=") and "class=on" in 조각.split(">", 1)[0]]
-        assert 켜진것 == [라벨], (경로, 켜진것)
+        assert 켜진(머리, "class=on") == [라벨], 경로
+        if 항목:
+            assert 켜진(머리, "class=cur") == [항목], 경로
 
 
 def test_a_detail_screen_keeps_its_tab_lit(web, cid):
