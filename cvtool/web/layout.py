@@ -35,7 +35,7 @@ _CSS = """
 /* 색·간격·모서리를 토큰으로 모은다. 예전에는 값이 파일 곳곳에 흩어져 있어서
    한 군데만 고치면 나머지가 어긋났다. */
 :root{
- --bg:#f7f8fa;--card:#fff;--line:#e6e8ec;--line2:#f0f1f4;--grid:#222;
+ --bg:#f5f6f8;--card:#fff;--line:#e4e7ec;--line2:#eef0f3;--grid:#dde1e7;
  --txt:#16191d;--txt2:#42474e;--muted:#6b7280;
  --accent:#2f6fed;--accent-w:#eaf1fe;--accent-d:#1d4fc4;
  --r:10px;--r-s:7px;
@@ -84,7 +84,22 @@ a:hover{text-decoration:underline}
 main{padding:22px 20px 40px;max-width:var(--mainw,1600px);margin:0 auto}
 .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);
  padding:18px 20px;margin-bottom:16px;box-shadow:var(--sh)}
-h2{margin:0 0 12px;font-size:15px;font-weight:700;letter-spacing:-.01em}
+h2{margin:0 0 12px;font-size:16px;font-weight:700;letter-spacing:-.015em}
+/* 화면 맨 위 제목 — 지금 어디에 있는지 가장 먼저 보이는 글 */
+h1.pt{margin:2px 0 14px;font-size:21px;font-weight:750;letter-spacing:-.02em;
+ display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+h1.pt .sub{font-size:13px;font-weight:500;color:var(--muted)}
+/* ⓘ — 긴 설명은 여기 숨겨 두고 마우스를 올리면 보인다 */
+.tip{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;
+ border-radius:50%;border:1px solid #cdd3db;color:#8a929c;font-size:11px;font-weight:700;
+ cursor:help;position:relative;vertical-align:middle;font-style:normal;line-height:1;
+ background:var(--card)}
+.tip:hover{border-color:var(--accent);color:var(--accent)}
+.tip::after{content:attr(data-tip);display:none;position:absolute;top:22px;left:-8px;
+ width:max-content;max-width:380px;white-space:pre-line;background:#1f2937;color:#fff;
+ font-size:12.5px;font-weight:400;line-height:1.55;padding:9px 11px;border-radius:8px;
+ box-shadow:var(--sh-l);z-index:200;text-align:left;letter-spacing:0}
+.tip:hover::after,.tip:focus::after{display:block}
 button,.btn{background:var(--accent);color:#fff;border:1px solid var(--accent);
  border-radius:var(--r-s);padding:7px 13px;font:inherit;font-size:13.5px;font-weight:550;
  cursor:pointer;text-decoration:none;display:inline-block;line-height:1.4;
@@ -106,17 +121,18 @@ button.ghost:hover,.btn.ghost:hover{background:#dc2626;color:#fff;border-color:#
 /* 단추가 여럿 늘어서는 줄 */
 .bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 14px}
 .bar .muted{margin-left:2px}
-table{border-collapse:collapse;width:100%;font-size:12.5px}
+table{border-collapse:collapse;width:100%;font-size:13px}
 /* 칸마다 테두리를 두른다. 가로줄만 있으면 열이 여럿일 때 **어디까지가 한 칸인지**
    눈으로 자를 수가 없다 — 엑셀에서 표를 볼 때 격자를 켜는 이유와 같다.
-   선은 진한 실선이다. 연한 선은 칸을 갈라 주지 못한다. */
-th,td{border:1px solid var(--grid);padding:7px 9px;text-align:left;
+   선은 칸이 갈라질 만큼만 짙게 둔다 — 검정 실선은 표를 무겁고 낡아 보이게 했다.
+   (대시보드 표의 «격자» 모양은 고른 사람이 정한 대로 검정이다.) */
+th,td{border:1px solid var(--grid);padding:8px 10px;text-align:left;
  white-space:nowrap;max-width:260px;overflow:hidden;text-overflow:ellipsis}
 /* 머리글은 줄바꿈을 허용한다. 안 그러면 '저널_주저자_수' 같은 긴 이름 하나가
    값은 한 글자뿐인 열을 통째로 넓혀 버린다. keep-all 은 한국어 낱말을 안 쪼갠다. */
-th{background:var(--bg);position:sticky;top:0;white-space:normal;word-break:keep-all;
- line-height:1.3;vertical-align:bottom;font-size:11.5px;font-weight:650;color:var(--txt2);
- padding:8px 9px;border-bottom:1px solid var(--grid);z-index:1}
+th{background:#f8f9fb;position:sticky;top:0;white-space:normal;word-break:keep-all;
+ line-height:1.3;vertical-align:bottom;font-size:12px;font-weight:650;color:var(--txt2);
+ padding:9px 10px;border-bottom:1px solid #cfd5dd;z-index:1}
 /* 열 성격에 맞춘 너비. 다 같게 하면 어떤 건 남고 어떤 건 모자란다. */
 .w-xs{max-width:76px;min-width:52px}
 .w-sm{max-width:96px;min-width:64px}

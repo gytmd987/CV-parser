@@ -199,15 +199,18 @@ def store(tmp_path):
     return CandidateStore(tmp_path / "c.db")
 
 
-def test_column_label_defaults_to_the_column_name(store):
-    assert store.label("한글_이름") == "한글_이름"
+def test_column_label_defaults_to_a_readable_name(store):
+    """화면에는 밑줄 대신 띄어쓰기 — 내부 이름(수식·자리표시자)은 그대로다."""
+    assert store.label("한글_이름") == "이름"
+    assert store.label("현재_신분") == "현재 신분"
+    assert store.label("아무_열") == "아무 열"
 
 
 def test_column_can_be_renamed_for_display(store):
     store.set_column("영문_이름", 표시이름="English Name")
     assert store.label("영문_이름") == "English Name"
     assert store.labels(["영문_이름", "한글_이름"]) == {
-        "영문_이름": "English Name", "한글_이름": "한글_이름",
+        "영문_이름": "English Name", "한글_이름": "이름",
     }
 
 

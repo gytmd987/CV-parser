@@ -1001,8 +1001,8 @@ def test_pool_table_shows_recruit_and_mail_columns(web, cid):
     for c in ("부서", "과제", "서류 검토", "최종상태", "채용_비고", "메일_발송이력"):
         assert c in 열, c
     page = web.get("/")
-    # 머리글은 밑줄 뒤에 <wbr> 를 넣어 줄바꿈을 허용한다
-    assert "메일_<wbr>발송이력" in page
+    # 머리글은 사람이 읽는 이름으로 (밑줄 대신 띄어쓰기)
+    assert ">메일 발송이력<" in page
 
 
 def test_recruit_columns_are_read_only_in_the_pool(web, cid):

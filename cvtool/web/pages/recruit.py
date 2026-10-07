@@ -15,7 +15,7 @@ from ...recruit import STAGES
 from ...timeutil import now_kst
 
 from ..state import audit, auth, recruit, registry, store
-from ..columns import _표값맵, MANAGE_COLUMNS, 라벨, 머리글, 열목록, 열폭
+from ..columns import 열이름도움, _표값맵, MANAGE_COLUMNS, 라벨, 머리글, 열목록, 열폭
 from ..layout import _page, _알림, _없는주소, _정적JS
 from ..router import 라우트, 로그인만
 
@@ -224,7 +224,7 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
     체크머리 = ("<th><input type='checkbox' onclick='selectVisible(this)'"
              " title='보이는 줄만 선택합니다'></th>" if 메일가능 else "")
     머리 = 체크머리 + "<th class='w-xs'></th>" + "".join(
-        f"<th class='{열폭(c)}'>{머리글(이름표[c])}</th>" for c in 표열)
+        f"<th class='{열폭(c)}' title='{html.escape(열이름도움(c))}'>{머리글(이름표[c])}</th>" for c in 표열)
     알림 = _알림(msg=msg)
     오류 = _알림(err=error)
     안내 = (

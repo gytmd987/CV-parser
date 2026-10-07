@@ -36,6 +36,7 @@ from .match import _등급이름, _점수색
 from ..state import audit, auth, CONTENT_TYPES, mailing, recruit, registry, store
 from ..jobs import _enqueue, _set_status, _status, _status_lock
 from ..columns import (
+    열이름도움,
     _cell, _editable, _tsv_to_xlsx, _볼수있나, _표값맵, MAIL_COLUMN, MANAGE_COLUMNS, 라벨, 머리글, 열폭,
     추가열, 표열,
 )
@@ -82,7 +83,7 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
     채용가능 = can(me, "채용현황_수정")
     이름표 = 라벨(COLS)
     head = "".join(
-        f"<th class='{열폭(c)}'>{머리글(이름표[c])}</th>" for c in COLS)
+        f"<th class='{열폭(c)}' title='{html.escape(열이름도움(c))}'>{머리글(이름표[c])}</th>" for c in COLS)
     body_rows = []
     for rec in records:
         row = rec.to_row(registry)
