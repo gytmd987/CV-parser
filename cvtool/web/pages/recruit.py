@@ -138,9 +138,10 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
                     for st in 고를수있는상태
                 )
                 cells.append(
-                    f"<td class='ctl'><select form='recruitform'"
-                    f" name='단계_{html.escape(cid)}_{html.escape(col)}'"
-                    f" data-orig='{v}' onchange='markDirty(this)'>{opts}</select></td>"
+                    f"<td class='ctl'><select form='recruitform' class='stsel'"
+                    f" name='단계_{html.escape(cid)}_{html.escape(col)}' data-v='{v}'"
+                    f" data-orig='{v}' onchange='markDirty(this);this.dataset.v=this.value'>"
+                    f"{opts}</select></td>"
                 )
             elif col == "부서" and 담당자:
                 현재부서 = p.부서_id if p else None
@@ -210,20 +211,29 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
                          f" title='{안내}' placeholder='{안내}'>")
                 cells.append(f"<td class='ctl'>{칸}</td>")
             elif col == "최종상태":
-                cls = " class='flag'" if p and p.탈락 else ""
-                cells.append(f"<td{cls}>{v}</td>")
+                cells.append(f"<td><span class='stv' data-v='{v}'>{v}</span></td>")
+            elif col in STAGES:
+                cells.append(f"<td><span class='stv' data-v='{v}'>{v or '-'}</span></td>")
+            elif col == "한글_이름":
+                # 이름을 누르면 상세 — '상세' 열을 따로 두지 않는다 (인재 Pool 과 같다).
+                cells.append(f"<td class='{열폭(col)} pname2'><a href='/candidate?id="
+                             f"{urllib.parse.quote(cid)}'>{v or '(이름 없음)'}</a></td>")
             else:
                 # 지원자 정보 열은 보기만 한다 (고치려면 인재 Pool/상세에서)
                 cells.append(f"<td class='{열폭(col)}' title='{v}'>{v}</td>")
         체크 = (f"<td><input type='checkbox' form='mailform' name='ids'"
               f" value='{html.escape(cid)}'></td>" if 메일가능 else "")
-        링크 = f"<td><a href='/candidate?id={urllib.parse.quote(cid)}'>상세</a></td>"
-        묶음 = " class='dup'" if p and p.탈락 else ""
-        rows.append(f"<tr{묶음}>{체크}{링크}{''.join(cells)}</tr>")
+        # 이름 열을 숨겨 둔 표에서도 상세로 갈 수 있게, 그때만 '상세' 칸을 둔다.
+        링크 = ("" if "한글_이름" in 표열 else
+              f"<td><a href='/candidate?id={urllib.parse.quote(cid)}'>상세</a></td>")
+        단계값 = " ".join(f"st{i}-{(p.단계상태.get(st, '') if p else '') or '없음'}"
+                       for i, st in enumerate(STAGES))
+        묶음 = ("dup " if p and p.탈락 else "") + 단계값
+        rows.append(f"<tr class='{html.escape(묶음)}'>{체크}{링크}{''.join(cells)}</tr>")
 
     체크머리 = ("<th><input type='checkbox' onclick='selectVisible(this)'"
              " title='보이는 줄만 선택합니다'></th>" if 메일가능 else "")
-    머리 = 체크머리 + "<th class='w-xs'></th>" + "".join(
+    머리 = 체크머리 + ("" if "한글_이름" in 표열 else "<th class='w-xs'></th>") + "".join(
         f"<th class='{열폭(c)}' title='{html.escape(열이름도움(c))}'>{머리글(이름표[c])}</th>" for c in 표열)
     알림 = _알림(msg=msg)
     오류 = _알림(err=error)
@@ -264,10 +274,8 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
         메일폼 + 저장폼
         + "<div class='mergebar'>" + " ".join(단추들)
         + "<span class='muted'>"
-        + ("여러 줄을 고친 뒤 <b>한 번만</b> 누르세요. 고친 칸은 노랗게 표시됩니다. "
-           if 저장폼 else "")
-        + ("메일은 체크한 사람에게만 갑니다 — 여기서는 <b>누가 어느 단계인지 "
-           "보면서</b> 고를 수 있습니다." if 메일폼 else "")
+        + ("여러 줄을 고친 뒤 <b>한 번만</b> 누르세요. " if 저장폼 else "")
+        + ("메일은 체크한 사람에게만 가요." if 메일폼 else "")
         + "</span></div>"
         if 단추들 else ""
     )
@@ -292,11 +300,42 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
         " <a href='/'>인재 Pool</a> 에서 <b>채용 시작</b>을 누른 사람만 여기 올라옵니다."
         if rows and can(me, "지원자_목록") else ""
     )
+    # 단계 요약 — 단계마다 몇 명이 어느 상태인지. 누르면 그 사람만 보인다.
+    요약 = []
+    if records:
+        세기 = lambda i, st: sum(
+            1 for r in records
+            if ((진행맵.get(r.지원자_ID).단계상태.get(STAGES[i], "")
+                 if 진행맵.get(r.지원자_ID) else "") or "없음") == st)
+        for i, 단계 in enumerate(STAGES):
+            조각 = []
+            for 상태 in [x for x in 고를수있는상태 if x] :
+                n = 세기(i, 상태)
+                if n:
+                    조각.append(f"<button type='button' class='stchip' data-v='{html.escape(상태)}'"
+                              f" data-f='st{i}-{html.escape(상태)}' onclick='stFilter(this)'>"
+                              f"{html.escape(상태)} {n}</button>")
+            시작안함 = 세기(i, "없음")
+            요약.append(
+                f"<div class='stg'><b>{html.escape(단계)}</b>"
+                + ("".join(조각) or "<span class='muted'>아직 없음</span>")
+                + (f"<span class='muted' style='margin-left:4px'>· 시작 전 {시작안함}</span>"
+                   if 시작안함 and 조각 else "") + "</div>")
+    요약줄 = ("<div class='stsum'>" + "<span class='stg-arrow'>→</span>".join(요약)
+             + "<button type='button' class='stchip all' data-f='' onclick='stFilter(this)'"
+               " style='display:none'>전체 보기</button></div>") if 요약 else ""
+    도움 = html.escape(" ".join(x for x in (
+        안내.replace("<b>", "").replace("</b>", ""),
+        출처.replace("<a href='/'>", "").replace("</a>", "").replace("<b>", "")
+           .replace("</b>", "")) if x))
     return _page(
         "채용 현황",
-        f"""{알림}{오류}<div class='card'><h2>채용 현황 <span class='muted'>{len(records)}명</span></h2>
-        <p class='muted'>{안내}{출처}</p>
-        <p>{열구성}</p>
+        f"""{알림}{오류}
+        <h1 class='pt'>채용 현황 <span class='sub'>{len(records)}명</span>
+          <span class='tip' tabindex='0' data-tip='{도움}'>i</span>
+          <span style='flex:1'></span>{열구성}</h1>
+        {요약줄}
+        <div class='card'>
         {메일바}{저장바}{표}</div>
         <script>var 과제표 = {과제표};{_RECRUIT_JS}</script>""",
         me=me,

@@ -537,6 +537,30 @@ table.kv th{width:180px;background:#fafbfc;font-weight:600;vertical-align:top;pa
  color:var(--txt);font-size:14px;resize:none;width:100%}
 .ro table.kv input::placeholder,.ro table.kv textarea::placeholder{color:transparent}
 .ro table.kv select{background-image:none}
+/* --- 채용 현황 ------------------------------------------------------------- */
+/* 단계 상태 색 — 진행 파랑 · 합격 초록 · 불합격 빨강 · 보류 회색 */
+/* 최종상태는 '서류 검토 불합격' 처럼 끝말이 상태다. '불합격' 이 '합격' 으로도 끝나므로 뒤에 둔다. */
+[data-v$='진행중']{--sc:#1d4ed8;--sb:#e0ecff}
+[data-v$='합격']{--sc:#15803d;--sb:#dcfce7}
+[data-v$='불합격']{--sc:#b91c1c;--sb:#fee2e2}
+[data-v$='보류']{--sc:#6b7280;--sb:#eef0f3}
+select.stsel{font-weight:600;color:var(--sc,var(--txt2));background-color:var(--sb,var(--card));
+ border-color:transparent;min-width:84px}
+select.stsel[data-v='']{color:#9aa1ab;border-color:var(--line)}
+select.stsel.dirty{outline:2px solid #f59e0b}
+span.stv{display:inline-block;font-weight:600;font-size:12px;border-radius:99px;padding:1px 9px;
+ color:var(--sc,var(--txt2));background:var(--sb,transparent)}
+td.pname2 a{font-weight:650;color:var(--txt)}
+.stsum{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:0 0 14px}
+.stsum .stg{display:flex;align-items:center;gap:5px;flex-wrap:wrap;background:var(--card);
+ border:1px solid var(--line);border-radius:var(--r);padding:7px 10px;box-shadow:var(--sh)}
+.stsum .stg b{font-size:13px;margin-right:3px}
+.stsum .stg-arrow{color:#b4bac3;font-size:13px}
+button.stchip{background:var(--sb,var(--bg));color:var(--sc,var(--txt2));border:1px solid transparent;
+ border-radius:99px;padding:2px 9px;font-size:12px;font-weight:650}
+button.stchip:hover{background:var(--sb,var(--bg));border-color:var(--sc,var(--line))}
+button.stchip.on{border-color:var(--sc);box-shadow:0 0 0 2px var(--sb)}
+button.stchip.all{background:var(--card);color:var(--txt2);border-color:var(--line)}
 /* --- 사용법 (오른쪽에서 열리는 창 · /help 화면) --------------------------- */
 #helpdim{position:fixed;inset:0;background:rgba(15,23,42,.28);z-index:300}
 #helpdrawer{position:fixed;top:0;right:0;bottom:0;width:min(560px,94vw);background:var(--card);
