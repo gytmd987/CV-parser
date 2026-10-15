@@ -313,7 +313,7 @@ def test_resume_puts_pending_jobs_back(web, monkeypatch):
             [f.name for f in mod.store.orphan_files()]
         assert (mod.store.files_dir / 저장명).exists()
         assert mod._resume_jobs() >= 1
-        assert ("이력서.pdf", "CV-RESUME", 저장명) in list(q.queue)
+        assert ("이력서.pdf", "CV-RESUME", 저장명, "") in list(q.queue)
         assert mod._status["이력서.pdf"]["state"] == "대기중"
     finally:
         mod.store.finish_job("CV-RESUME")
@@ -328,7 +328,7 @@ def test_enqueue_writes_to_db_first(web, monkeypatch):
     mod._enqueue("b.pdf", "CV-ENQ", "CV-ENQ.pdf")
     try:
         assert any(j["지원자_ID"] == "CV-ENQ" for j in mod.store.pending_jobs())
-        assert q.get_nowait() == ("b.pdf", "CV-ENQ", "CV-ENQ.pdf")
+        assert q.get_nowait() == ("b.pdf", "CV-ENQ", "CV-ENQ.pdf", "")
     finally:
         mod.store.finish_job("CV-ENQ")
 

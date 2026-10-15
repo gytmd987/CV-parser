@@ -473,6 +473,10 @@ textarea.cellbox{width:100%;min-width:240px;resize:vertical;font:inherit}
 pre.rubric{background:var(--bg);border:1px solid var(--line);border-radius:var(--r-s);padding:10px 12px;font-size:12px;white-space:pre-wrap;margin:8px 0 0;color:var(--muted)}
 /* --- 인재 Pool ------------------------------------------------------------ */
 .searchbar{margin-bottom:12px}
+.findbar{margin-top:10px}
+td.wrap{white-space:normal;min-width:220px;max-width:420px}
+mark{background:#fff3b0;color:inherit;padding:0 1px;border-radius:2px}
+.card.todo h2 .pill{vertical-align:middle;margin-left:4px}
 .searchbar label.chk{display:inline-flex;align-items:center;gap:4px;margin:0 4px}
 .selbar{display:flex;align-items:center;gap:8px;min-height:40px;margin:0 0 10px;padding:6px 10px;
  border:1px dashed var(--line);border-radius:var(--r-s);background:#fbfcfd}
@@ -666,7 +670,9 @@ def _탭들(me: User | None, badge: str,
     몰랐다. 일이 흘러가는 차례(보고 → 뽑고 → 연락하고 → 들여다본다)대로 넷만 둔다.
     """
     후보 = [
-        ("인재 Pool", "/", ("/", "/candidate", "/attachment", "/export.xlsx"),
+        # 들어와서 제일 먼저 볼 것 — 여러 화면에 흩어진 «처리할 것» 모음.
+        ("오늘 할 일", "/todo", ("/todo",), (), can(me, "지원자_등록")),
+        ("인재 Pool", "/", ("/", "/candidate", "/attachment", "/export.xlsx", "/find"),
          (), can(me, "지원자_목록")),
         ("채용 현황", "/recruit", ("/recruit",), (),
          can(me, "채용현황_수정") or can(me, "지원자_조회")),

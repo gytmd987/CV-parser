@@ -30,6 +30,11 @@ from .timeutil import now_kst
 #: "축표" 는 피벗(부서 × 단계 인원수)이고, "표" 는 칸을 하나하나 적는 자유표다.
 BLOCK_KINDS = ("목록", "축표", "표", "숫자", "글", "프로필", "시트")
 
+#: **새로 만들 때** 고르는 종류. 시트가 엑셀만큼 되면서 축표·표로 만들던 것은
+#: 시트로 다 만든다 — 고를 것이 일곱 개면 무엇을 골라야 할지부터 막힌다.
+#: 이미 있는 축표·표 블록은 그대로 보이고 고칠 수 있다 (`BLOCK_KINDS`).
+NEW_BLOCK_KINDS = ("숫자", "목록", "시트", "프로필", "글")
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS dashboards (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,

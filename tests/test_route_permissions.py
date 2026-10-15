@@ -45,6 +45,8 @@ GET_정책 = {
     "/logout": 공개,
     "/favicon.ico": 공개,
     "/help": 허용,                   # 사용법 — 누구나 본다
+    "/todo": 거부,                   # 오늘 할 일 — 지원자 전원을 가로지른다
+    "/find": 거부,                   # 과제로 사람 찾기 — 매칭 점수·전원
     "/recruit": 허용,
     "/recruit/export.xlsx": 허용,
     "/recruit/columns": 거부,
@@ -153,6 +155,7 @@ POST_정책 = {
     "/recruit/save": 허용,
     "/recruit/statuses": 거부,
     "/status/clear": 거부,
+    "/candidates/fill": 거부,
     "/table.xlsx": 무관,             # 보낸 표를 그대로 엑셀로 바꿔 돌려줄 뿐
     "/upload": 거부,
     "/upload/xlsx": 거부,

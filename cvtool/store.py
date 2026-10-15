@@ -85,6 +85,12 @@ CREATE TABLE IF NOT EXISTS custom_values (
 -- 분석을 기다리는 CV. 메모리 대기열만 있으면 서버를 다시 켤 때 대기 중이던
 -- 원본이 «DB 에 행이 없는 파일» 로 보여 개인정보 정리에 함께 지워진다.
 -- 여기 적힌 파일은 지우지 않고, 서버가 뜰 때 이어서 분석한다.
+-- 새 항목(보유기술·수상)을 채우려고 한 번 다시 읽어 본 사람. 다시 읽어도 CV 에
+-- 없어서 빈 사람을 단추를 누를 때마다 또 읽지 않으려고 적어 둔다.
+CREATE TABLE IF NOT EXISTS refilled (
+    지원자_ID    TEXT PRIMARY KEY,
+    일시         TEXT DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS jobs (
     지원자_ID    TEXT PRIMARY KEY,
     파일명       TEXT NOT NULL,      -- 처리 현황에 보일 이름
@@ -407,6 +413,7 @@ class CandidateStore:
         )
         self._conn.execute("DELETE FROM review_done WHERE 지원자_ID=?", (지원자_ID,))
         self._conn.execute("DELETE FROM jobs WHERE 지원자_ID=?", (지원자_ID,))
+        self._conn.execute("DELETE FROM refilled WHERE 지원자_ID=?", (지원자_ID,))
         self._conn.commit()
         return cur.rowcount > 0
 
@@ -422,6 +429,7 @@ class CandidateStore:
             f"DELETE FROM review_done WHERE 지원자_ID IN ({marks})", ids
         )
         self._conn.execute(f"DELETE FROM jobs WHERE 지원자_ID IN ({marks})", ids)
+        self._conn.execute(f"DELETE FROM refilled WHERE 지원자_ID IN ({marks})", ids)
         self._conn.commit()
         return cur.rowcount
 
@@ -432,6 +440,7 @@ class CandidateStore:
         cur = self._conn.execute("DELETE FROM candidates")
         self._conn.execute("DELETE FROM review_done")
         self._conn.execute("DELETE FROM jobs")
+        self._conn.execute("DELETE FROM refilled")
         self._conn.commit()
         return cur.rowcount
 
@@ -583,6 +592,14 @@ class CandidateStore:
             "SELECT * FROM matches WHERE 순위=1"
         )
         return {r["지원자_ID"]: dict(r) for r in rows}
+
+    def matches_for(self, 과제키: str) -> dict[str, dict]:
+        """한 과제에 대한 지원자별 결과 {지원자_ID: 행}. «이 과제에 맞는 사람» 에 쓴다."""
+        return {
+            r["지원자_ID"]: dict(r) | {"평가됨": bool(r["평가됨"])}
+            for r in self._conn.execute(
+                "SELECT * FROM matches WHERE 과제키=?", (과제키,))
+        }
 
     def match_counts(self) -> dict[str, int]:
         """지원자별 비교한 과제 수. '정말 다 비교했나' 를 화면에서 보여주려고."""
@@ -914,6 +931,33 @@ class CandidateStore:
         """아직 안 끝난 분석. 올린 순서대로."""
         return [dict(r) for r in self._conn.execute(
             "SELECT * FROM jobs ORDER BY 등록일시, rowid")]
+
+    # -- 새 항목 채우기 -----------------------------------------------------
+    def fill_targets(self, 항목들: tuple[str, ...]) -> list[tuple[str, str, str]]:
+        """새 항목이 비어 있고 원본 파일이 있는 사람. [(지원자_ID, 원본_파일명, 저장_파일명)]
+
+        한 번 채우기를 해 본 사람(`refilled`)과 분석이 걸려 있는 사람은 뺀다.
+        """
+        해봄 = {r["지원자_ID"] for r in self._conn.execute("SELECT 지원자_ID FROM refilled")}
+        걸림 = {r["지원자_ID"] for r in self._conn.execute("SELECT 지원자_ID FROM jobs")}
+        나온것 = []
+        for r in self._conn.execute(
+            "SELECT 지원자_ID, 원본_파일명, 저장_파일명, record_json FROM candidates"
+            " WHERE 저장_파일명 != '' ORDER BY 등록일시"
+        ):
+            cid = r["지원자_ID"]
+            if cid in 해봄 or cid in 걸림:
+                continue
+            rec = json.loads(r["record_json"])
+            if any(not rec.get(항목) for 항목 in 항목들):
+                나온것.append((cid, r["원본_파일명"] or cid, r["저장_파일명"]))
+        return 나온것
+
+    def mark_refilled(self, 지원자_ID: str) -> None:
+        self._conn.execute(
+            "INSERT OR REPLACE INTO refilled (지원자_ID, 일시) VALUES (?,?)",
+            (지원자_ID, now_kst().strftime("%Y-%m-%d %H:%M:%S")))
+        self._conn.commit()
 
     def purge_expired(self) -> list[str]:
         """보관 기간이 지난 지원자를 삭제하고 삭제된 ID 를 반환한다."""

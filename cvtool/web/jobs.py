@@ -91,6 +91,12 @@ def _embed_client():
         return None
 
 _jobs: "queue.Queue[tuple[str, str, str | None]]" = queue.Queue()
+#: 대기열 메모가 이것이면 **비어 있는 새 항목만** 채운다 (레코드를 갈아 끼우지 않는다).
+채우기메모 = "빈 항목 채우기"
+
+#: 채우기로 채우는 항목. CV 분석에 나중에 들어온 것들이라 예전 지원자는 비어 있다.
+채울항목 = ("보유기술", "수상")
+
 _status_lock = threading.Lock()
 _status: dict[str, dict] = {}  # filename -> {state, message}
 
@@ -118,7 +124,7 @@ def _enqueue(filename: str, 지원자_ID: str, 저장_파일명: str, 메모: st
     """
     store.add_job(지원자_ID, filename, 저장_파일명, 메모)
     _set_status(filename, "대기중", 메모, cid=지원자_ID)
-    _jobs.put((filename, 지원자_ID, 저장_파일명))
+    _jobs.put((filename, 지원자_ID, 저장_파일명, 메모))
 
 
 def _resume_jobs() -> int:
@@ -127,13 +133,38 @@ def _resume_jobs() -> int:
     for j in 남은것:
         _set_status(j["파일명"], "대기중", "서버를 다시 켜서 이어서 분석합니다",
                     cid=j["지원자_ID"])
-        _jobs.put((j["파일명"], j["지원자_ID"], j["저장_파일명"]))
+        _jobs.put((j["파일명"], j["지원자_ID"], j["저장_파일명"], j.get("메모") or ""))
     return len(남은것)
+
+
+def _빈칸채우기(지원자_ID: str, 새것, text: str, filename: str) -> None:
+    """다시 읽은 결과에서 **비어 있던 새 항목만** 옮긴다.
+
+    재분석은 레코드를 통째로 갈아 끼워서, 사람이 고쳐 둔 학교·경력이 날아간다.
+    여러 명을 한꺼번에 돌리는 일이라 그러면 안 된다. 이미 값이 있는 칸, 다른
+    칸은 손대지 않는다.
+    """
+    옛것 = store.get(지원자_ID)
+    if 옛것 is None:
+        _set_status(filename, "실패", "그사이 지워진 지원자입니다")
+        return
+    채운것 = []
+    for 항목 in 채울항목:
+        if not getattr(옛것, 항목) and getattr(새것, 항목):
+            setattr(옛것, 항목, getattr(새것, 항목))
+            채운것.append(항목)
+    if 채운것:
+        store.save(옛것, 원문_텍스트=text)
+        audit.record("시스템", "지원자", 지원자_ID, 비고="빈 항목 채우기: " + ", ".join(채운것))
+    store.mark_refilled(지원자_ID)
+    _set_status(filename, "완료",
+                ("채움: " + ", ".join(채운것)) if 채운것 else "CV 에 채울 내용이 없었습니다",
+                cid=지원자_ID)
 
 
 def _worker() -> None:
     while True:
-        filename, 지원자_ID, 저장_파일명 = _jobs.get()
+        filename, 지원자_ID, 저장_파일명, 메모 = _jobs.get()
         try:
             _set_status(filename, "처리중", cid=지원자_ID)
             path = store.files_dir / 저장_파일명
@@ -144,6 +175,9 @@ def _worker() -> None:
                 _set_status(filename, "실패", "텍스트를 추출하지 못했습니다(스캔 PDF?)")
                 continue
             rec = extract_cv_from_text(text, 원본_파일명=filename, 지원자_ID=지원자_ID)
+            if 메모 == 채우기메모:
+                _빈칸채우기(지원자_ID, rec, text, filename)
+                continue
 
             # 이름들을 사전에 등록하고 검토 사유를 받는다. 레코드 값은 건드리지 않는다.
             사전사유 = observe_record(rec, registry)

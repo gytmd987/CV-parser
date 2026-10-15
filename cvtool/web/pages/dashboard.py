@@ -13,7 +13,7 @@ import urllib.parse
 from ... import dash_draft, expr, formula as F, profile_form as P, review, sheet as S
 from ...auth import can, User
 from ...dashboards import (
-    AXIS_SOURCES, BLOCK_KINDS, CELL_FORMATS, format_cell, render_list, render_profile,
+    AXIS_SOURCES, BLOCK_KINDS, CELL_FORMATS, NEW_BLOCK_KINDS, format_cell, render_list, render_profile,
     render_sheet, render_table, ROW_TARGET, SHEET_BORDER_STYLES, SHEET_FONTS, WIDTHS,
     시트_다듬기, 시트_채우기, 시트_행열,
 )
@@ -396,17 +396,21 @@ BLOCK_HELP = {
 def _예시블록(did: int) -> None:
     """새 대시보드에 바로 볼 수 있는 블록을 넣어 준다.
 
-    빈 화면에서 시작하면 아무도 안 만든다. 예시가 곧 사용법이다.
+    빈 화면에서 시작하면 아무도 안 만든다. 예시가 곧 사용법이다. 그래서 수식도
+    안내서와 같은 **엑셀 모양**으로 적는다 (축표·예전 모양은 새로 권하지 않는다).
     """
     boards.add_block(did, "숫자", 제목="채용 중",
-                     설정={"수식": "=COUNT(채용)", "형식": "명"})
-    boards.add_block(did, "축표", 제목="부서 × 단계",
-                     설정={"행축": "부서", "열축": "단계",
-                          "칸수식": '=COUNT(채용, 부서="{행}", {열}="합격")',
-                          "형식": "그대로"})
-    boards.add_block(did, "축표", 제목="등록년도 × 현재 신분",
-                     설정={"행축": "등록년도", "열축": "현재_신분",
-                          "칸수식": '=COUNT(지원자, 등록년도="{행}", 현재_신분="{열}")'})
+                     설정={"수식": '=COUNTIFS(채용중,"Y")', "형식": "명"})
+    부서들 = [r["이름"] for r in auth.departments()][:20] or ["(부서 이름)"]
+    머리 = {"배경": "#eef2f7", "굵게": 1}
+    칸 = {"A1": {"글": "부서", **머리}, "B1": {"글": "채용 중", **머리},
+         "C1": {"글": "최종 합격", **머리}}
+    for i, 부서 in enumerate(부서들, start=2):
+        칸[f"A{i}"] = {"글": 부서}
+        칸[f"B{i}"] = {"글": f'=COUNTIFS(채용중,"Y",부서,A{i})'}
+        칸[f"C{i}"] = {"글": f'=COUNTIFS(부서,A{i},최종상태,"최종 합격")'}
+    boards.add_block(did, "시트", 제목="부서별 인원", 설정=시트_다듬기(
+        {"행수": len(부서들) + 1, "열수": 3, "칸": 칸}))
     boards.add_block(did, "프로필", 제목="채용 중인 사람",
                      설정={"대상": "=LIST(채용)",
                           "머리": 기본_프로필머리,
@@ -1172,87 +1176,47 @@ def _칸키(행: str, 열: str) -> str:
 
 
 def _수식도움() -> str:
-    """수식을 처음 보는 사람이 읽을 안내. 화면에 늘 붙여 둔다."""
+    """수식을 처음 보는 사람이 읽을 안내. 화면에 늘 붙여 둔다.
+
+    **엑셀 모양만** 보여 준다. 예전 모양(`=COUNT(지원자, 부서="A")`)도 계산은
+    그대로 되지만(저장된 대시보드가 많다), 안내에 두 문법이 같이 있으면 처음 보는
+    사람은 어느 쪽을 써야 하는지부터 헷갈린다.
+    """
     return (
-        "<details><summary class='muted'>수식 쓰는 법 (누르면 펼쳐집니다)</summary>"
+        "<details><summary class='muted'>여러 사람 세기 — COUNTIFS 등</summary>"
         "<div style='margin-top:8px'>"
-        "<p class='muted'>모양은 하나뿐입니다 — <code>=함수(대상, 조건...)</code>. "
-        "<b>SQL 이 아닙니다.</b> 할 수 있는 일이 정해져 있어 안전합니다.</p>"
-        "<table><tr><th>함수</th><th>뜻</th><th>예</th></tr>"
-        "<tr><td>COUNT</td><td>몇 명</td><td><code>=COUNT(채용, 부서=\"차세대공정\")</code></td></tr>"
-        "<tr><td>PCT</td><td>같은 대상 대비 비율(%)</td><td><code>=PCT(채용, 최종상태~\"*합격\")</code></td></tr>"
-        "<tr><td>AVG SUM MIN MAX</td><td>숫자 열을 셈</td><td><code>=AVG(지원자, 저널_수)</code></td></tr>"
-        "<tr><td>LIST</td><td>이름 나열</td><td><code>=LIST(채용, 부서=\"소재분석\")</code></td></tr>"
+        "<p class='muted'><b>엑셀과 같습니다.</b> 다른 점은 하나 — "
+        "<b>열 이름이 곧 범위</b>(지원자 전원의 그 열)입니다. "
+        "<code>부서</code> 는 엑셀의 <code>B:B</code> 처럼 생각하면 됩니다.</p>"
+        "<table><tr><th>하고 싶은 것</th><th>예</th></tr>"
+        "<tr><td>몇 명</td><td><code>=COUNTIFS(부서,\"차세대공정\",최종상태,\"*합격\")</code></td></tr>"
+        "<tr><td>비율(%)</td><td><code>=COUNTIFS(채용중,\"Y\",최종상태,\"최종 합격\")"
+        "/COUNTIF(채용중,\"Y\")*100</code></td></tr>"
+        "<tr><td>평균·합계</td><td><code>=AVERAGEIFS(저널_수,부서,\"A\")</code> · "
+        "<code>=SUMIFS(저널_수,부서,\"A\")</code></td></tr>"
+        "<tr><td>이름 나열</td><td><code>=TEXTJOIN(\", \",TRUE,FILTER(한글_이름,부서=\"A\"))</code></td></tr>"
+        "<tr><td>한 사람의 값</td><td><code>=XLOOKUP(\"홍길동\",한글_이름,박사_학교)</code></td></tr>"
+        "<tr><td>종류 수</td><td><code>=COUNTA(UNIQUE(부서))</code></td></tr>"
         "</table>"
-        "<p class='muted' style='margin-top:8px'><b>대상</b>은 "
-        "<code>지원자</code>(인재 Pool 전체) 또는 <code>채용</code>(채용 시작한 사람).<br>"
-        "<b>조건</b>은 <code>열=\"값\"</code> <code>열~\"패턴*\"</code> "
-        "<code>열!~\"패턴*\"</code> <code>열&gt;숫자</code> <code>열!=\"값\"</code> — "
-        "쉼표로 이으면 전부 만족(AND).<br>"
-        "<b>열 이름</b>은 <a href='/fields'>표 항목</a> 에 있는 그대로 씁니다. "
-        "없는 이름을 쓰면 저장할 때 막습니다.</p>"
-        "<p class='muted'><b>와일드카드</b>는 <code>*</code>(아무 글자 몇 개든) 와 "
-        "<code>?</code>(한 글자) 입니다. <code>=COUNT(채용, 부서=\"*\")</code> 는 "
-        "부서를 안 가리고 전부 셉니다. 별표 그 글자를 찾을 때는 "
-        "<code>~*</code> 로 적습니다.</p>"
-        "<p class='muted'><code>=</code> 로 시작하지 않으면 그냥 글자로 들어갑니다.</p>"
-        "<div class='warn' style='background:#eef5ff;border-color:#c9dcf5'>"
-        "<b>집계와 계산을 섞어 쓸 수 있습니다.</b> 숫자·축표·자유표·시트 어디서나 "
-        "같습니다.<br>"
-        "<code>=COUNT(지원자, 부서=\"소재분석\") / COUNT(지원자) * 100</code> · "
-        "<code>=ROUND(AVG(지원자, 저널_수), 1)</code> · "
-        "<code>=\"합계 \"&COUNT(지원자)&\"명\"</code></div>"
-        "<div class='warn' style='background:#eef5ff;border-color:#c9dcf5'>"
-        "<b>엑셀과 같은 모양으로도 씁니다.</b> 열 이름이 곧 엑셀의 <b>범위</b>(열 하나 통째)입니다.<br>"
-        "<code>=COUNTIFS(부서,\"소재분석\",최종상태,\"합격\")</code> · "
-        "<code>=COUNTIF(저널_수,\"&gt;=3\")</code> · "
-        "<code>=SUMIFS(저널_수,부서,\"A\")</code> · "
-        "<code>=AVERAGEIFS(저널_수,부서,A3)</code><br>"
-        "쓸 수 있는 것: <code>COUNTIF(S)</code> <code>SUMIF(S)</code> <code>AVERAGEIF(S)</code> "
-        "<code>MAXIFS</code> <code>MINIFS</code> <code>COUNTBLANK</code> "
-        "<code>SUMPRODUCT</code> <code>FILTER</code> <code>UNIQUE</code>.<br>"
-        "<b>조건</b>은 엑셀과 같습니다 — <code>\"abc\"</code>(같다, 대소문자 안 가림) "
-        "<code>\"&gt;3\"</code> <code>\"&lt;&gt;합격\"</code> <code>\"*합격\"</code>(와일드카드) "
+        "<p class='muted' style='margin-top:8px'><b>조건</b>은 엑셀과 같습니다 — "
+        "<code>\"abc\"</code>(같다, 대소문자 안 가림) "
+        "<code>\"&gt;3\"</code> <code>\"&lt;&gt;합격\"</code> "
+        "<code>\"*합격\"</code>(와일드카드: <code>*</code> 여러 글자, <code>?</code> 한 글자) "
         "<code>\"\"</code>(빈칸) <code>\"&gt;\"&amp;A2</code>(칸 값과 잇기).<br>"
-        "<b>함수 안에 함수</b>를 마음대로 넣습니다 — "
+        "<b>채용 중인 사람만</b> 세려면 <code>채용중,\"Y\"</code> 를 조건에 더합니다.<br>"
+        "<b>열 이름</b>은 <a href='/fields'>표 항목</a> 에 있는 그대로 씁니다. "
+        "직접 만든 열도 됩니다.</p>"
+        "<p class='muted'><b>함수 안에 함수</b>를 마음대로 넣습니다 — "
         "<code>=IF(COUNTIFS(부서,A3)&gt;0,\"있음\",\"없음\")</code> · "
         "<code>=ROUND(AVERAGEIFS(저널_수,부서,A3),1)</code> · "
-        "<code>=TEXTJOIN(\", \",TRUE,FILTER(한글_이름,부서=\"A\"))</code> · "
-        "<code>=COUNTA(UNIQUE(부서))</code> · "
-        "<code>=SUMPRODUCT((부서=\"A\")*(저널_수&gt;2))</code><br>"
-        "<b>지원자 DB 에서 찾기</b> — 열 이름이 범위라 엑셀처럼 찾습니다: "
-        "<code>=XLOOKUP(B3,한글_이름,박사_학교)</code> · "
-        "<code>=INDEX(저널_수,MATCH(\"홍길동\",한글_이름,0))</code> · "
-        "<code>=VLOOKUP(B3,HSTACK(한글_이름,박사_학교,저널_수),3,FALSE)</code> "
-        "(HSTACK 이 열들을 옆으로 붙여 표를 만듭니다).<br>"
-        "<b>채용 중인 사람만</b> 세려면 조건에 <code>채용중,\"Y\"</code> 를 더합니다 — "
-        "<code>=COUNTIFS(채용중,\"Y\",부서,\"A\")</code>.<br>"
-        "시트 칸 범위도 됩니다 — <code>=COUNTIF(A1:A10,\"합격\")</code>. "
-        "<b>아래의 예전 모양</b>(<code>=COUNT(지원자, 부서=\"A\")</code>)도 그대로 됩니다.</div>"
-        "<div class='warn' style='background:#eef5ff;border-color:#c9dcf5'>"
-        "<b>대상을 안 적으면 «지원자»</b>(인재 Pool 전체)입니다. "
-        "<code>=COUNTIF(부서=\"소재분석\")</code> 처럼 짧게 써도 됩니다. "
-        "채용 중인 사람만 세려면 <code>=COUNTIF(채용, …)</code> 처럼 적으세요.<br>"
-        "<b>시트에서는 조건 값에 칸 주소</b>를 쓸 수 있습니다 — "
-        "<code>=COUNTIF(부서=A3)</code> 는 A3 칸에 적힌 부서를 셉니다. "
-        "A열에 부서를 늘어놓고 B열에서 세는 식으로 씁니다. "
-        "따옴표로 감싸면(<code>부서=\"A3\"</code>) 칸이 아니라 "
-        "<b>그 글자</b>를 찾습니다.<br>"
-        "<b>조건 값에 함수</b>도 쓸 수 있습니다 — "
-        "<code>=COUNTIFS(입사월=MONTH(TODAY()))</code> 는 이번 달을 셉니다. "
-        "<b>괄호가 있을 때만</b> 계산합니다 — 그래야 "
-        "<code>번호=10-2020-0012345</code> 같은 값이 뺄셈이 되지 않습니다. "
-        "괄호 없는 낱말(<code>부서=소재분석</code>)은 <b>글자 그대로</b>입니다."
-        "</div>"
-        "<p class='muted'><b>한 사람의 한 칸 값</b>을 가져오려면 LIST 의 마지막에 "
-        "<b>열 이름</b>을 적습니다.<br>"
-        "<code>=LIST(지원자, 한글_이름=\"홍길동\", 박사_학교)</code> → "
-        "<code>서울대학교</code>. 표 항목에서 <b>직접 만드신 열</b>도 그대로 "
-        "쓸 수 있습니다.</p>"
-        "<div class='warn'><b>패턴 하나만 조심하세요.</b> "
-        '<code>최종상태~"*합격"</code> 은 <b>불합격도 맞습니다</b> '
+        "<code>=COUNTIFS(부서,LEFT(A3,FIND(\"(\",A3)-1))</code><br>"
+        "<b>시트</b>에서는 칸 주소와 칸 범위도 엑셀처럼 씁니다 — "
+        "<code>=COUNTIF(A1:A10,\"합격\")</code> · <code>=SUM(B2:B9)</code>.<br>"
+        "<code>=</code> 로 시작하지 않으면 그냥 글자로 들어갑니다.</p>"
+        "<div class='warn'><b>와일드카드 하나만 조심하세요.</b> "
+        "<code>\"*합격\"</code> 은 <b>불합격도 맞습니다</b> "
         "(글자 그대로 '합격' 으로 끝나니까요). 합격만 세려면 "
-        '<code>=COUNT(채용, 최종상태~"*합격", 최종상태!~"*불합격")</code> '
+        "<code>=COUNTIFS(최종상태,\"*합격\",최종상태,\"&lt;&gt;*불합격\")</code> "
         "처럼 빼는 조건을 같이 쓰세요.</div>"
         "</div></details>"
     )
@@ -1316,7 +1280,7 @@ def _틀도움() -> str:
                           ("m", "2"), ("dd", "03"), ("d", "3")]
     )
     return (
-        "<details><summary class='muted'>수식 쓰는 법 — 엑셀과 같습니다</summary>"
+        "<details><summary class='muted'>한 사람 값 다듬기 — TEXT·IF 등</summary>"
         "<div style='margin-top:10px'>"
         "<p class='muted'><code>=</code> 로 시작하면 <b>엑셀 수식</b>입니다. "
         "함수 이름도 규칙도 엑셀 그대로라 새로 외울 게 없습니다. "
@@ -1650,7 +1614,7 @@ def _시트편집(b) -> str:
         # <input> 이 아니라 <textarea> 다. 한 줄로 시작해 적는 만큼 늘어난다.
         + "<p><textarea class='sheetfx fx' data-kind='sheet' rows='1'"
           " placeholder='칸을 고르고 바로 치거나 여기에 적으세요 · 칸 안 줄바꿈은 Alt+Enter"
-          " (예: =COUNT(지원자, 부서=\"소재분석\") 또는 =B2/B3*100)' disabled></textarea></p>"
+          " (예: =COUNTIFS(부서,\"소재분석\") 또는 =B2/B3*100)' disabled></textarea></p>"
         + f"<div class='sheetwarn'>{경고}</div>"
         + f"<div class='sheetgrid' tabindex='0' style='outline:none'>{표}</div>"
         + "<details class='muted'><summary>쓰는 법</summary>"
@@ -1765,7 +1729,7 @@ def _블록편집(b, 축값, 미리볼사람: str = "", 지금모양: str = "") 
         가운데 = (
             f"<p><input type='text' name='formula' value='{html.escape(b.수식)}'"
             " style='width:100%' class='fx' data-kind='agg'"
-            " oninput='fxPreview(this)' placeholder='=COUNT(채용)'>"
+            " oninput='fxPreview(this)' placeholder='=COUNTIFS(채용중,\"Y\")'>"
             "<span class='fxout muted'></span></p>"
             f"<p>형식 <select name='format'>{옵션(CELL_FORMATS, b.설정.get('형식') or '그대로')}"
             "</select></p>"
@@ -1953,7 +1917,7 @@ def _dash_edit_page(did: int, me: User, error: str = "", msg: str = "") -> bytes
     # 설명이 붙은 카드가 펼쳐진다 (무엇을 골라야 할지가 처음 쓰는 사람의 가장 큰 벽이다).
     종류카드 = "".join(
         f"<button name='kind' value='{k}' class='kcard'><b>{k}</b>"
-        f"<span>{html.escape(BLOCK_HELP.get(k, ''))}</span></button>" for k in BLOCK_KINDS)
+        f"<span>{html.escape(BLOCK_HELP.get(k, ''))}</span></button>" for k in NEW_BLOCK_KINDS)
     종류단추 = ("<details class='addblock'><summary class='btn'>＋ 블록 추가</summary>"
               f"<div class='kgrid'>{종류카드}</div></details>")
     알림 = _알림(msg=msg)
@@ -2025,13 +1989,16 @@ def _수식목록() -> str:
     """
     from ... import expr
     from ... import formula as F
+    from ...funcdocs import 예전모양만
 
     자료 = {
         "열": sorted(대시보드_열()),
         "행함수": list(expr.PUBLIC_FUNC_NAMES),
         # 별칭까지 보여준다 (COUNTIFS·AVERAGE…). 목록을 두 군데 적지 않으려고
         # `formula.CALLABLE` 이 «부를 수 있는 이름 전부» 를 들고 있다.
-        "집계함수": list(F.CALLABLE),
+        # 예전 모양에만 있는 PCT·AVG 는 권하지 않는다 (계산은 그대로 된다).
+        # LIST 는 프로필 «누구를» 에 쓰므로 남긴다.
+        "집계함수": [n for n in F.CALLABLE if n not in 예전모양만],
         "대상": list(F.TARGETS),
     }
     자료["설명"] = 함수설명자료(자료["행함수"] + 자료["집계함수"])
@@ -2307,6 +2274,10 @@ def post_dash_add_묶음(self, me, path):
     if path == "/dash/block/add":
         did = 정수("dash")
         종류 = (data.get("kind") or [""])[0]
+        if 종류 not in NEW_BLOCK_KINDS:
+            return self._redirect(f"/dash/edit?id={did}&err=" + urllib.parse.quote(
+                "새 블록은 " + "·".join(NEW_BLOCK_KINDS) + " 중에서 고르세요. "
+                "축표·표로 만들던 것은 시트로 만듭니다."))
         try:
             설정 = {"줄": 기본_프로필틀, "머리": 기본_프로필머리} \
                 if 종류 == "프로필" else {}

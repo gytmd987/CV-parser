@@ -261,6 +261,9 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
               검토 필요만</label>
             <button type='submit' class='sec'>검색</button>
             {"<a class='btn sec' href='/'>초기화</a>" if 조건 else ""}
+            {"<a class='btn sec' href='/find' style='margin-left:auto'"
+             " title='과제를 고르면 맞는 사람부터, 보유기술 같은 키워드로도 찾습니다'>"
+             "과제·기술로 찾기</a>" if can(me, "과제매칭_조회") else ""}
           </form>
           {table}
         </div>""",
@@ -369,7 +372,27 @@ def _엑셀결과카드(만든것: list[str], 빠진것: list[str], 모르는것
     return "".join(본)
 
 
-def _upload_page(me: User, error: str = "") -> bytes:
+def _채우기칸() -> str:
+    """보유기술·수상처럼 **나중에 생긴 항목**이 빈 예전 지원자를 한꺼번에 채운다."""
+    from ..jobs import 채울항목
+
+    남은 = store.fill_targets(채울항목)
+    if not 남은:
+        return ""
+    return (
+        "<div class='card'><h2>새 항목 채우기</h2>"
+        "<p class='muted'><b>보유기술 · 수상</b> 은 나중에 생긴 항목이라 그 전에 올린 "
+        f"지원자는 비어 있습니다. 비어 있는 사람이 <b>{len(남은)}명</b> 있습니다.</p>"
+        "<form method='post' action='/candidates/fill'"
+        f" onsubmit=\"return confirm('{len(남은)}명의 CV 를 다시 읽어 빈 항목만 채웁니다. "
+        "사람이 많으면 시간이 걸립니다. 진행할까요?')\">"
+        f"<button type='submit'>빈 항목만 채우기 ({len(남은)}명)</button> "
+        "<span class='muted'>이미 적힌 값과 다른 칸은 <b>건드리지 않습니다</b>. "
+        "고쳐 둔 학교·경력도 그대로입니다.</span></form></div>"
+    )
+
+
+def _upload_page(me: User, error: str = "", msg: str = "") -> bytes:
     """지원자 추가 — CV 를 올리거나, CV 없이 빈 줄을 만든다.
 
     예전에는 지원자 목록 맨 위에 업로드 상자가 붙어 있어서, 표를 보러 올 때마다
@@ -409,13 +432,15 @@ def _upload_page(me: User, error: str = "") -> bytes:
           빠지고 나머지는 등록됩니다. 올린 사람은 전부 <b>검토 필요</b> 로
           표시됩니다 — 손으로 적은 값이라 한 번 보고 넘기라는 뜻입니다.</p>
         </div>
+        {_채우기칸()}
         <div class='card'><h2>보관 설정</h2>
           <p class='muted'>원문 텍스트 보관: <b>{보관}</b> ·
           보관 기간 {settings.retention_months}개월
           (0 = 무제한) · 설정은 <code>.env</code> 에서 바꿉니다.</p>
         </div>"""
     return _page("지원자 추가",
-                 _알림(err=error) + 본문 + _status_table() + _STATUS_POLL_JS, me=me)
+                 _알림(msg=msg, err=error) + 본문 + _status_table() + _STATUS_POLL_JS,
+                 me=me)
 
 
 #: 현황 표만 갈아 끼우는 폴링.
@@ -1227,7 +1252,8 @@ def get_root(self, me, path):
 @라우트("GET", '/upload', 권한='지원자_등록')
 def get_upload(self, me, path):
     params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-    return self._send(_upload_page(me, (params.get("err") or [""])[0]))
+    return self._send(_upload_page(me, (params.get("err") or [""])[0],
+                                   (params.get("msg") or [""])[0]))
     return _없는주소(self)
 
 
@@ -1941,6 +1967,22 @@ def post_candidate_reanalyze(self, me, path):
     store.clear_reviews(cid)
     _enqueue(name, cid, meta["저장_파일명"], "재분석")
     return self._redirect("/upload")
+    return _없는주소(self)
+
+
+@라우트("POST", '/candidates/fill', 권한='지원자_등록')
+def post_candidates_fill(self, me, path):
+    """새 항목이 빈 지원자의 CV 를 다시 읽어 **빈 칸만** 채운다 (jobs._빈칸채우기)."""
+    from ..jobs import 채우기메모, 채울항목
+
+    self._read_body()
+    남은 = store.fill_targets(채울항목)
+    for cid, 파일명, 저장 in 남은:
+        _enqueue(파일명, cid, 저장, 채우기메모)
+    audit.record(me.아이디, "지원자", f"{len(남은)}명", 비고="빈 항목 채우기 시작")
+    return self._redirect("/upload?msg=" + urllib.parse.quote(
+        f"{len(남은)}명을 다시 읽습니다. 아래 처리 현황에서 볼 수 있습니다."
+        if 남은 else "채울 사람이 없습니다."))
     return _없는주소(self)
 
 

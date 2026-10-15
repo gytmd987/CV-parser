@@ -218,6 +218,25 @@ class RecruitStore:
             out[r["지원자_ID"]].단계상태[r["단계"]] = r["상태"] or ""
         return out
 
+    def last_moved(self) -> dict[str, str]:
+        """{지원자_ID: 마지막으로 단계가 움직인 때}. 채용 시작도 움직임으로 친다.
+
+        `recruit.갱신일시` 는 비고만 고쳐도 바뀌므로 쓰지 않는다 — 메모를 적었다고
+        그 사람이 앞으로 나아간 것은 아니다.
+        """
+        나온것: dict[str, str] = {}
+        for r in self._conn.execute(
+            "SELECT 지원자_ID, 채용시작일시 FROM recruit WHERE 채용시작일시 != ''"
+        ):
+            나온것[r["지원자_ID"]] = r["채용시작일시"]
+        for r in self._conn.execute(
+            "SELECT 지원자_ID, MAX(갱신일시) m FROM stages WHERE 상태 != ''"
+            " GROUP BY 지원자_ID"
+        ):
+            if r["m"] and r["m"] > 나온것.get(r["지원자_ID"], ""):
+                나온것[r["지원자_ID"]] = r["m"]
+        return 나온것
+
     # -- 수정 -------------------------------------------------------------
     def _touch(self, 지원자_ID: str, 사용자: str) -> None:
         self._conn.execute(

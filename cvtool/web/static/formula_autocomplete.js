@@ -30,7 +30,8 @@
       본것[n] = {글: n, 갈래: 갈래, 함수: 함수 || 0};
       것.push(본것[n]);
     }
-    if(집계) 목록.대상.forEach(function(n){ 담기(n, '대상'); });
+    /* 대상(지원자·채용)은 «누구를» 칸에만. 시트는 엑셀 모양(COUNTIFS)을 쓴다. */
+    if(갈 === 'agg') 목록.대상.forEach(function(n){ 담기(n, '대상'); });
     목록.열.forEach(function(n){ 담기(n, '열'); });
     if(집계) 목록.집계함수.forEach(function(n){ 담기(n, '함수', 1); });
     if(행) 목록.행함수.forEach(function(n){ 담기(n, '함수', 1); });
