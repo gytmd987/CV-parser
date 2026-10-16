@@ -1,4 +1,4 @@
-"""연구 과제 매칭 — 과제 파일 읽기, 후보 좁히기, 점수·사유."""
+"""연구 과제 매칭 — 과제 파일 읽기, 후보 좁히기, 등급·사유."""
 
 from __future__ import annotations
 
@@ -148,10 +148,10 @@ def _과제(n: int) -> list[Project]:
 class 묶음기록LLM:
     """받은 과제를 모두 채점하고, 무엇을 받았는지 기록한다."""
 
-    def __init__(self, 점수=50, 빼먹기: int = 0):
+    def __init__(self, 등급="인접 분야", 빼먹기: int = 0):
         self.본과제: list[str] = []
         self.호출 = 0
-        self.점수 = 점수
+        self.등급 = 등급
         self.빼먹기 = 빼먹기
 
     def chat_json(self, messages, schema, **kw):
@@ -161,7 +161,7 @@ class 묶음기록LLM:
               for l in 본문.splitlines() if l.startswith("[과제키:")]
         self.본과제 += 키들
         낼것 = 키들[: len(키들) - self.빼먹기] if self.빼먹기 else 키들
-        return {"결과": [{"과제키": k, "점수": self.점수, "사유": "기준에 따라"}
+        return {"결과": [{"과제키": k, "등급": self.등급, "사유": "기준에 따라"}
                        for k in 낼것]}
 
     def close(self):
@@ -201,7 +201,7 @@ def test_unanswered_projects_are_asked_once_more():
 
 
 def test_evaluated_projects_rank_above_unevaluated():
-    llm = 묶음기록LLM(점수=0, 빼먹기=1)
+    llm = 묶음기록LLM(등급="접점 없음", 빼먹기=1)
     나온것 = match("지원자", _과제(3), client=llm, batch=3)
     assert 나온것[-1].평가됨 is False
 
@@ -241,7 +241,7 @@ def test_similarities_survive_a_dead_embedding_service():
     assert similarities("지원자", _과제(3), 죽음()) == {}
 
 
-# --- 점수 · 사유 ---------------------------------------------------------------
+# --- 등급 · 사유 ---------------------------------------------------------------
 class 가짜LLM:
     def __init__(self, 답):
         self.답 = 답
@@ -255,19 +255,46 @@ class 가짜LLM:
         pass
 
 
-def test_match_returns_scores_and_reasons():
+def test_match_returns_grades_and_reasons():
     목록 = parse([{"과제명": "차세대 공정", "id": "P-1"},
                 {"과제명": "신소재", "id": "P-2"}])
     llm = 가짜LLM({"결과": [
-        {"과제키": "P-2", "점수": 40, "사유": "겹치는 부분이 적습니다."},
-        {"과제키": "P-1", "점수": 85, "사유": "식각 공정 경험이 그대로 맞습니다.",
+        {"과제키": "P-2", "등급": "기초만 겹침", "사유": "겹치는 부분이 적습니다."},
+        {"과제키": "P-1", "등급": "적합", "사유": "식각 공정 경험이 그대로 맞습니다.",
          "근거": ["반도체 식각"]},
     ]})
     나온것 = match("반도체 식각", 목록, client=llm)
-    assert [m.과제키 for m in 나온것] == ["P-1", "P-2"]      # 점수 높은 순
+    assert [m.과제키 for m in 나온것] == ["P-1", "P-2"]      # 잘 맞는 순
     assert 나온것[0].과제명 == "차세대 공정"
     assert 나온것[0].근거 == ["반도체 식각"]
-    assert 나온것[0].등급 == "적합"          # 85 점은 70~89 구간
+    assert [m.등급 for m in 나온것] == ["적합", "기초만 겹침"]
+
+
+def test_same_grade_is_ordered_by_similarity():
+    """같은 등급 안의 순서는 모델의 감이 아니라 재현 가능한 유사도로 정한다."""
+    목록 = parse([{"과제명": "가", "id": "P-1"}, {"과제명": "나", "id": "P-2"}])
+
+    class 임베딩:
+        def embed(self, 글들):
+            # 지원자 · P-1 · P-2 — P-2 가 지원자와 더 비슷하다
+            return [[1.0, 0.0], [0.2, 1.0], [1.0, 0.1]]
+
+    llm = 가짜LLM({"결과": [{"과제키": "P-1", "등급": "적합", "사유": "가"},
+                            {"과제키": "P-2", "등급": "적합", "사유": "나"}]})
+    assert [m.과제키 for m in match("x", 목록, client=llm, embed_client=임베딩())] == ["P-2", "P-1"]
+
+
+def test_old_style_score_answers_still_work():
+    """모델이 등급 대신 점수로 답해도 같은 구간의 등급이 된다."""
+    목록 = parse([{"과제명": "가", "id": "P-1"}])
+    llm = 가짜LLM({"결과": [{"과제키": "P-1", "점수": 85, "사유": "가"}]})
+    assert match("x", 목록, client=llm)[0].등급 == "적합"
+
+
+def test_unknown_grade_is_lowest():
+    목록 = parse([{"과제명": "가", "id": "P-1"}])
+    llm = 가짜LLM({"결과": [{"과제키": "P-1", "등급": "아주 좋음", "사유": "가"}]})
+    assert match("x", 목록, client=llm)[0].등급 == "접점 없음"
 
 
 def test_invented_projects_are_dropped():
@@ -307,7 +334,7 @@ def test_empty_profile_is_refused():
 
 
 def test_grades_follow_the_rubric():
-    """등급 이름이 점수 눈금과 어긋나면 사람이 오해한다."""
+    """저장된 값(옛 0~100 점 포함)이 같은 등급으로 되살아나야 한다."""
     assert Match("k", "n", 95, "").등급 == "매우 적합"
     assert Match("k", "n", 75, "").등급 == "적합"
     assert Match("k", "n", 55, "").등급 == "인접 분야"
@@ -316,15 +343,24 @@ def test_grades_follow_the_rubric():
     assert Match("k", "n", 0, "", 평가됨=False).등급 == "미평가"
 
 
-def test_prompt_carries_the_score_rubric():
-    """점수의 뜻을 안 알려주면 모델이 느낌으로 매긴다."""
-    from cvtool.matching import SCORE_RUBRIC
+def test_grade_values_round_trip():
+    from cvtool.matching import GRADES, 등급점수, 점수등급
+
+    assert [점수등급(등급점수[g]) for g in GRADES] == list(GRADES)
+
+
+def test_prompt_carries_the_grade_rubric():
+    """등급의 뜻을 안 알려주면 모델이 느낌으로 고른다."""
+    from cvtool.matching import GRADE_RUBRIC, GRADES, MATCH_SCHEMA
 
     목록 = parse([{"과제명": "가", "id": "P-1"}])
     llm = 가짜LLM({"결과": []})
     match("지원자 정보", 목록, client=llm)
     지시 = llm.받은프롬프트[0]["content"]
-    assert SCORE_RUBRIC in 지시
+    assert GRADE_RUBRIC in 지시 and "0~100" not in 지시
+    항목 = MATCH_SCHEMA["properties"]["결과"]["items"]
+    assert 항목["properties"]["등급"]["enum"] == list(GRADES)
+    assert "점수" not in 항목["properties"]
     assert "하나도 빠짐없이" in 지시
 
 

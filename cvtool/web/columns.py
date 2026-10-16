@@ -12,6 +12,7 @@ from ..edit import (
     custom_field_spec, field_spec, MULTILINE_OK, READONLY_FIELDS, REGISTRY_FIELDS,
 )
 from ..export import build_xlsx
+from ..matching import 점수등급
 from ..recruit import RECRUIT_COLUMNS, STAGES, STARTED_COLUMN
 from ..schemas import columns as table_columns, is_tier_venue, TIER_COLUMN_PREFIX
 
@@ -289,7 +290,8 @@ def 라벨(열들: list[str]) -> dict[str, str]:
 
 
 #: 수식에서 늘 쓸 수 있는 덧열 — 표에는 없지만 줄마다 계산해 넣는다.
-덧열 = ("지원자_ID", "매칭_과제", "매칭_점수", "채용중")
+#: `매칭_점수` 는 예전에 만든 수식이 깨지지 않게 남긴 것이다 (정렬용 대표값).
+덧열 = ("지원자_ID", "매칭_과제", "매칭_등급", "매칭_점수", "채용중")
 
 
 def 모든열() -> set[str]:
@@ -299,7 +301,7 @@ def 모든열() -> set[str]:
 
 def 덧값(행: dict, cid: str, 시작한사람, 상위매칭: dict,
        채용중열: bool | None = None) -> None:
-    """`채용중` · `매칭_과제` · `매칭_점수` 를 줄에 넣는다.
+    """`채용중` · `매칭_과제` · `매칭_등급` 을 줄에 넣는다.
 
     `채용중` 이라는 **추가 열**을 만들어 두었으면 그쪽이 이긴다 (사람이 수식을
     걸어 두려고 만든 것이다).
@@ -307,6 +309,8 @@ def 덧값(행: dict, cid: str, 시작한사람, 상위매칭: dict,
     m = 상위매칭.get(cid)
     행["매칭_과제"] = (m or {}).get("과제명", "") if isinstance(m, dict) else ""
     행["매칭_점수"] = str((m or {}).get("점수", "") or "") if isinstance(m, dict) else ""
+    행["매칭_등급"] = (점수등급(m.get("점수") or 0, m.get("평가됨", True))
+                   if isinstance(m, dict) and m else "")
     if 채용중열 is None:
         채용중열 = store.field("채용중") is not None
     if not 채용중열:

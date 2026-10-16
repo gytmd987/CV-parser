@@ -19,7 +19,7 @@ from ...edit import (
 from ...export import records_to_xlsx
 from ...fsutil import safe_filename
 from ...mailing import DEFAULT_RECIPIENT
-from ...matching import SCORE_RUBRIC
+from ...matching import GRADE_RUBRIC
 from ...names import observe_record
 from ...normalize import MULTI_SEP
 from ...recruit import RECRUIT_COLUMNS, STARTED_COLUMN
@@ -31,7 +31,7 @@ from ...store import SUPPORTED_SUFFIXES
 from ...timeutil import now_kst
 from ...xlsx_read import XlsxError
 from .dashboard import _프로필값
-from .match import _등급이름, _점수색
+from .match import _등급칸
 
 from ..state import audit, auth, CONTENT_TYPES, mailing, recruit, registry, store
 from ..jobs import _enqueue, _set_status, _status, _status_lock
@@ -974,10 +974,7 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
         def 매칭줄(m: dict) -> str:
             유사 = ("<br><span class='muted'>임베딩 유사도 "
                   f"{m['유사도']:.2f}</span>" if m.get("유사도") is not None else "")
-            점수칸 = (f"<span class='pill {_점수색(m['점수'])}'>{m['점수']}점</span>"
-                   f"<br><span class='muted'>{_등급이름(m)}</span>"
-                   if m["평가됨"] else
-                   "<span class='pill p-실패'>미평가</span>")
+            점수칸 = _등급칸(m)
             return (
                 f"<tr><td>{m['순위']}</td><td><b>{html.escape(m['과제명'])}</b>"
                 f"<br><span class='muted'>{html.escape(m['과제키'])}</span>{유사}</td>"
@@ -997,7 +994,7 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
                 f"나머지 {len(매칭) - 보여줄수}개 과제도 보기</summary>"
                 "<div class='scroll'><table>"
                 "<tr><th style='width:44px'>순위</th><th>과제</th>"
-                "<th style='width:92px'>점수</th><th>판단 사유</th></tr>"
+                "<th style='width:92px'>등급</th><th>판단 사유</th></tr>"
                 f"{나머지}</table></div></details>"
                 if len(매칭) > 보여줄수 else ""
             )
@@ -1023,12 +1020,12 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
             + f"<p>{다시} <a class='btn sec' href='/match'>과제 매칭 화면</a></p>"
             "<div class='scroll'><table data-name='과제 매칭'>"
             "<tr><th style='width:44px'>순위</th><th>과제</th>"
-            "<th style='width:92px'>점수</th><th>판단 사유</th></tr>"
+            "<th style='width:92px'>등급</th><th>판단 사유</th></tr>"
             + 위 + "</table></div>" + 더보기
-            + "<p class='muted'>점수는 아래 눈금으로 매깁니다. "
-            "<b>LLM 의 판단이지 측정값이 아닙니다</b> — 순위를 참고하고 "
-            "사유와 근거를 사람이 확인하세요.</p>"
-            f"<pre class='rubric'>{html.escape(SCORE_RUBRIC)}</pre></div>"
+            + "<p class='muted'>등급은 아래 기준으로 고릅니다. 같은 등급 안에서는 "
+            "임베딩 유사도가 높은 과제를 위에 둡니다. "
+            "<b>LLM 의 판단이지 측정값이 아닙니다</b> — 사유와 근거를 사람이 확인하세요.</p>"
+            f"<pre class='rubric'>{html.escape(GRADE_RUBRIC)}</pre></div>"
         )
 
     메일기록 = mailing.history(지원자_ID)

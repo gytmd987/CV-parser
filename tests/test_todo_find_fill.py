@@ -158,3 +158,13 @@ def test_새_대시보드_예시도_엑셀_모양(판):
     블록 = m.boards.blocks(d.id)
     assert [b.종류 for b in 블록] == ["숫자", "시트", "프로필"]
     assert 블록[0].수식.startswith("=COUNTIFS(")
+
+
+def test_매칭은_등급만_보이고_숫자는_안_보인다():
+    from cvtool.matching import 등급점수
+    from cvtool.web.pages.match import _등급칸
+
+    칸 = _등급칸({"점수": 등급점수["매우 적합"], "평가됨": True})
+    assert "매우 적합" in 칸 and "95" not in 칸
+    assert "미평가" in _등급칸({"점수": 0, "평가됨": False})
+    assert "적합" in _등급칸({"점수": 85, "평가됨": True})          # 옛 점수도 등급으로

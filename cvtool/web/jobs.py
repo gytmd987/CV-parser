@@ -13,7 +13,7 @@ from ..config import settings
 from ..dedup import find_duplicates, fingerprint
 from ..extract import extract_cv_from_text
 from ..ingestion.parsers import extract_text
-from ..matching import candidate_profile, match as match_projects
+from ..matching import candidate_profile, match as match_projects, 점수등급
 from ..names import observe_record
 from ..timeutil import now_kst
 
@@ -77,7 +77,7 @@ def 매칭실행(rec, *, 사용자: str = "") -> tuple[int, str]:
     store.save_matches(rec.지원자_ID, 결과)
     if 사용자 and 결과:
         audit.record(사용자, "지원자", rec.지원자_ID, 항목="과제 매칭",
-                     새값=f"{결과[0].과제명} {결과[0].점수}점")
+                     새값=f"{결과[0].과제명} ({결과[0].등급})")
     return len(결과), ""
 
 
@@ -205,7 +205,7 @@ def _worker() -> None:
                     매칭메모 = f" / 과제 매칭 실패: {매칭오류}"
                 elif 개수:
                     최고 = store.matches(rec.지원자_ID)[0]
-                    매칭메모 = f" / 과제: {최고['과제명']} {최고['점수']}점"
+                    매칭메모 = f" / 과제: {최고['과제명']} ({점수등급(최고['점수'], 최고['평가됨'])})"
 
             state = "중복의심" if 후보 else ("검토필요" if rec.검토_필요 == "Y" else "완료")
             _set_status(filename, state, (rec.검토_사유 or "") + 매칭메모,

@@ -9,7 +9,7 @@ import urllib.parse
 from ... import projects as projectsmod
 from ...auth import can, User
 from ...config import settings
-from ...matching import SCORE_RUBRIC
+from ...matching import GRADE_RUBRIC, 점수등급
 
 from ..state import audit, store
 from ..jobs import 과제목록, 다듬은파일, 매칭실행, 쓰는과제파일
@@ -18,15 +18,17 @@ from ..router import 라우트
 
 
 def _등급이름(m: dict) -> str:
-    """저장된 점수로 등급 이름을 되살린다 (Match.등급 과 같은 눈금)."""
+    """저장된 값으로 등급 이름을 되살린다 (Match.등급 과 같은 기준)."""
+    return 점수등급(m.get("점수") or 0, m.get("평가됨", True))
+
+
+def _등급칸(m: dict) -> str:
+    """등급 하나를 색 딱지로. **숫자는 보이지 않는다** — 같은 등급 안의 몇 점 차이는
+    모델의 감이라, 보이면 사람이 그 차이를 믿는다."""
     if not m.get("평가됨", True):
-        return "미평가"
-    점수 = m.get("점수") or 0
-    for 문턱, 이름 in ((90, "매우 적합"), (70, "적합"), (50, "인접 분야"),
-                    (30, "기초만 겹침")):
-        if 점수 >= 문턱:
-            return 이름
-    return "접점 없음"
+        return "<span class='pill p-실패'>미평가</span>"
+    return (f"<span class='pill {_점수색(m.get('점수') or 0)}'>"
+            f"{html.escape(_등급이름(m))}</span>")
 
 
 def _점수색(점수: int) -> str:
@@ -230,7 +232,7 @@ def _projects_page(me: User, error: str = "", msg: str = "") -> bytes:
         + "<p class='muted'>지원자마다 <b>모든 과제와 비교</b>합니다. 결과는 "
         "<b>지원자 상세 화면</b>에서 봅니다 — 한 사람을 볼 때 같이 보는 게 "
         "맞아서 따로 목록을 두지 않습니다.</p>"
-        f"<pre class='rubric'>{html.escape(SCORE_RUBRIC)}</pre></div>",
+        f"<pre class='rubric'>{html.escape(GRADE_RUBRIC)}</pre></div>",
         me=me,
     )
 
