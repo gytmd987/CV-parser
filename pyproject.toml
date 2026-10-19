@@ -27,7 +27,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["cvtool*"]
+include = ["cvtool*", "verifysum*"]
 
 # 화면에 심는 JavaScript (cvtool/web/static/*.js) 도 같이 설치한다.
 [tool.setuptools.package-data]
