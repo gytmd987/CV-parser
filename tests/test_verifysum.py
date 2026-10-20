@@ -135,7 +135,11 @@ def test_줄수_세기():
 
 # --- 학습 · 생성 ---------------------------------------------------------------------
 class 가짜LLM:
-    """처음엔 요약 칸을 길게 쓰고, 고치라고 하면 줄인다."""
+    """추론 모델처럼 생각을 먼저 쓰고 [표시] 형식으로 답한다.
+    처음엔 요약 칸을 길게 쓰고, 고치라고 하면 줄인다."""
+
+    긴 = "원자층 식각과 플라즈마 공정 전반에 걸친 깊은 전문성과 다수의 국제 학술지 논문 실적을 갖춤"
+    짧 = "원자층 식각 공정 전문, 고선택비 ALE 개발"
 
     def __init__(self, 늘_길게=False):
         self.호출 = []
@@ -143,18 +147,17 @@ class 가짜LLM:
 
     def chat_text(self, messages, **kw):
         self.호출.append(messages)
-        return "[문체]\n- ~함 으로 끝맺는다."
+        if "[출력 형식]" not in messages[0]["content"]:
+            return "[문체]\n- ~함 으로 끝맺는다."
+        n = messages[0]["content"].count("[의견")
+        고침 = messages[-1]["role"] == "user" and "고쳐" in messages[-1]["content"]
+        return ("먼저 원문을 읽어 보면 [의견1] 에는 식각 이야기가 많다...\n\n"   # 추론 (무시돼야 한다)
+                + "".join(f"[의견{i + 1}]\n의견 {i}: 핵심만 정리함.\n" for i in range(n))
+                + f"[전문성_성과]\n{self.긴 if (self.늘_길게 or not 고침) else self.짧}\n"
+                + "[연구전문가_역량]\n성실하고 협업에 적극적임\n[작성자]\n김철수 / 이영희 / 박민수")
 
     def chat_json(self, messages, schema, **kw):
-        self.호출.append(messages)
-        n = schema["properties"]["검증의견"]["minItems"]
-        고침 = messages[-1]["role"] == "user" and "고쳐" in messages[-1]["content"]
-        긴 = "원자층 식각과 플라즈마 공정 전반에 걸친 깊은 전문성과 다수의 국제 학술지 논문 실적을 갖춤"
-        짧 = "원자층 식각 공정 전문, 고선택비 ALE 개발"
-        return {"검증의견": [f"의견 {i}: 핵심만 정리함." for i in range(n)],
-                "전문성_성과": 긴 if (self.늘_길게 or not 고침) else 짧,
-                "연구전문가_역량": "성실하고 협업에 적극적임",
-                "작성자": ["김철수", "이영희", "박민수"]}
+        raise AssertionError("글로 잘 나뉘면 JSON 을 쓰지 않는다")
 
     def close(self):
         pass
@@ -322,3 +325,43 @@ def test_2쪽까지_다_읽는다(모양):
     if 모양.get("빈칸줄"):
         assert 자료.항목[6][1].endswith("앞 항목에서 이어지는 글")
     assert D.작성자_찾기(자료.끝글) == ["김민수", "이지은", "박서준"]
+
+
+# --- 표시 글 나누기 -------------------------------------------------------------------
+def test_표시_글을_나눈다():
+    글 = ("생각: [의견1] 은 길다\n"
+          "[의견1]\n첫 줄\n둘째 줄\n[의견 2] 바로 옆에 씀\n【의견3】\n셋\n"
+          "[전문성/성과]\n식각 전문,\n고선택비\n[연구전문가 역량]: 성실함\n[작성자]\n김철수, 이영희 / 박민수")
+    답 = generate.풀기(글, 3)
+    assert 답["검증의견"] == ["첫 줄\n둘째 줄", "바로 옆에 씀", "셋"]
+    assert 답["전문성_성과"] == "식각 전문, 고선택비" and 답["연구전문가_역량"] == "성실함"
+    assert 답["작성자"] == ["김철수", "이영희", "박민수"]
+    assert generate.풀기("표시 없는 글", 3) is None
+
+
+def test_글로_못_나누면_JSON_으로_한_번_더(학습):
+    class 산문LLM(가짜LLM):
+        def chat_text(self, messages, **kw):
+            return "그냥 산문으로 답함"
+
+        def chat_json(self, messages, schema, **kw):
+            assert messages[-1]["content"].startswith("위에 쓴 내용을 JSON")
+            n = schema["properties"]["검증의견"]["minItems"]
+            return {"검증의견": ["가"] * n, "전문성_성과": "짧음", "연구전문가_역량": "성실",
+                    "작성자": ["김철수", "이영희", "박민수"]}
+
+    결 = generate.한사람(D.검증자료_읽기(검증파일()), 학습, 산문LLM())
+    assert 결.항목[0][1] == "가" and 결.전문성 == "짧음"
+
+
+def test_빈_의견이면_다시_쓰게_한다(학습):
+    class 빈칸LLM(가짜LLM):
+        def chat_text(self, messages, **kw):
+            self.호출.append(messages)
+            if len(self.호출) == 1:
+                return "[의견1]\n하나만 씀\n[전문성_성과]\n짧음\n[연구전문가_역량]\n성실\n[작성자]\n김철수 / 이영희 / 박민수"
+            return super().chat_text(messages)
+
+    llm = 빈칸LLM()
+    결 = generate.한사람(D.검증자료_읽기(검증파일()), 학습, llm)
+    assert all(b for _a, b in 결.항목) and "비어 있는" in llm.호출[1][-1]["content"]

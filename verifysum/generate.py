@@ -1,6 +1,15 @@
 """2단계 — 후보자 검증 자료 → 1장 결과 + 요약표 한 줄.
 
-한 사람에 LLM 한 번이 기본이다. 답을 받으면 **코드로 검사**한다.
+한 사람에 LLM 한 번이 기본이다. 답은 **JSON 이 아니라 표시 붙은 글**로 받는다:
+
+    [의견1] … [의견7] [전문성_성과] [연구전문가_역량] [작성자]
+
+서버 모델이 추론형이라, JSON 문법을 첫 글자부터 강제하면(guided_json) 생각할 틈이
+없어 빈 값만 채우고 끝내는 일이 있었다 (결과 표가 빈칸으로 나왔다). 지원자 관리의
+2단계 추출과 같은 이유다. 글로 받아 코드로 나누고, 그래도 못 나누면 그때만 JSON 으로
+한 번 더 받는다.
+
+답을 받으면 **코드로 검사**한다.
 
   - 요약 두 칸: 칸 너비·글자 크기로 줄 수를 세서 두 줄을 넘으면 다시 쓰게 한다.
   - 1장 표   : 예시 1장 표의 높이(= 한 쪽에 들어간 양)를 넘으면 줄이게 한다.
@@ -13,7 +22,7 @@
 
 from __future__ import annotations
 
-import json
+import re
 from dataclasses import dataclass, field
 
 from . import docxio as D
@@ -32,6 +41,7 @@ class 결과:
     역량: str = ""
     작성자: list[str] = field(default_factory=list)
     경고: list[str] = field(default_factory=list)
+    원답: str = ""                    # LLM 이 실제로 쓴 글 (문제가 생기면 화면에서 본다)
 
 
 def _한줄(학습: dict, 칸: str) -> float:
@@ -76,14 +86,16 @@ def 프롬프트(자료: D.검증자료, 학습: dict) -> list[dict]:
         f"[작성 지침 — 예시에서 정리한 것]\n{학습.get('지침') or ''}\n\n"
         "[규칙]\n"
         "- 원문에 없는 사실·수치·평가를 지어내지 마라. 원문을 줄이고 다듬기만 한다.\n"
-        f"- 검증의견은 항목 순서대로 정확히 {len(자료.항목)}개. 항목명은 쓰지 말고 의견만 쓴다.\n"
+        f"- 검증 의견은 항목 순서대로 정확히 {len(자료.항목)}개. 빈 항목 없이 모두 쓴다.\n"
         "- 항목별 분량(공백 포함, 대략). 예시 1장 결과의 분량과 같은 수준이다:\n"
         f"{분량}\n"
-        "- 줄을 나눌 때는 줄바꿈(\\n)을 쓴다. 예시 1장 결과의 줄 나눔·기호를 따른다.\n"
+        "- 한 항목 안에서 줄을 나눌 때는 줄을 바꿔 쓴다. 예시 1장 결과의 줄 나눔·기호를 따른다.\n"
         f"- 전문성_성과: 무엇에 전문성이 있는지·대표 성과. 공백 포함 {전문}자 이내 — 칸에서 반드시 두 줄 안.\n"
         f"- 연구전문가_역량: 연구자로서의 태도·성품. 공백 포함 {역량}자 이내 — 반드시 두 줄 안.\n"
-        "- 작성자: 원문 끝에 적힌 작성자 이름만 순서대로 (직함·'작성자' 같은 말은 빼고).\n"
-        "- JSON 객체 하나만 출력한다."
+        "- 작성자: 원문 끝에 적힌 작성자 이름만 순서대로 (직함·'작성자' 같은 말은 빼고).\n\n"
+        "[출력 형식] 충분히 생각한 뒤, 마지막에 아래 모양 그대로만 써라. 대괄호 표시는 바꾸지 마라.\n"
+        + "".join(f"[의견{i + 1}]\n({a} 검증 의견)\n" for i, (a, _b) in enumerate(자료.항목))
+        + "[전문성_성과]\n(한두 줄)\n[연구전문가_역량]\n(한두 줄)\n[작성자]\n이름 / 이름 / 이름"
     )
     원문 = (
         f"제목: {자료.제목}\n소속: {자료.소속}\n\n"
@@ -130,22 +142,81 @@ def _받기(답: dict, 자료: D.검증자료) -> 결과:
     )
 
 
+_표시 = re.compile(r"^\s*[\[［【]\s*([^\]］】\n]{1,30}?)\s*[\]］】]\s*[:：]?\s*(.*)$")
+
+
+def 풀기(글: str, n: int) -> dict | None:
+    """[의견1] … [작성자] 로 표시된 글을 나눈다. 의견이 하나도 없으면 None.
+
+    추론 모델은 앞에 생각을 길게 쓰기도 하므로 **마지막에 나온** 표시를 쓴다.
+    """
+    칸: dict[str, list[str]] = {}
+    지금 = None
+    for 줄 in (글 or "").splitlines():
+        m = _표시.match(줄)
+        if m:
+            이름 = re.sub(r"\s+", "", m.group(1))
+            if re.fullmatch(r"(의견|검증의견)?\d+", 이름):
+                지금 = "의견" + re.sub(r"\D", "", 이름)
+            elif "전문성" in 이름 or "성과" in 이름:
+                지금 = "전문성"
+            elif "역량" in 이름:
+                지금 = "역량"
+            elif "작성자" in 이름:
+                지금 = "작성자"
+            else:
+                지금 = None
+                continue
+            칸[지금] = [m.group(2)] if m.group(2).strip() else []   # 다시 나오면 새로 (마지막 것)
+            continue
+        if 지금:
+            칸[지금].append(줄)
+
+    def 글(k):
+        return "\n".join(x.rstrip() for x in 칸.get(k, [])).strip()
+
+    의견 = [글(f"의견{i + 1}") for i in range(n)]
+    if not any(의견):
+        return None
+    return {
+        "검증의견": 의견,
+        "전문성_성과": " ".join(글("전문성").split("\n")).strip(),
+        "연구전문가_역량": " ".join(글("역량").split("\n")).strip(),
+        "작성자": [x.strip() for x in re.split(r"[/,·\n]+", 글("작성자")) if x.strip()],
+    }
+
+
+def _묻기(client, 메시지: list[dict], n: int) -> tuple[dict, str]:
+    """(나눈 답, 원래 글). 글로 받고, 못 나누면 그 글을 JSON 으로 옮기게 한 번 더."""
+    글 = client.chat_text(메시지)
+    답 = 풀기(글, n)
+    if 답 is None:
+        답 = client.chat_json(
+            메시지 + [{"role": "assistant", "content": 글},
+                    {"role": "user", "content": "위에 쓴 내용을 JSON 으로 옮겨라. 내용은 바꾸지 마라."}],
+            _스키마(n), schema_name="verify_summary")
+    return 답, 글
+
+
 def 한사람(자료: D.검증자료, 학습: dict, client) -> 결과:
+    n = len(자료.항목)
     메시지 = 프롬프트(자료, 학습)
-    스키마 = _스키마(len(자료.항목))
-    답 = client.chat_json(메시지, 스키마, schema_name="verify_summary")
+    답, 글 = _묻기(client, 메시지, n)
     결 = _받기(답, 자료)
     for _ in range(고쳐쓰기):
         문제 = 검사(결, 학습)
+        if any(not b for _a, b in 결.항목):
+            문제.append("비어 있는 검증 의견이 있습니다. 모든 [의견] 칸을 채우세요.")
         if not 문제:
             break
         메시지 = 메시지 + [
-            {"role": "assistant", "content": json.dumps(답, ensure_ascii=False)},
-            {"role": "user", "content": "다음을 고쳐 같은 JSON 형식으로 다시 써라. 나머지는 그대로 둔다.\n- "
-             + "\n- ".join(문제)},
+            {"role": "assistant", "content": 글},
+            {"role": "user", "content": "다음을 고쳐 같은 [표시] 형식으로 처음부터 다시 써라. "
+             "나머지는 그대로 둔다.\n- " + "\n- ".join(문제)},
         ]
-        답 = client.chat_json(메시지, 스키마, schema_name="verify_summary")
+        답, 글 = _묻기(client, 메시지, n)
         결 = _받기(답, 자료)
+    결.원답 = 글[-4000:]
 
     # 마지막 안전장치 — 요약 칸은 두 줄을 절대 넘지 않게
     for 칸, 속성, 이름 in (("전문성", "전문성", "전문성/성과"), ("역량", "역량", "연구전문가 역량")):

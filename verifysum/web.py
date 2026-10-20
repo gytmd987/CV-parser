@@ -100,7 +100,7 @@ def _돌리기(자료들: list, 학습: dict) -> None:
             앞메모 = 작업["줄"][i].get("메모") or ""
             경고 = ([앞메모] if 앞메모 else []) + r.경고
             _줄바꾸기(i, 상태="확인필요" if 경고 else "완료", 메모=" / ".join(경고),
-                    전문성=r.전문성, 역량=r.역량, 작성자=" / ".join(r.작성자))
+                    전문성=r.전문성, 역량=r.역량, 작성자=" / ".join(r.작성자), 원답=r.원답)
         except Exception as exc:  # noqa: BLE001 - 한 사람 실패가 전체를 멈추면 안 된다
             _줄바꾸기(i, 상태="실패", 메모=f"{type(exc).__name__}: {str(exc)[:200]}")
 
@@ -257,7 +257,8 @@ async function poll(){
      '<a class="btn" href="/download/2">요약표 받기</a><span class="muted">확인필요 표시된 사람은 워드에서 한 번 봐 주세요.</span></div>';
   h+='<table><tr><th>파일</th><th>후보자</th><th>읽은 내용</th><th>상태</th><th>전문성/성과</th><th>연구전문가 역량</th><th>작성자</th><th>메모</th></tr>';
   for(const x of s.줄){ h+='<tr><td>'+esc(x.파일)+'</td><td>'+esc(x.후보자)+'</td><td class="muted">'+esc(x.읽음)+'</td><td><span class="pill s-'+esc(x.상태)+'">'+esc(x.상태)+
-     '</span></td><td>'+esc(x.전문성)+'</td><td>'+esc(x.역량)+'</td><td>'+esc(x.작성자)+'</td><td class="muted">'+esc(x.메모)+'</td></tr>'; }
+     '</span></td><td>'+esc(x.전문성)+'</td><td>'+esc(x.역량)+'</td><td>'+esc(x.작성자)+'</td><td class="muted">'+esc(x.메모)+
+     (x.원답?'<details><summary>LLM 답 보기</summary><pre style="white-space:pre-wrap;font-size:12px;max-width:420px">'+esc(x.원답)+'</pre></details>':'')+'</td></tr>'; }
   el.innerHTML=h+'</table>';
   if(s.돌고있음) setTimeout(poll, 2000);
 }

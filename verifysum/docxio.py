@@ -338,11 +338,16 @@ def 글넣기(p_el, 글: str) -> None:
 
 
 def 칸넣기(tc, 글: str) -> None:
-    """칸 글을 바꾼다. 줄마다 문단 하나 (첫 문단 모양을 복사)."""
-    문단들 = tc.findall(W_P)
-    틀 = copy.deepcopy(문단들[0]) if 문단들 else tc.makeelement(W_P, {})
-    for p in 문단들:
-        tc.remove(p)
+    """칸 글을 바꾼다. 줄마다 문단 하나 (첫 문단 모양을 복사).
+
+    칸 안이 콘텐츠 컨트롤(w:sdt) 등으로 싸여 있어도 예시 글이 남지 않게, 칸 속성(tcPr)
+    말고는 전부 지우고 새로 넣는다.
+    """
+    첫 = next(tc.iter(W_P), None)
+    틀 = copy.deepcopy(첫) if 첫 is not None else tc.makeelement(W_P, {})
+    for 자식 in list(tc):
+        if 자식.tag != qn("w:tcPr"):
+            tc.remove(자식)
     for 줄 in (글.split("\n") if 글 else [""]):
         새 = copy.deepcopy(틀)
         글넣기(새, 줄)
@@ -442,9 +447,20 @@ def 한장_만들기(틀: bytes, 결과들: list[한장결과]) -> bytes:
     return 나감.getvalue()
 
 
+def _칸들(tr) -> list:
+    """줄의 칸들. 콘텐츠 컨트롤로 싸인 칸도 센다."""
+    나온것 = []
+    for el in tr.iterchildren():
+        if el.tag == qn("w:tc"):
+            나온것.append(el)
+        elif el.tag in (qn("w:sdt"), qn("w:sdtContent"), qn("w:customXml")):
+            나온것 += _칸들(el)
+    return 나온것
+
+
 def _표채우기(tbl_el, 항목: list[tuple[str, str]]) -> None:
     줄 = tbl_el.findall(qn("w:tr"))
-    머리 = 1 if 줄 and _머리줄인가([칸글(tc) for tc in 줄[0].findall(qn("w:tc"))]) else 0
+    머리 = 1 if 줄 and _머리줄인가([칸글(tc) for tc in _칸들(줄[0])]) else 0
     본줄 = 줄[머리:]
     if not 본줄:
         raise 형식오류("1장 예시 표에 내용 줄이 없습니다.")
@@ -452,7 +468,7 @@ def _표채우기(tbl_el, 항목: list[tuple[str, str]]) -> None:
         tbl_el.remove(tr)
     for i, (이름, 의견) in enumerate(항목):
         tr = copy.deepcopy(본줄[min(i, len(본줄) - 1)])
-        tcs = tr.findall(qn("w:tc"))
+        tcs = _칸들(tr)
         칸넣기(tcs[0], 이름)
         if len(tcs) > 1:
             칸넣기(tcs[1], 의견)
@@ -473,7 +489,7 @@ def 요약_만들기(틀: bytes, 줄들: list[list[str]]) -> bytes:
         tbl.remove(tr)
     for 값들 in 줄들:
         tr = copy.deepcopy(틀줄)
-        for tc, 값 in zip(tr.findall(qn("w:tc")), 값들):
+        for tc, 값 in zip(_칸들(tr), 값들):
             칸넣기(tc, 값)
         tbl.append(tr)
     나감 = io.BytesIO()
