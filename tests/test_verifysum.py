@@ -15,6 +15,7 @@ from http.server import ThreadingHTTPServer
 import pytest
 from docx import Document
 from docx.enum.text import WD_BREAK
+from docx.oxml import parse_xml
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt
 
@@ -189,9 +190,10 @@ def test_요약_칸이_길면_고쳐_쓰게_한다(학습):
     llm = 가짜LLM()
     결 = generate.한사람(D.검증자료_읽기(검증파일(이름="김민준")), 학습, llm)
     assert len(llm.호출) == 2                                # 한 번 고쳐 씀
-    assert 결.전문성 == "원자층 식각 공정 전문, 고선택비 ALE 개발" and not 결.경고
+    # 점으로 시작하고, 넘어가는 줄은 띄어쓰기로 글자 시작을 맞춘다
+    assert 결.전문성 == "· 원자층 식각 공정 전문,\n   고선택비 ALE 개발" and not 결.경고
     지시 = llm.호출[0][0]["content"]
-    assert "두 줄 안" in 지시 and "지어내지" in 지시 and "약 " in 지시
+    assert "두 줄까지" in 지시 and "'- '" in 지시 and "지어내지" in 지시 and "약 " in 지시
 
 
 def test_끝까지_길면_두_줄에_맞춰_자른다(학습):
@@ -206,8 +208,9 @@ def test_결과_파일_두_개(학습):
     한장 = Document(io.BytesIO(generate.한장파일(결과들, 한장파일())))
     assert len(한장.tables) == 2 and all(len(t.rows) == 8 for t in 한장.tables)
     글 = [p.text for p in 한장.paragraphs if p.text.strip()]
-    assert 글[:3] == ["가나다 책임연구원", "(한국과학기술원 신소재공학과)", "작성자 김철수 / 이영희 / 박민수"]
-    assert 한장.tables[1].rows[1].cells[1].text == "의견 0: 핵심만 정리함."
+    # 작성자 줄은 원본의 표 밑 문단을 그대로 옮긴다
+    assert 글[:3] == ["가나다 책임연구원", "(한국과학기술원 신소재공학과)", "작성자: 김철수 수석 / 이영희 책임 / 박민수 선임"]
+    assert 한장.tables[1].rows[1].cells[1].text == "- 의견 0: 핵심만 정리함."
     둘째제목 = next(p for p in 한장.paragraphs if p.text == "라마바 책임연구원")
     assert 둘째제목._p.find(qn("w:pPr") + "/" + qn("w:pageBreakBefore")) is not None
     assert 한장.paragraphs[0].runs[0].bold                   # 예시 모양(굵게)을 그대로
@@ -334,7 +337,7 @@ def test_표시_글을_나눈다():
           "[전문성/성과]\n식각 전문,\n고선택비\n[연구전문가 역량]: 성실함\n[작성자]\n김철수, 이영희 / 박민수")
     답 = generate.풀기(글, 3)
     assert 답["검증의견"] == ["첫 줄\n둘째 줄", "바로 옆에 씀", "셋"]
-    assert 답["전문성_성과"] == "식각 전문, 고선택비" and 답["연구전문가_역량"] == "성실함"
+    assert 답["전문성_성과"] == "식각 전문,\n고선택비" and 답["연구전문가_역량"] == "성실함"
     assert 답["작성자"] == ["김철수", "이영희", "박민수"]
     assert generate.풀기("표시 없는 글", 3) is None
 
@@ -351,7 +354,7 @@ def test_글로_못_나누면_JSON_으로_한_번_더(학습):
                     "작성자": ["김철수", "이영희", "박민수"]}
 
     결 = generate.한사람(D.검증자료_읽기(검증파일()), 학습, 산문LLM())
-    assert 결.항목[0][1] == "가" and 결.전문성 == "짧음"
+    assert 결.항목[0][1] == "- 가" and 결.전문성 == "· 짧음"
 
 
 def test_빈_의견이면_다시_쓰게_한다(학습):
@@ -365,3 +368,64 @@ def test_빈_의견이면_다시_쓰게_한다(학습):
     llm = 빈칸LLM()
     결 = generate.한사람(D.검증자료_읽기(검증파일()), 학습, llm)
     assert all(b for _a, b in 결.항목) and "비어 있는" in llm.호출[1][-1]["content"]
+
+
+# --- 칸 글 모양 ('- ' · '· ') ---------------------------------------------------------
+def test_글머리_나누기와_맞추기():
+    assert fit.항목_나누기("- 첫 내용\n  이어짐\n- 둘째") == ["첫 내용 이어짐", "둘째"]
+    assert fit.항목_나누기("가\n나") == ["가", "나"]          # 글머리가 없으면 줄마다
+    assert fit.이음("- ") == "  " and fit.이음("· ") == "   "
+    줄 = fit.글머리_줄들("가" * 30, 20, "- ")
+    assert 줄[0].startswith("- ") and all(x.startswith("  가") for x in 줄[1:])
+    assert all(fit.폭(x) <= 20 * fit.여유 for x in 줄)
+
+
+def test_의견칸_줄마다_문단_새내용만_간격():
+    doc = Document()
+    t = doc.add_table(rows=1, cols=1)
+    tc = t.rows[0].cells[0]._tc
+    D.의견칸넣기(tc, "- 첫 내용\n  이어지는 줄\n- 둘째 내용", 사이_pt=5)
+    ps = list(tc.iter(qn("w:p")))
+    assert [D._글(p) for p in ps] == ["- 첫 내용", "  이어지는 줄", "- 둘째 내용"]
+    앞 = [D._앞간격(p) for p in ps]
+    assert 앞[1] == 0 and 앞[2] == 5
+
+
+def test_1장_표_줄높이는_내용에_맞춘다(학습):
+    doc = Document(io.BytesIO(한장파일()))
+    tr = doc.tables[0].rows[1]._tr
+    trPr = tr.get_or_add_trPr()
+    h = trPr.makeelement(qn("w:trHeight"), {qn("w:val"): "2000", qn("w:hRule"): "exact"})
+    trPr.append(h)
+    b = io.BytesIO(); doc.save(b)
+    r = generate.한사람(D.검증자료_읽기(검증파일()), 학습, 가짜LLM())
+    out = Document(io.BytesIO(generate.한장파일([r], b.getvalue())))
+    assert not list(out.tables[0]._tbl.iter(qn("w:trHeight")))
+
+
+def test_요약_점_두개면_각각_한줄(학습):
+    결 = generate.결과(자료=D.검증자료_읽기(검증파일()), 항목=[],
+                     전문성=generate.요약맞추기("· 짧은 첫째\n· 둘째도 짧음", 학습, "전문성"), 역량="· 성실")
+    assert 결.전문성 == "· 짧은 첫째\n· 둘째도 짧음"
+    assert not [m for m in generate.검사(결, 학습) if "전문성" in m]
+    긴 = generate.요약맞추기("· " + "가나다라 " * 6 + "\n· 둘째", 학습, "전문성")
+    결.전문성 = 긴
+    assert any("각각 한 줄" in m for m in generate.검사(결, 학습))
+
+
+def test_요약점은_예시에서_읽는다(학습):
+    학습 = dict(학습, 요약=dict(학습["요약"], 줄들=[["가", "ㆍ 첫째\n  이어짐", "ㆍ 성실", "추천"]]))
+    assert generate.요약점(학습) == ("ㆍ ", "  ")
+
+
+def test_작성자_줄이_글자_컨트롤_안에_있어도_찾는다():
+    """예시 1장의 작성자 글이 콘텐츠 컨트롤 안에 있으면 예전엔 못 보고 엉뚱한 문단을 잡았다."""
+    doc = Document(io.BytesIO(한장파일()))
+    p = doc.paragraphs[-1]
+    assert "작성자" in p.text
+    run = p.runs[0]._r
+    sdt = parse_xml('<w:sdt xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                    '<w:sdtContent/></w:sdt>')
+    run.addprevious(sdt)
+    sdt[0].append(run)
+    assert D._문단글(p._p) == p._p.xpath("string(.)").strip()

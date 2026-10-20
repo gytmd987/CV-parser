@@ -21,11 +21,15 @@ import re
 from dataclasses import dataclass, field
 
 from docx import Document
+
+from . import fit
+from docx.oxml import parse_xml
 from docx.oxml.ns import qn
+from lxml import etree
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 
-W_P, W_TBL, W_SECT = qn("w:p"), qn("w:tbl"), qn("w:sectPr")
+W_P, W_TBL, W_SECT, W_SDT = qn("w:p"), qn("w:tbl"), qn("w:sectPr"), qn("w:sdt")
 
 
 class 형식오류(ValueError):
@@ -38,6 +42,7 @@ class 검증자료:
     소속: str                         # 괄호 안
     항목: list[tuple[str, str]]       # [(항목명, 검증 의견)]
     끝글: str = ""                    # 표 뒤 문단 (작성자가 들어 있다)
+    끝문단: list[str] = field(default_factory=list)   # 작성자 문단 XML — 1장 결과에 모양 그대로 옮긴다
     파일명: str = ""
 
     @property
@@ -65,15 +70,42 @@ def _열기(내용: bytes | str):
                     f"다시 저장해 주세요. ({type(exc).__name__})") from exc
 
 
-def _문단글(el, 부모) -> str:
-    return Paragraph(el, 부모).text.strip()
+_대체 = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
+
+
+def _글(el) -> str:
+    """문단 글 그대로. 글자 단위 콘텐츠 컨트롤(w:sdt) 안 글도, 줄바꿈(w:br)도 읽는다.
+
+    python-docx 의 `Paragraph.text` 는 콘텐츠 컨트롤 안 글을 건너뛴다 — 그래서 예시
+    1장의 작성자 줄을 못 보고 다음 사람 제목을 작성자 자리로 잡은 적이 있다.
+    """
+    조각: list[str] = []
+
+    def 돌기(e):
+        for c in e:
+            if c.tag == _대체:
+                continue
+            if c.tag == qn("w:t"):
+                조각.append(c.text or "")
+            elif c.tag in (qn("w:br"), qn("w:cr")):
+                조각.append("\n")
+            elif c.tag == qn("w:tab"):
+                조각.append("\t")
+            else:
+                돌기(c)
+    돌기(el)
+    return "".join(조각)
+
+
+def _문단글(el, 부모=None) -> str:
+    return _글(el).strip()
 
 
 def 칸글(tc_or_cell) -> str:
-    """칸 안의 문단을 줄바꿈으로 잇는다. 빈 줄은 뺀다."""
+    """칸 안의 줄들을 줄바꿈으로 잇는다. 빈 줄은 빼고, 줄 앞 띄어쓰기('  ' 맞춤)는 둔다."""
     tc = getattr(tc_or_cell, "_tc", tc_or_cell)
-    줄 = ["".join(t.text or "" for t in p.iter(qn("w:t"))) for p in tc.iter(W_P)]
-    return "\n".join(x.strip() for x in 줄 if x.strip())
+    줄 = [x for p in tc.iter(W_P) for x in _글(p).split("\n")]
+    return "\n".join(x.rstrip() for x in 줄 if x.strip())
 
 
 def _표_줄(tbl_el, 부모) -> list[list[str]]:
@@ -170,8 +202,17 @@ def 항목들(문서) -> list[검증자료]:
             for 칸들 in _표_줄(el, 부모):
                 _행합치기(항목, 칸들)
         사람들.append(검증자료(제목=제목, 소속=소속, 항목=항목,
-                         끝글="\n".join(g for _e, g in 조.뒤문단)))
+                         끝글="\n".join(g for _e, g in 조.뒤문단),
+                         끝문단=_작성자문단(조.뒤문단)))
     return 사람들
+
+
+def _작성자문단(뒤문단: list) -> list[str]:
+    """표 뒤 문단 중 작성자 부분 ('작성' 이 처음 나오는 문단부터 끝까지, 없으면 마지막 문단)."""
+    if not 뒤문단:
+        return []
+    k = next((i for i, (_e, g) in enumerate(뒤문단) if "작성" in g), len(뒤문단) - 1)
+    return [etree.tostring(e, encoding="unicode") for e, _g in 뒤문단[k:]]
 
 
 def _제목_소속(앞: list[str]) -> tuple[str, str, int]:
@@ -202,6 +243,7 @@ def 검증자료_읽기(내용: bytes | str, 파일명: str = "") -> 검증자�
         for 이름, 의견 in 다음.항목:
             _행합치기(사람.항목, [이름, 의견])
         사람.끝글 = 다음.끝글 or 사람.끝글
+        사람.끝문단 = 다음.끝문단 or 사람.끝문단
     if not 사람.제목:
         raise 형식오류("표 위에서 제목(이름 직책)을 찾지 못했습니다.")
     if len(사람.항목) < 2:
@@ -354,6 +396,52 @@ def 칸넣기(tc, 글: str) -> None:
         tc.append(새)
 
 
+def _간격(p_el, 앞: float | None = None, 뒤: float | None = None) -> None:
+    """문단 위·아래 간격(pt)을 정한다. None 이면 그대로."""
+    ppr = p_el.find(qn("w:pPr"))
+    if ppr is None:
+        ppr = p_el.makeelement(qn("w:pPr"), {})
+        p_el.insert(0, ppr)
+    sp = ppr.find(qn("w:spacing"))
+    if sp is None:
+        sp = ppr.makeelement(qn("w:spacing"), {})
+        ppr.append(sp)
+    for 값, 이름 in ((앞, "before"), (뒤, "after")):
+        if 값 is None:
+            continue
+        for 군 in (f"{이름}Lines", f"{이름}Autospacing"):
+            sp.attrib.pop(qn(f"w:{군}"), None)
+        sp.set(qn(f"w:{이름}"), str(round(값 * 20)))
+
+
+def _앞간격(p_el) -> float:
+    sp = p_el.find(f"{qn('w:pPr')}/{qn('w:spacing')}")
+    return _twip(sp.get(qn("w:before"))) if sp is not None else 0.0
+
+
+def 의견칸넣기(tc, 글: str, 머리: str | tuple = "-", 사이_pt: float = 5.0) -> None:
+    """검증 의견 칸. 화면에 보일 줄마다 문단 하나 (워드가 손 줄바꿈 줄을 양쪽 맞춤으로
+    벌리지 않게). '- ' 로 시작하는 줄(새 내용) 앞만 간격을 벌리고, 이어지는 줄은 붙인다.
+
+    예시 칸에 이미 내용 사이 간격이 있으면 그 간격을 쓴다.
+    """
+    문단들 = list(tc.iter(W_P))
+    예 = [_앞간격(p) for p in 문단들[1:] if _문단글(p).startswith(머리)]
+    사이 = max(예) if 예 and max(예) > 0 else 사이_pt
+    첫 = 문단들[0] if 문단들 else None
+    틀 = copy.deepcopy(첫) if 첫 is not None else tc.makeelement(W_P, {})
+    for 자식 in list(tc):
+        if 자식.tag != qn("w:tcPr"):
+            tc.remove(자식)
+    줄들 = (글 or "").split("\n")
+    for i, 줄 in enumerate(줄들):
+        새 = copy.deepcopy(틀)
+        글넣기(새, 줄)
+        _간격(새, 앞=None if i == 0 else (사이 if 줄.startswith(머리) else 0),
+             뒤=None if i == len(줄들) - 1 else 0)
+        tc.append(새)
+
+
 def _쪽나눔(p_el) -> None:
     ppr = p_el.find(qn("w:pPr"))
     if ppr is None:
@@ -385,6 +473,21 @@ class 한장결과:
     소속: str
     항목: list[tuple[str, str]]
     작성자: list[str]
+    작성자문단: list[str] = field(default_factory=list)   # 원본의 작성자 문단 XML
+
+
+def _옮긴문단(xml: str):
+    """원본 문단을 결과에 옮길 때 쪽나눔 · 구역 나눔은 뺀다."""
+    el = parse_xml(xml)
+    ppr = el.find(qn("w:pPr"))
+    if ppr is not None:
+        for 태그 in ("w:pageBreakBefore", "w:sectPr"):
+            for x in ppr.findall(qn(태그)):
+                ppr.remove(x)
+    for br in list(el.iter(qn("w:br"))):
+        if br.get(qn("w:type")) == "page":
+            br.getparent().remove(br)
+    return el
 
 
 def _작성자글(틀글: str, 이름들: list[str]) -> str:
@@ -411,13 +514,19 @@ def 한장_만들기(틀: bytes, 결과들: list[한장결과]) -> bytes:
         raise 형식오류("1장 예시 파일에서 표를 찾지 못했습니다.")
     부모 = 문서._body
     # 제목 · 소속: 표 앞의 글 있는 문단 (가장 가까운 두 개)
-    앞 = [i for i in range(표위치) if 자식[i].tag == W_P and _문단글(자식[i], 부모)]
+    def 글있음(i):                         # 콘텐츠 컨트롤로 싸인 문단도
+        return 자식[i].tag in (W_P, W_SDT) and _문단글(자식[i]) and \
+            (자식[i].tag == W_P or next(자식[i].iter(W_TBL), None) is None)
+    앞 = [i for i in range(표위치) if 글있음(i)]
     제목i = 앞[-2] if len(앞) >= 2 else (앞[-1] if 앞 else None)
     소속i = 앞[-1] if len(앞) >= 2 else None
-    # 작성자: 표 뒤 첫 글 있는 문단
-    뒤 = [i for i in range(표위치 + 1, len(자식))
-         if 자식[i].tag == W_P and _문단글(자식[i], 부모)]
-    작성자i = 뒤[0] if 뒤 else None
+    # 작성자: 표 뒤 글 있는 문단 ('작성' 이 든 것 먼저). 예시에 다음 사람이 이어지면
+    # 그 사람 제목 · 소속(다음 표 바로 앞 두 문단)은 작성자로 잡지 않는다.
+    다음표 = next((i for i in range(표위치 + 1, len(자식)) if 자식[i].tag == W_TBL), len(자식))
+    뒤 = [i for i in range(표위치 + 1, 다음표) if 글있음(i)]
+    if 다음표 < len(자식):
+        뒤 = 뒤[:-2]
+    작성자i = next((i for i in 뒤 if "작성" in _문단글(자식[i])), 뒤[0] if 뒤 else None)
     시작 = 제목i if 제목i is not None else 표위치
     끝 = 작성자i if 작성자i is not None else 표위치
     틀조각 = [copy.deepcopy(el) for el in 자식[시작: 끝 + 1]]
@@ -428,16 +537,26 @@ def 한장_만들기(틀: bytes, 결과들: list[한장결과]) -> bytes:
         조각 = [copy.deepcopy(el) for el in 틀조각]
         for k, el in enumerate(조각):
             원래 = 시작 + k
+            p = el if el.tag != W_SDT else next(el.iter(W_P), el)
             if 원래 == 제목i:
-                글넣기(el, 결과.제목)
+                글넣기(p, 결과.제목)
                 if n:
-                    _쪽나눔(el)
+                    _쪽나눔(p)
             elif 원래 == 소속i:
-                글넣기(el, f"({결과.소속})" if 결과.소속 else "")
+                글넣기(p, f"({결과.소속})" if 결과.소속 else "")
+            elif 원래 == 작성자i and 결과.작성자문단:
+                el.tag = "버림"            # 원본 작성자 문단으로 바꾼다 (아래)
             elif 원래 == 작성자i:
-                글넣기(el, _작성자글(작성자틀글, 결과.작성자))
+                글넣기(p, _작성자글(작성자틀글, 결과.작성자))
             elif 원래 == 표위치:
                 _표채우기(el, 결과.항목)
+        if 결과.작성자문단:
+            # 작성자 줄은 원본(검증 자료) 의 표 밑 문단을 모양 그대로 옮긴다
+            자리 = next((k for k, el in enumerate(조각) if el.tag == "버림"), None)
+            if 자리 is None:
+                자리 = (표위치 - 시작) + 1
+            조각 = 조각[:자리] + [_옮긴문단(x) for x in 결과.작성자문단] + \
+                [el for el in 조각[자리:] if el.tag != "버림"]
         if n and 제목i is None:
             _쪽나눔(조각[0]) if 조각[0].tag == W_P else None
         for el in 조각:
@@ -468,10 +587,13 @@ def _표채우기(tbl_el, 항목: list[tuple[str, str]]) -> None:
         tbl_el.remove(tr)
     for i, (이름, 의견) in enumerate(항목):
         tr = copy.deepcopy(본줄[min(i, len(본줄) - 1)])
+        # 칸 높이는 내용에 맞춘다 — 예시 줄에 정해 둔 높이는 뺀다
+        for 높이 in tr.findall(f"{qn('w:trPr')}/{qn('w:trHeight')}"):
+            높이.getparent().remove(높이)
         tcs = _칸들(tr)
         칸넣기(tcs[0], 이름)
         if len(tcs) > 1:
-            칸넣기(tcs[1], 의견)
+            의견칸넣기(tcs[1], 의견)
         tbl_el.append(tr)
 
 
@@ -490,7 +612,8 @@ def 요약_만들기(틀: bytes, 줄들: list[list[str]]) -> bytes:
     for 값들 in 줄들:
         tr = copy.deepcopy(틀줄)
         for tc, 값 in zip(_칸들(tr), 값들):
-            칸넣기(tc, 값)
+            # 점(·)으로 시작하는 줄이 새 내용, 띄어쓰기로 시작하는 줄은 붙여서
+            의견칸넣기(tc, 값, 머리=tuple(fit.글머리들), 사이_pt=0)
         tbl.append(tr)
     나감 = io.BytesIO()
     문서.save(나감)
