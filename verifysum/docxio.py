@@ -103,13 +103,39 @@ class _조각:
     뒤문단: list = field(default_factory=list)
 
 
+def _차례(부모el):
+    """본문의 문단·표를 순서대로. 콘텐츠 컨트롤(w:sdt) 등으로 싸인 것도 안으로 들어가 본다."""
+    for el in 부모el.iterchildren():
+        if el.tag in (W_P, W_TBL):
+            yield el
+        elif el.tag in (qn("w:sdt"), qn("w:sdtContent"), qn("w:customXml")):
+            yield from _차례(el)
+
+
+def _행합치기(항목: list[tuple[str, str]], 칸들: list[str]) -> None:
+    """표 한 줄을 항목에 더한다. 쪽이 넘어가며 생긴 이어진 줄(항목 칸이 비었거나 같은
+    항목 이름이 또 나온 줄)은 앞 항목에 붙인다."""
+    if _머리줄인가(칸들) or not any(칸들) or len(칸들) < 2:
+        return
+    이름, 의견 = 칸들[0].strip(), "\n".join(c for c in 칸들[1:] if c)
+    if 항목 and (not 이름 or 이름 == 항목[-1][0]):
+        앞이름, 앞의견 = 항목[-1]
+        항목[-1] = (앞이름, "\n".join(x for x in (앞의견, 의견) if x))
+        return
+    항목.append((이름, 의견))
+
+
 def 항목들(문서) -> list[검증자료]:
-    """문서 안의 사람들. 표(이어진 2열 표 묶음) 하나가 한 사람이다."""
+    """문서 안의 사람들. 사이에 글(제목 등) 없이 이어지는 표들은 한 사람이다.
+
+    쪽이 넘어가며 표가 둘로 나뉘거나 2쪽에 '항목 | 검증 의견' 머리줄이 다시 있어도
+    사이에 제목 같은 글이 없으면 같은 사람으로 본다 (예전에는 1쪽만 읽혔다).
+    """
     body = 문서.element.body
     부모 = 문서._body
     조각들: list[_조각] = []
     지금 = _조각()
-    for el in body.iterchildren():
+    for el in _차례(body):
         if el.tag == W_P:
             글 = _문단글(el, 부모)
             if not 글:
@@ -120,8 +146,7 @@ def 항목들(문서) -> list[검증자료]:
             열수 = max((len(r) for r in 줄), default=0)
             if 열수 < 2:
                 continue
-            이어짐 = 지금.표들 and not 지금.뒤문단 and not (줄 and _머리줄인가(줄[0]))
-            if 지금.표들 and not 이어짐:
+            if 지금.표들 and 지금.뒤문단:
                 새 = _조각(앞문단=지금.뒤문단)
                 지금.뒤문단 = []           # 다음 사람 제목까지 끝글로 먹지 않게
                 조각들.append(지금)
@@ -140,14 +165,10 @@ def 항목들(문서) -> list[검증자료]:
         if i > 0 and 쓴수 < len(앞):
             남은 = 앞[: len(앞) - 쓴수]
             사람들[-1].끝글 = "\n".join(filter(None, [사람들[-1].끝글, *남은]))
-        항목 = []
+        항목: list[tuple[str, str]] = []
         for el in 조.표들:
             for 칸들 in _표_줄(el, 부모):
-                if _머리줄인가(칸들) or not any(칸들):
-                    continue
-                if len(칸들) == 1:
-                    continue
-                항목.append((칸들[0], "\n".join(c for c in 칸들[1:] if c)))
+                _행합치기(항목, 칸들)
         사람들.append(검증자료(제목=제목, 소속=소속, 항목=항목,
                          끝글="\n".join(g for _e, g in 조.뒤문단)))
     return 사람들
@@ -175,7 +196,12 @@ def 검증자료_읽기(내용: bytes | str, 파일명: str = "") -> 검증자�
     사람들 = 항목들(_열기(내용))
     if not 사람들:
         raise 형식오류("2열 표(항목 | 검증 의견)를 찾지 못했습니다.")
+    # 검증 파일 하나는 한 사람이다. 표 사이에 글이 있어 여럿으로 갈렸어도 합친다.
     사람 = 사람들[0]
+    for 다음 in 사람들[1:]:
+        for 이름, 의견 in 다음.항목:
+            _행합치기(사람.항목, [이름, 의견])
+        사람.끝글 = 다음.끝글 or 사람.끝글
     if not 사람.제목:
         raise 형식오류("표 위에서 제목(이름 직책)을 찾지 못했습니다.")
     if len(사람.항목) < 2:

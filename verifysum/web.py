@@ -70,7 +70,12 @@ def 작업시작(파일들: list[tuple[str, bytes]], 학습: dict) -> None:
         for 이름, 내용 in 파일들:
             try:
                 자료 = D.검증자료_읽기(내용, 이름)
-                작업["줄"].append({"파일": 이름, "후보자": 자료.제목, "상태": "대기", "메모": ""})
+                기대 = len(학습["원본"]["항목"])
+                읽음 = f"항목 {len(자료.항목)}개 · {sum(len(b) for _a, b in 자료.항목)}자"
+                메모 = (f"예시는 항목이 {기대}개인데 {len(자료.항목)}개를 읽었습니다."
+                      if len(자료.항목) != 기대 else "")
+                작업["줄"].append({"파일": 이름, "후보자": 자료.제목, "상태": "대기",
+                                "읽음": 읽음, "메모": 메모})
             except D.형식오류 as exc:
                 자료 = None
                 작업["줄"].append({"파일": 이름, "후보자": "", "상태": "실패", "메모": str(exc)})
@@ -92,7 +97,9 @@ def _돌리기(자료들: list, 학습: dict) -> None:
         try:
             r = generate.한사람(자료, 학습, 로컬.c)
             결과들[i] = r
-            _줄바꾸기(i, 상태="확인필요" if r.경고 else "완료", 메모=" / ".join(r.경고),
+            앞메모 = 작업["줄"][i].get("메모") or ""
+            경고 = ([앞메모] if 앞메모 else []) + r.경고
+            _줄바꾸기(i, 상태="확인필요" if 경고 else "완료", 메모=" / ".join(경고),
                     전문성=r.전문성, 역량=r.역량, 작성자=" / ".join(r.작성자))
         except Exception as exc:  # noqa: BLE001 - 한 사람 실패가 전체를 멈추면 안 된다
             _줄바꾸기(i, 상태="실패", 메모=f"{type(exc).__name__}: {str(exc)[:200]}")
@@ -193,8 +200,30 @@ def _학습칸(학습: dict | None) -> str:
         "<form method='post' action='/guide'><textarea name='지침'>"
         f"{html.escape(학습.get('지침') or '')}</textarea>"
         "<div class='row'><button class='sec'>지침 저장</button></div></form>"
+        + _들여다보기(학습) +
         "<details style='margin-top:14px'><summary class='muted'>다른 예시로 다시 분석하기</summary>"
         f"{양식}</details></div>")
+
+
+def _들여다보기(학습: dict) -> str:
+    """예시 원본에서 무엇을 읽었는지, LLM 에 실제로 무엇을 보내는지 그대로 보여 준다."""
+    원 = 학습["원본"]
+    항목줄 = "".join(
+        f"<tr><td>{html.escape(a)}<br><span class='muted'>{len(b)}자</span></td>"
+        f"<td style='white-space:pre-wrap'>{html.escape(b)}</td></tr>" for a, b in 원["항목"])
+    예 = D.검증자료(제목=원["제목"], 소속=원["소속"], 항목=[tuple(x) for x in 원["항목"]],
+                 끝글=원.get("끝글", ""))
+    메시지 = generate.프롬프트(예, 학습)
+    보냄 = "\n\n".join(f"──── {m['role']} ────\n{m['content']}" for m in 메시지)
+    return (
+        "<details style='margin-top:14px'><summary class='muted'>예시 원본에서 읽은 내용 보기 "
+        f"(항목 {len(원['항목'])}개 · {sum(len(b) for _a, b in 원['항목'])}자 — 2쪽까지 다 읽혔는지 확인)"
+        f"</summary><table>{항목줄}</table>"
+        f"<p class='muted'>표 뒤 끝부분: {html.escape(원.get('끝글') or '(없음)')}</p></details>"
+        "<details style='margin-top:8px'><summary class='muted'>LLM 에 실제로 보내는 내용 보기 "
+        "(예시 후보자를 넣었을 때 — 지침 말고도 규칙·분량·예시 원문이 같이 갑니다)</summary>"
+        f"<pre style='white-space:pre-wrap;font-size:12.5px;background:#f7f9fc;padding:12px;"
+        f"border-radius:8px;max-height:480px;overflow:auto'>{html.escape(보냄)}</pre></details>")
 
 
 def _실행칸(학습: dict | None) -> str:
@@ -226,8 +255,8 @@ async function poll(){
   if(s.오류) h+='<div class="msg bad">'+esc(s.오류)+'</div>';
   if(!s.돌고있음 && s.파일있음) h+='<div class="row"><a class="btn" href="/download/1">1장 통합본 받기</a>'+
      '<a class="btn" href="/download/2">요약표 받기</a><span class="muted">확인필요 표시된 사람은 워드에서 한 번 봐 주세요.</span></div>';
-  h+='<table><tr><th>파일</th><th>후보자</th><th>상태</th><th>전문성/성과</th><th>연구전문가 역량</th><th>작성자</th><th>메모</th></tr>';
-  for(const x of s.줄){ h+='<tr><td>'+esc(x.파일)+'</td><td>'+esc(x.후보자)+'</td><td><span class="pill s-'+esc(x.상태)+'">'+esc(x.상태)+
+  h+='<table><tr><th>파일</th><th>후보자</th><th>읽은 내용</th><th>상태</th><th>전문성/성과</th><th>연구전문가 역량</th><th>작성자</th><th>메모</th></tr>';
+  for(const x of s.줄){ h+='<tr><td>'+esc(x.파일)+'</td><td>'+esc(x.후보자)+'</td><td class="muted">'+esc(x.읽음)+'</td><td><span class="pill s-'+esc(x.상태)+'">'+esc(x.상태)+
      '</span></td><td>'+esc(x.전문성)+'</td><td>'+esc(x.역량)+'</td><td>'+esc(x.작성자)+'</td><td class="muted">'+esc(x.메모)+'</td></tr>'; }
   el.innerHTML=h+'</table>';
   if(s.돌고있음) setTimeout(poll, 2000);

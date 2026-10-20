@@ -281,3 +281,44 @@ def test_웹으로_처음부터_끝까지(tmp_path, monkeypatch):
         assert len(요약.tables[0].rows) == 4
     finally:
         srv.shutdown()
+
+
+# --- 2쪽으로 넘어간 표 ------------------------------------------------------------------
+def _두쪽파일(사이글: str = "", 빈칸줄: bool = False, sdt: bool = False) -> bytes:
+    """1쪽 표(항목 1~4) + 2쪽 표(머리줄 다시 + 항목 5~7) + 작성자."""
+    doc = Document()
+    doc.add_paragraph("홍길동 책임연구원")
+    doc.add_paragraph("(한국과학기술원)")
+    for 쪽, 범위 in ((1, 항목명[:4]), (2, 항목명[4:])):
+        if 쪽 == 2:
+            doc.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
+            if 사이글:
+                doc.add_paragraph(사이글)
+        t = doc.add_table(rows=1, cols=2)
+        t.rows[0].cells[0].text, t.rows[0].cells[1].text = "항목", "검증 의견"
+        for 항 in 범위:
+            c = t.add_row().cells
+            c[0].text, c[1].text = 항, f"{항} 의견 본문"
+        if 빈칸줄 and 쪽 == 2:
+            c = t.add_row().cells
+            c[0].text, c[1].text = "", "앞 항목에서 이어지는 글"
+        if sdt and 쪽 == 2:
+            from docx.oxml import OxmlElement
+            감싸기, 속 = OxmlElement("w:sdt"), OxmlElement("w:sdtContent")
+            t._tbl.addprevious(감싸기)
+            감싸기.append(속)
+            속.append(t._tbl)
+    doc.add_paragraph("작성자 김민수 / 이지은 / 박서준")
+    b = io.BytesIO()
+    doc.save(b)
+    return b.getvalue()
+
+
+@pytest.mark.parametrize("모양", [{}, {"사이글": "- 2 -"}, {"빈칸줄": True}, {"sdt": True}])
+def test_2쪽까지_다_읽는다(모양):
+    자료 = D.검증자료_읽기(_두쪽파일(**모양))
+    assert [a for a, _b in 자료.항목] == 항목명, 모양
+    assert 자료.항목[6][1].startswith("종합 의견 의견 본문")
+    if 모양.get("빈칸줄"):
+        assert 자료.항목[6][1].endswith("앞 항목에서 이어지는 글")
+    assert D.작성자_찾기(자료.끝글) == ["김민수", "이지은", "박서준"]
