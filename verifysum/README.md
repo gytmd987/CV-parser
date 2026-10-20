@@ -18,10 +18,13 @@ python3 /경로/CV-parser/verifysum_run.py      # 어느 폴더에서든
 `No module named verifysum` 이 나오면 CV-parser 폴더 밖에서 `-m` 으로 실행한 것이다.
 `verifysum_run.py` 로 실행하면 된다.
 
+설정은 `.env` 에 적어 두면 된다 (지원자 관리와 같은 파일). 다른 PC 에서 안 열리면 서버 방화벽에서
+8795 포트를 열어야 한다 (지원자 관리 8600 을 연 것과 같은 방법).
+
 | 환경 변수 | 뜻 | 기본 |
 |---|---|---|
 | `VERIFYSUM_PORT` | 포트 | 8795 |
-| `VERIFYSUM_HOST` | 다른 PC 에서 열려면 `0.0.0.0` | 127.0.0.1 |
+| `VERIFYSUM_HOST` | 이 PC 에서만 쓰려면 `127.0.0.1` | 0.0.0.0 (다른 PC 에서도 열림) |
 | `VERIFYSUM_PASSWORD` | 있으면 브라우저가 비밀번호를 묻는다 | 없음 |
 | `VERIFYSUM_WORKERS` | 동시에 LLM 에 보낼 사람 수 | 2 |
 | `VERIFYSUM_DATA_DIR` | 예시·결과 파일 둘 곳 | `~/.cvtool/verifysum` |

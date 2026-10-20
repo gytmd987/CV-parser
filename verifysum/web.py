@@ -3,12 +3,13 @@
   python -m verifysum            → http://127.0.0.1:8795
 
   VERIFYSUM_PORT       포트 (기본 8795)
-  VERIFYSUM_HOST       다른 PC 에서 열려면 0.0.0.0 (그때는 비밀번호를 꼭 거세요)
+  VERIFYSUM_HOST       기본 0.0.0.0 (다른 PC 에서도 열림). 이 PC 에서만 쓰려면 127.0.0.1
   VERIFYSUM_PASSWORD   있으면 브라우저가 묻는다 (아이디는 아무거나)
   VERIFYSUM_WORKERS    동시에 LLM 에 보낼 사람 수 (기본 2)
   VERIFYSUM_DATA_DIR   학습 결과·결과 파일 둘 곳 (기본 ~/.cvtool/verifysum)
 
 LLM 서버 설정은 지원자 관리와 같은 .env (CVTOOL_LLM_*) 를 그대로 읽는다.
+위 VERIFYSUM_* 도 .env 에 적어 두면 된다.
 올린 후보자 원본 파일은 디스크에 남기지 않는다 (결과 파일만 남는다).
 """
 
@@ -27,6 +28,8 @@ from email.parser import BytesParser
 from email.policy import default as 기본정책
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+from cvtool import dotenv as _dotenv  # noqa: F401 - .env 를 먼저 읽는다 (아래 설정보다 앞서)
 
 from . import docxio as D
 from . import fit, generate, learn
@@ -360,10 +363,27 @@ class Handler(BaseHTTPRequestHandler):
         self._보냄(b"not found", 코드=404)
 
 
+def _내_ip() -> str:
+    """다른 PC 에서 칠 주소. 밖으로 나가는 길의 내 주소 (실제로 보내지는 않는다)."""
+    import socket
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("10.255.255.255", 1))
+            return s.getsockname()[0]
+    except OSError:
+        return "이-PC-IP"
+
+
 def main() -> None:
-    호스트 = os.environ.get("VERIFYSUM_HOST", "127.0.0.1")
+    # 지원자 관리(CVTOOL_WEB_HOST 기본 0.0.0.0)와 같게 — 다른 PC 에서도 들어온다
+    호스트 = os.environ.get("VERIFYSUM_HOST", "0.0.0.0")
     포트 = int(os.environ.get("VERIFYSUM_PORT", "8795"))
-    if 호스트 not in ("127.0.0.1", "localhost") and not os.environ.get("VERIFYSUM_PASSWORD"):
-        print("경고: 다른 PC 에서 열 수 있는데 비밀번호(VERIFYSUM_PASSWORD)가 없습니다.")
-    print(f"검증 자료 정리: http://{호스트}:{포트}  (데이터: {폴더})", flush=True)
+    if 호스트 in ("0.0.0.0", "::"):
+        print(f"검증 자료 정리: 이 PC http://127.0.0.1:{포트}  ·  다른 PC http://{_내_ip()}:{포트}")
+        if not os.environ.get("VERIFYSUM_PASSWORD"):
+            print("  (같은 망의 누구나 열 수 있습니다. 막으려면 .env 에 VERIFYSUM_PASSWORD=비밀번호)")
+    else:
+        print(f"검증 자료 정리: http://{호스트}:{포트}")
+    print(f"  데이터: {폴더}", flush=True)
     ThreadingHTTPServer((호스트, 포트), Handler).serve_forever()
