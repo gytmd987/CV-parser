@@ -140,7 +140,8 @@ class 가짜LLM:
     처음엔 요약 칸을 길게 쓰고, 고치라고 하면 줄인다."""
 
     긴 = "원자층 식각과 플라즈마 공정 전반에 걸친 깊은 전문성과 다수의 국제 학술지 논문 실적을 갖춤"
-    짧 = "원자층 식각 공정 전문, 고선택비 ALE 개발"
+    짧 = "원자층 식각·플라즈마 공정 전문, 고선택비 ALE 공정 개발"
+    역량 = "성실하고 협업에 적극적이며 후배 연구자 지도에 열심임"
 
     def __init__(self, 늘_길게=False):
         self.호출 = []
@@ -152,10 +153,17 @@ class 가짜LLM:
             return "[문체]\n- ~함 으로 끝맺는다."
         n = messages[0]["content"].count("[의견")
         고침 = messages[-1]["role"] == "user" and "고쳐" in messages[-1]["content"]
+        # 프롬프트가 말한 항목별 글자 수에 맞춰 쓴다 (한 줄을 다 채우는 길이)
+        자수 = [int(b) for b in re.findall(r"공백 포함 \d+~(\d+)자\)", messages[0]["content"])]
         return ("먼저 원문을 읽어 보면 [의견1] 에는 식각 이야기가 많다...\n\n"   # 추론 (무시돼야 한다)
-                + "".join(f"[의견{i + 1}]\n의견 {i}: 핵심만 정리함.\n" for i in range(n))
+                + "".join(f"[의견{i + 1}]\n{self.의견(i, 자수[i] if i < len(자수) else 30)}\n" for i in range(n))
                 + f"[전문성_성과]\n{self.긴 if (self.늘_길게 or not 고침) else self.짧}\n"
-                + "[연구전문가_역량]\n성실하고 협업에 적극적임\n[작성자]\n김철수 / 이영희 / 박민수")
+                + f"[연구전문가_역량]\n{self.역량}\n[작성자]\n김철수 / 이영희 / 박민수")
+
+    @staticmethod
+    def 의견(i: int, 자수: int) -> str:
+        머리 = f"의견 {i}: 핵심만 정리함"
+        return "- " + (머리 + " " + "가나다라 " * 40)[:자수].rstrip()
 
     def chat_json(self, messages, schema, **kw):
         raise AssertionError("글로 잘 나뉘면 JSON 을 쓰지 않는다")
@@ -191,7 +199,7 @@ def test_요약_칸이_길면_고쳐_쓰게_한다(학습):
     결 = generate.한사람(D.검증자료_읽기(검증파일(이름="김민준")), 학습, llm)
     assert len(llm.호출) == 2                                # 한 번 고쳐 씀
     # 점으로 시작하고, 넘어가는 줄은 띄어쓰기로 글자 시작을 맞춘다
-    assert 결.전문성 == "· 원자층 식각 공정 전문,\n   고선택비 ALE 개발" and not 결.경고
+    assert 결.전문성 == "· 원자층 식각·플라즈마 공정\n   전문, 고선택비 ALE 공정 개발" and not 결.경고
     지시 = llm.호출[0][0]["content"]
     assert "두 줄까지" in 지시 and "'- '" in 지시 and "지어내지" in 지시 and "약 " in 지시
 
@@ -210,7 +218,7 @@ def test_결과_파일_두_개(학습):
     글 = [p.text for p in 한장.paragraphs if p.text.strip()]
     # 작성자 줄은 원본의 표 밑 문단을 그대로 옮긴다
     assert 글[:3] == ["가나다 책임연구원", "(한국과학기술원 신소재공학과)", "작성자: 김철수 수석 / 이영희 책임 / 박민수 선임"]
-    assert 한장.tables[1].rows[1].cells[1].text == "- 의견 0: 핵심만 정리함."
+    assert 한장.tables[1].rows[1].cells[1].text.startswith("- 의견 0: 핵심만 정리함")
     둘째제목 = next(p for p in 한장.paragraphs if p.text == "라마바 책임연구원")
     assert 둘째제목._p.find(qn("w:pPr") + "/" + qn("w:pageBreakBefore")) is not None
     assert 한장.paragraphs[0].runs[0].bold                   # 예시 모양(굵게)을 그대로
@@ -405,8 +413,8 @@ def test_1장_표_줄높이는_내용에_맞춘다(학습):
 
 def test_요약_점_두개면_각각_한줄(학습):
     결 = generate.결과(자료=D.검증자료_읽기(검증파일()), 항목=[],
-                     전문성=generate.요약맞추기("· 짧은 첫째\n· 둘째도 짧음", 학습, "전문성"), 역량="· 성실")
-    assert 결.전문성 == "· 짧은 첫째\n· 둘째도 짧음"
+                     전문성=generate.요약맞추기("· 식각·플라즈마 공정 전문가\n· 고선택비 ALE 공정 개발 주도", 학습, "전문성"), 역량="· 성실")
+    assert 결.전문성 == "· 식각·플라즈마 공정 전문가\n· 고선택비 ALE 공정 개발 주도"
     assert not [m for m in generate.검사(결, 학습) if "전문성" in m]
     긴 = generate.요약맞추기("· " + "가나다라 " * 6 + "\n· 둘째", 학습, "전문성")
     결.전문성 = 긴
@@ -429,3 +437,42 @@ def test_작성자_줄이_글자_컨트롤_안에_있어도_찾는다():
     run.addprevious(sdt)
     sdt[0].append(run)
     assert D._문단글(p._p) == p._p.xpath("string(.)").strip()
+
+
+# --- 분량 ---------------------------------------------------------------------------
+def test_1장_분량이_모자라면_늘리게_한다(학습):
+    자료 = D.검증자료_읽기(검증파일())
+    결 = generate.결과(자료=자료, 항목=[(a, "- 짧음") for a, _b in 자료.항목],
+                     전문성=가짜LLM.짧, 역량=가짜LLM.역량)
+    문제 = generate.검사(결, 학습)
+    assert any("1장 분량이" in m and "늘리세요" in m for m in 문제)
+    assert any("반도 못 채운" in m for m in 문제)
+
+
+def test_목표줄의_합은_예시와_같다(학습):
+    자료 = D.검증자료_읽기(검증파일())
+    em = 학습["칸"]["1장_둘째열"]["폭_pt"] / 학습["칸"]["1장_둘째열"]["크기_pt"]
+    예 = sum(fit.줄수(b, em) for _a, b in 학습["한장"]["항목"])
+    assert abs(sum(generate.목표줄(자료, 학습)) - 예) <= len(자료.항목) // 2 + 1
+
+
+def test_요약이_짧으면_채우게_한다(학습):
+    결 = generate.결과(자료=D.검증자료_읽기(검증파일()), 항목=[], 전문성="· 식각 전문", 역량=가짜LLM.역량)
+    assert any("짧습니다" in m for m in generate.검사(결, 학습))
+
+
+def test_지침에서_예시_사람_이름을_지운다(학습):
+    class 이름LLM:
+        def chat_text(self, *a, **k):
+            return "[주의]\n- 김철수 위원처럼 홍길동 연구원을 평가하지 말 것"
+    글 = learn.지침_만들기(학습, 이름LLM())
+    assert "김철수" not in 글 and "홍길동" not in 글 and "OOO" in 글
+
+
+def test_작성자는_파일마다_원본에서():
+    자료 = D.검증자료_읽기(검증파일(작성자="작성자 강하늘 / 문지기 / 손보람"))
+    class L(가짜LLM):
+        pass
+    h = learn.분석(검증파일(), 한장파일(), 요약파일())
+    r = generate.한사람(자료, h, L())
+    assert r.작성자 == ["강하늘", "문지기", "손보람"]

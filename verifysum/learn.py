@@ -98,6 +98,23 @@ def 예시글(학습: dict) -> str:
     )
 
 
+def 예시이름(학습: dict) -> list[str]:
+    """예시 파일에 나온 사람 이름 (후보자 · 작성자) — 지침에 남지 않게 지운다."""
+    이름 = list(학습.get("작성자예") or [])
+    for 제목 in (학습["원본"].get("제목", ""), 학습["한장"].get("제목", "")):
+        이름.append(D.이름_직책(제목)[0])
+    열 = 학습["요약"]["열"]["후보자"]
+    이름 += [r[열] for r in 학습["요약"]["줄들"] if len(r) > 열]
+    return sorted({x.strip() for x in 이름 if len(x.strip()) >= 2}, key=len, reverse=True)
+
+
+def 이름지우기(글: str, 학습: dict) -> str:
+    """지침 속 예시 사람 이름을 OOO 로. 다른 후보자 결과에 예시 이름이 섞이지 않게."""
+    for x in 예시이름(학습):
+        글 = 글.replace(x, "OOO")
+    return 글
+
+
 def 형식지침() -> str:
     """칸 글 모양 — 예시 문서의 정해진 형식. 지침 끝에 늘 붙고, 결과를 만들 때 규칙으로도 간다."""
     return (
@@ -137,15 +154,17 @@ def 지침_만들기(학습: dict, client) -> str:
         "[주의] 지어내지 말 것, 평가를 부풀리지 말 것 등\n"
         "칸 글의 글머리 기호·들여쓰기 형식은 아래처럼 정해져 있으니 따로 쓰지 말고, "
         "이와 어긋나는 말도 쓰지 마라:\n" + 형식지침() + "\n"
+        "사람 이름(후보자·작성자)은 지침에 쓰지 말고 'OOO' 로 써라 — 이 지침은 다른 사람 자료에 쓰인다.\n"
         "예시에서 실제로 보이는 특징만 써라. 지침 말고 다른 말은 쓰지 마라."
     )
     분량표 = "\n".join(f"- {a}: 원문 {원[i] if i < len(원) else '?'}자 → 1장 {한[i] if i < len(한) else '?'}자"
                     for i, a in enumerate(항목명))
     try:
-        return client.chat_text([
+        글 = client.chat_text([
             {"role": "system", "content": 지시},
             {"role": "user", "content": 예시글(학습) + f"\n\n<항목별 분량>\n{분량표}"},
-        ]).strip() + "\n\n" + 형식지침()
+        ]).strip()
+        return 이름지우기(글, 학습) + "\n\n" + 형식지침()
     except Exception as exc:  # noqa: BLE001 - 지침이 없어도 다음 단계는 할 수 있게
         return 기본지침(학습) + f"\n\n(자동 지침을 만들지 못했습니다: {exc})"
 
