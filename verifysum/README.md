@@ -10,9 +10,13 @@
 ## 켜기
 
 ```bash
-python -m verifysum
+python3 /경로/CV-parser/verifysum_run.py      # 어느 폴더에서든
+# 또는 CV-parser 폴더 안에서:  python3 -m verifysum
 # → http://127.0.0.1:8795
 ```
+
+`No module named verifysum` 이 나오면 CV-parser 폴더 밖에서 `-m` 으로 실행한 것이다.
+`verifysum_run.py` 로 실행하면 된다.
 
 | 환경 변수 | 뜻 | 기본 |
 |---|---|---|

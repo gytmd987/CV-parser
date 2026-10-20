@@ -365,5 +365,5 @@ def main() -> None:
     포트 = int(os.environ.get("VERIFYSUM_PORT", "8795"))
     if 호스트 not in ("127.0.0.1", "localhost") and not os.environ.get("VERIFYSUM_PASSWORD"):
         print("경고: 다른 PC 에서 열 수 있는데 비밀번호(VERIFYSUM_PASSWORD)가 없습니다.")
-    print(f"검증 자료 정리: http://{호스트}:{포트}  (데이터: {폴더})")
+    print(f"검증 자료 정리: http://{호스트}:{포트}  (데이터: {폴더})", flush=True)
     ThreadingHTTPServer((호스트, 포트), Handler).serve_forever()
