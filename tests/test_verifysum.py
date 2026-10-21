@@ -488,3 +488,12 @@ def test_1장_칸은_내용_두개_다섯줄까지(학습):
     지킨 = generate.칸지키기(결.항목[0][1], 학습)
     assert len(fit.항목_나누기(지킨)) <= 2 and len(지킨.split("\n")) <= 5
     assert all(t <= 4 for t in generate.목표줄(자료, 학습))
+
+
+def test_긴_문장_하나면_두_내용으로_나누게_한다(학습):
+    자료 = D.검증자료_읽기(검증파일())
+    하나 = generate.의견맞추기("- " + "가나다라 마바사 " * 5, 학습)       # 한 내용이 3줄 넘게
+    결 = generate.결과(자료=자료, 항목=[(a, 하나) for a, _b in 자료.항목], 전문성=가짜LLM.짧, 역량=가짜LLM.역량)
+    assert any("2개로 나눠" in m for m in generate.검사(결, 학습))
+    지시 = generate.프롬프트(자료, 학습)[0]["content"]
+    assert "칸마다 내용 2개가 보통" in 지시 and "합쳐도 된다" not in 지시
