@@ -263,8 +263,13 @@ class LLMClient:
         *,
         temperature: float = 0.0,
         max_tokens: int | None = None,
+        strict: bool = False,
     ) -> str:
         """스키마 없이 자유 서술을 받는다 (2단계 추출의 1단계).
+
+        strict=True 면 답이 토큰 한도에 잘렸거나(finish_reason=length) content 가 비었을 때
+        추론 글(reasoning_content)로 대신하지 않고 오류를 낸다 — 생각하다 만 초안을 답으로
+        쓰면 엉뚱한 결과가 나온다.
 
         guided_json 은 첫 토큰부터 JSON 문법을 강제해서 추론 모델이 생각할
         자리를 없앤다. 읽고 정리하는 단계에서는 문법을 풀어준다.
@@ -291,6 +296,10 @@ class LLMClient:
             raise LLMError(f"예상치 못한 응답 형태: {str(body)[:500]}") from exc
 
         content = message.get("content") or ""
+        if strict and choice.get("finish_reason") == "length":
+            raise LLMTruncated("LLM 답이 토큰 한도(max_tokens)에 걸려 끝까지 오지 않았습니다.", raw=content[:1000])
+        if strict and not _THINK_RE.sub("", content).strip():
+            raise LLMError("LLM 이 생각만 하고 답(content)을 쓰지 않았습니다.")
         if not content.strip():
             content = message.get("reasoning_content") or ""
         # 추론 블록은 정리 결과가 아니므로 걷어낸다

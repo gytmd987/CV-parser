@@ -156,14 +156,22 @@ class 가짜LLM:
         # 프롬프트가 말한 항목별 글자 수에 맞춰 쓴다 (한 줄을 다 채우는 길이)
         자수 = [int(b) for b in re.findall(r"공백 포함 \d+~(\d+)자\)", messages[0]["content"])]
         return ("먼저 원문을 읽어 보면 [의견1] 에는 식각 이야기가 많다...\n\n"   # 추론 (무시돼야 한다)
-                + "".join(f"[의견{i + 1}]\n{self.의견(i, 자수[i] if i < len(자수) else 30)}\n" for i in range(n))
+                + "".join(f"[의견{i + 1}]\n{self.의견(i, 자수[i] if i < len(자수) else 30, self.원문(messages))}\n"
+                          for i in range(n))
                 + f"[전문성_성과]\n{self.긴 if (self.늘_길게 or not 고침) else self.짧}\n"
                 + f"[연구전문가_역량]\n{self.역량}\n[작성자]\n김철수 / 이영희 / 박민수")
 
     @staticmethod
-    def 의견(i: int, 자수: int) -> str:
+    def 원문(messages) -> str:
+        """이번 후보자 원본 글 (줄인 결과가 원본에서 나오게)."""
+        글 = messages[1]["content"] if len(messages) > 1 else ""
+        글 = 글.split("<이번 후보자 원본>")[-1].split("<표 뒤 끝부분>")[0]
+        return " ".join(x for x in 글.splitlines() if x and not x.startswith(("[", "제목", "소속")))
+
+    @staticmethod
+    def 의견(i: int, 자수: int, 원문: str = "") -> str:
         머리 = f"의견 {i}: 핵심만 정리함"
-        return "- " + (머리 + " " + "가나다라 " * 40)[:자수].rstrip()
+        return "- " + (머리 + " " + (원문 or "가나다라 ") * 40)[:자수].rstrip()
 
     def chat_json(self, messages, schema, **kw):
         raise AssertionError("글로 잘 나뉘면 JSON 을 쓰지 않는다")
@@ -575,3 +583,52 @@ def test_올려_둔_예시로_다시_분석(tmp_path):
 def test_요약은_있어_보이게(학습):
     지시 = generate.프롬프트(D.검증자료_읽기(검증파일()), 학습)[0]["content"]
     assert "있어 보이게" in 지시 and "전문가" in 지시
+
+
+def test_원본과_다르면_다시_쓰게_하고_경고(학습):
+    class 남의LLM(가짜LLM):
+        def chat_text(self, messages, **kw):
+            self.호출.append(messages)
+            n = messages[0]["content"].count("[의견")
+            return ("".join(f"[의견{i + 1}]\n- 반도체 패키징 공정 수율 개선 경험이 풍부하며 해외 법인 근무 이력 있음\n"
+                            for i in range(n))
+                    + f"[전문성_성과]\n{self.짧}\n[연구전문가_역량]\n{self.역량}\n[작성자]\n김철수")
+    llm = 남의LLM()
+    결 = generate.한사람(D.검증자료_읽기(검증파일()), 학습, llm)
+    assert any("원본과 많이 다릅니다" in m["content"] for m in llm.호출[1] if m["role"] == "user")
+    assert "원본과 내용이 많이 다릅니다" in 결.경고[0]
+
+
+def test_다시_하기_해도_사람마다_안_섞인다(tmp_path, monkeypatch):
+    """실패한 사람만 다시 돌려도 결과 파일의 제목 · 내용 · 작성자가 같은 사람 것이다."""
+    from verifysum import web
+    monkeypatch.setattr(web, "폴더", tmp_path)
+    monkeypatch.setattr(web.다시하는LLM, "쉼", (0,))
+    monkeypatch.setenv("VERIFYSUM_RETRIES", "0")
+    학습 = learn.분석(검증파일(), 한장파일(), 요약파일())
+    learn.저장(tmp_path, 학습, 한장파일(), 요약파일())
+
+    class 이름LLM(가짜LLM):
+        """원문 글을 그대로 줄여 쓴다 — 사람마다 원문이 다르게 해 둔다. '라마바' 는 처음에 타임아웃."""
+        첫 = True
+        def chat_text(self, messages, **kw):
+            if "라마바" in messages[1]["content"] and 이름LLM.첫:
+                이름LLM.첫 = False
+                raise RuntimeError("LLM 요청 실패: timed out")
+            return super().chat_text(messages, **kw)
+    monkeypatch.setattr(web, "_클라이언트", lambda: 이름LLM())
+    사람 = ["가나다", "라마바", "사아자"]
+    파일 = [(f"{k}.docx", 검증파일(이름=n, 의견=f"{n} 고유의견 원자층 식각 연구를 오래 함. " * 3,
+                                  작성자=f"작성자 {n}일 / {n}이 / {n}삼"))
+           for k, n in enumerate(사람, 1)]
+    web.작업시작(파일, 학습)
+    _기다림(web)
+    assert [x["상태"] for x in web.작업["줄"]][1] == "실패"
+    assert web.다시하기([1], 학습) == 1
+    _기다림(web)
+    한장 = Document(io.BytesIO((tmp_path / "결과" / web.작업["번호"] / web.결과_1장).read_bytes()))
+    for n, 표 in zip(사람, 한장.tables):
+        글 = " ".join(c.text for r in 표.rows for c in r.cells)
+        assert n in 글 and not any(m in 글 for m in 사람 if m != n)
+    작성자줄 = [p.text for p in 한장.paragraphs if p.text.startswith("작성자")]
+    assert 작성자줄 == [f"작성자 {n}일 / {n}이 / {n}삼" for n in 사람]
