@@ -293,8 +293,70 @@ def test_웹으로_처음부터_끝까지(tmp_path, monkeypatch):
             "후보1 책임연구원", "후보2 책임연구원", "후보10 책임연구원"]
         요약 = Document(io.BytesIO(urllib.request.urlopen(U + "/download/2").read()))
         assert len(요약.tables[0].rows) == 4
+        # 결과는 지난 결과에 남는다
+        번호 = s["번호"]
+        assert (tmp_path / "결과" / 번호 / web.결과_1장).exists()
+        첫 = urllib.request.urlopen(U + "/").read().decode()
+        assert "지난 결과" in 첫 and f"/past/{번호}/1" in 첫
+        assert urllib.request.urlopen(U + f"/past/{번호}/2").read() == (tmp_path / "결과" / 번호 / web.결과_요약).read_bytes()
+        assert "후보10" in urllib.request.urlopen(U + f"/past/{번호}").read().decode()
     finally:
         srv.shutdown()
+
+
+class _타임아웃LLM(가짜LLM):
+    """처음 몇 번은 타임아웃."""
+    def __init__(self, 몇번):
+        super().__init__()
+        self.남은 = 몇번
+
+    def chat_text(self, messages, **kw):
+        if self.남은 > 0 and "[출력 형식]" in messages[0]["content"]:
+            self.남은 -= 1
+            raise RuntimeError("LLM 요청 실패: timed out")
+        return super().chat_text(messages, **kw)
+
+
+def test_타임아웃이면_알아서_다시(monkeypatch):
+    from verifysum import web
+    monkeypatch.setattr(web.다시하는LLM, "쉼", (0,))
+    c = web.다시하는LLM(_타임아웃LLM(2), 횟수=3)
+    본것 = []
+    c.알림 = lambda n, exc: 본것.append(n)
+    assert "[의견1]" in c.chat_text([{"role": "system", "content": "[출력 형식] [의견1]"}])
+    assert 본것 == [1, 2]
+    with pytest.raises(ValueError):                     # 일시 오류가 아니면 바로 올린다
+        web.다시하는LLM(type("L", (), {"chat_text": lambda self, m: (_ for _ in ()).throw(ValueError("x"))})(), 3).chat_text([])
+
+
+def _기다림(web):
+    for _ in range(200):
+        with web._잠금:
+            if not web.작업["돌고있음"]:
+                return
+        time.sleep(0.05)
+
+
+def test_실패한_사람만_다시_하기(tmp_path, monkeypatch):
+    from verifysum import web
+    monkeypatch.setattr(web, "폴더", tmp_path)
+    monkeypatch.setattr(web.다시하는LLM, "쉼", (0,))
+    monkeypatch.setenv("VERIFYSUM_RETRIES", "1")
+    monkeypatch.setenv("VERIFYSUM_WORKERS", "1")
+    학습 = learn.분석(검증파일(), 한장파일(), 요약파일())
+    learn.저장(tmp_path, 학습, 한장파일(), 요약파일())
+    monkeypatch.setattr(web, "_클라이언트", lambda: _타임아웃LLM(99))
+    web.작업시작([("1.docx", 검증파일(이름="가나다")), ("2.docx", 검증파일(이름="라마바"))], 학습)
+    _기다림(web)
+    assert [x["상태"] for x in web.작업["줄"]] == ["실패", "실패"]
+    assert "다시 하기" in web.작업["줄"][0]["메모"]
+    monkeypatch.setattr(web, "_클라이언트", lambda: 가짜LLM())
+    assert web.다시하기(None, 학습) == 2
+    _기다림(web)
+    assert [x["상태"] for x in web.작업["줄"]] == ["완료", "완료"]
+    자리 = tmp_path / "결과" / web.작업["번호"]
+    assert (자리 / web.결과_1장).exists() and json.loads((자리 / web.결과_목록).read_text())["줄"][0]["상태"] == "완료"
+    assert web.지난결과()[0]["셈"] == {"완료": 2}
 
 
 # --- 2쪽으로 넘어간 표 ------------------------------------------------------------------

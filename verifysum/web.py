@@ -7,6 +7,10 @@
   VERIFYSUM_PASSWORD   있으면 브라우저가 묻는다 (아이디는 아무거나)
   VERIFYSUM_WORKERS    동시에 LLM 에 보낼 사람 수 (기본 2)
   VERIFYSUM_DATA_DIR   학습 결과·결과 파일 둘 곳 (기본 ~/.cvtool/verifysum)
+  VERIFYSUM_LLM_TIMEOUT  LLM 한 번 기다리는 시간(초, 기본 600 — 추론 모델이라 길게)
+  VERIFYSUM_RETRIES    타임아웃·연결 끊김·서버 5xx 때 알아서 다시 하는 횟수 (기본 3)
+
+결과는 돌릴 때마다 <데이터>/결과/<날짜-시각>/ 에 남는다 — 화면 '지난 결과' 에서 다시 받는다.
 
 LLM 서버 설정은 지원자 관리와 같은 .env (CVTOOL_LLM_*) 를 그대로 읽는다.
 위 VERIFYSUM_* 도 .env 에 적어 두면 된다.
@@ -39,18 +43,62 @@ from . import fit, generate, learn
 결과_1장 = "검증의견_1장_통합.docx"
 결과_요약 = "개인별_검증결과_요약.docx"
 결과_목록 = "결과.json"
+결과_폴더 = "결과"
+_번호꼴 = re.compile(r"^\d{8}-\d{6}(-\d+)?$")
 
 
 def _클라이언트():
-    """LLM 클라이언트. 지원자 관리와 같은 설정(.env)을 쓴다. 테스트가 바꿔 끼운다."""
+    """LLM 클라이언트. 지원자 관리와 같은 설정(.env)을 쓰고, 기다리는 시간만 길게."""
+    import httpx
+
     from cvtool.clients.llm import LLMClient
 
-    return LLMClient()
+    return LLMClient(client=httpx.Client(timeout=float(os.environ.get("VERIFYSUM_LLM_TIMEOUT", "600"))))
+
+
+def _일시오류(exc: Exception) -> bool:
+    """다시 하면 될 수도 있는 오류 — 타임아웃 · 연결 끊김 · 서버 바쁨(429 · 5xx)."""
+    글 = f"{type(exc).__name__} {exc}".lower()
+    return ("timeout" in 글 or "timed out" in 글 or "요청 실패" in 글 or "connect" in 글
+            or bool(re.search(r"오류 (429|5\d\d)", 글)))
+
+
+class 다시하는LLM:
+    """LLM 클라이언트를 감싸 일시 오류면 조금 쉬었다 다시 부른다."""
+
+    쉼 = (5, 20, 60)
+
+    def __init__(self, c, 횟수: int | None = None):
+        self.c = c
+        self.횟수 = int(os.environ.get("VERIFYSUM_RETRIES", "3")) if 횟수 is None else 횟수
+        self.알림 = lambda n, exc: None          # (몇 번째 다시, 오류) — 화면 메모에 띄운다
+
+    def _부름(self, 이름: str, *a, **k):
+        for n in range(self.횟수 + 1):
+            try:
+                return getattr(self.c, 이름)(*a, **k)
+            except Exception as exc:  # noqa: BLE001
+                if n >= self.횟수 or not _일시오류(exc):
+                    raise
+                self.알림(n + 1, exc)
+                time.sleep(self.쉼[min(n, len(self.쉼) - 1)])
+
+    def chat_text(self, *a, **k):
+        return self._부름("chat_text", *a, **k)
+
+    def chat_json(self, *a, **k):
+        return self._부름("chat_json", *a, **k)
+
+    def close(self):
+        getattr(self.c, "close", lambda: None)()
 
 
 # --- 작업 상태 -----------------------------------------------------------------------
 _잠금 = threading.Lock()
-작업: dict = {"돌고있음": False, "줄": [], "시작": 0.0, "끝": 0.0, "오류": ""}
+작업: dict = {"돌고있음": False, "줄": [], "시작": 0.0, "끝": 0.0, "오류": "", "번호": ""}
+# 이번 작업의 원본 · 결과 — 메모리에만 둔다 ('다시 하기' 용. 원본은 디스크에 남기지 않는다)
+_자료들: list = []
+_결과들: list = []
 
 
 def _줄바꾸기(i: int, **값) -> None:
@@ -62,11 +110,24 @@ def _자연정렬(이름: str):
     return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", 이름)]
 
 
+def _결과자리(번호: str) -> Path:
+    return 폴더 / 결과_폴더 / 번호
+
+
+def _새번호() -> str:
+    번호 = time.strftime("%Y%m%d-%H%M%S")
+    k = 1
+    while _결과자리(번호).exists():
+        k += 1
+        번호 = time.strftime("%Y%m%d-%H%M%S") + f"-{k}"
+    return 번호
+
+
 def 작업시작(파일들: list[tuple[str, bytes]], 학습: dict) -> None:
     파일들 = sorted(파일들, key=lambda f: _자연정렬(f[0]))
     자료들: list = []
     with _잠금:
-        작업.update(돌고있음=True, 줄=[], 시작=time.time(), 끝=0.0, 오류="")
+        작업.update(돌고있음=True, 줄=[], 시작=time.time(), 끝=0.0, 오류="", 번호=_새번호())
         for 이름, 내용 in 파일들:
             try:
                 자료 = D.검증자료_읽기(내용, 이름)
@@ -75,54 +136,128 @@ def 작업시작(파일들: list[tuple[str, bytes]], 학습: dict) -> None:
                 메모 = (f"예시는 항목이 {기대}개인데 {len(자료.항목)}개를 읽었습니다."
                       if len(자료.항목) != 기대 else "")
                 작업["줄"].append({"파일": 이름, "후보자": 자료.제목, "상태": "대기",
-                                "읽음": 읽음, "메모": 메모})
+                                "읽음": 읽음, "메모": 메모, "앞메모": 메모})
             except D.형식오류 as exc:
                 자료 = None
                 작업["줄"].append({"파일": 이름, "후보자": "", "상태": "실패", "메모": str(exc)})
             자료들.append(자료)
-    threading.Thread(target=_돌리기, args=(자료들, 학습), daemon=True).start()
+        _자료들[:] = 자료들
+        _결과들[:] = [None] * len(자료들)
+    threading.Thread(target=_돌리기, args=(list(range(len(자료들))), 학습), daemon=True).start()
 
 
-def _돌리기(자료들: list, 학습: dict) -> None:
-    결과들: list = [None] * len(자료들)
+def 다시하기(번호들: list[int] | None, 학습: dict) -> int:
+    """실패한 사람(또는 고른 사람)만 다시. 다시 돌리는 사람 수."""
+    with _잠금:
+        if 작업["돌고있음"]:
+            return -1
+        고른 = [i for i in (번호들 if 번호들 is not None else range(len(_자료들)))
+              if 0 <= i < len(_자료들) and _자료들[i] is not None
+              and (번호들 is not None or 작업["줄"][i]["상태"] == "실패")]
+        if not 고른:
+            return 0
+        for i in 고른:
+            작업["줄"][i].update(상태="대기", 메모=작업["줄"][i].get("앞메모") or "")
+        작업.update(돌고있음=True, 끝=0.0, 오류="")
+    threading.Thread(target=_돌리기, args=(고른, 학습), daemon=True).start()
+    return len(고른)
+
+
+def _돌리기(번호들: list[int], 학습: dict) -> None:
     로컬 = threading.local()
+    만든것: list = []
 
     def 하나(i: int) -> None:
-        자료 = 자료들[i]
+        자료 = _자료들[i]
         if 자료 is None:
             return
         if not hasattr(로컬, "c"):
-            로컬.c = _클라이언트()
+            로컬.c = 다시하는LLM(_클라이언트())
+            만든것.append(로컬.c)
+        로컬.c.알림 = lambda n, exc: _줄바꾸기(
+            i, 메모=f"LLM 응답이 없어 다시 시도 중 ({n}/{로컬.c.횟수}) — {type(exc).__name__}")
         _줄바꾸기(i, 상태="처리중")
         try:
             r = generate.한사람(자료, 학습, 로컬.c)
-            결과들[i] = r
-            앞메모 = 작업["줄"][i].get("메모") or ""
+            _결과들[i] = r
+            앞메모 = 작업["줄"][i].get("앞메모") or ""
             경고 = ([앞메모] if 앞메모 else []) + r.경고
             _줄바꾸기(i, 상태="확인필요" if 경고 else "완료", 메모=" / ".join(경고),
                     전문성=r.전문성, 역량=r.역량, 작성자=" / ".join(r.작성자), 원답=r.원답)
         except Exception as exc:  # noqa: BLE001 - 한 사람 실패가 전체를 멈추면 안 된다
-            _줄바꾸기(i, 상태="실패", 메모=f"{type(exc).__name__}: {str(exc)[:200]}")
+            _결과들[i] = None
+            왜 = ("LLM 이 응답하지 않았습니다 (다시 시도해도 안 됨). '다시 하기' 를 눌러 주세요. "
+                 if _일시오류(exc) else "")
+            _줄바꾸기(i, 상태="실패", 메모=f"{왜}{type(exc).__name__}: {str(exc)[:200]}")
 
     try:
         일꾼 = max(1, int(os.environ.get("VERIFYSUM_WORKERS", "2")))
         with ThreadPoolExecutor(일꾼) as 풀:
-            list(풀.map(하나, range(len(자료들))))
-        된것 = [r for r in 결과들 if r is not None]
-        if 된것:
-            폴더.mkdir(parents=True, exist_ok=True)
-            (폴더 / 결과_1장).write_bytes(
-                generate.한장파일(된것, (폴더 / learn.틀_1장).read_bytes()))
-            (폴더 / 결과_요약).write_bytes(
-                generate.요약파일(된것, (폴더 / learn.틀_요약).read_bytes(), 학습))
+            list(풀.map(하나, 번호들))
+        _파일만들기(학습)
     except Exception as exc:  # noqa: BLE001
         with _잠금:
             작업["오류"] = f"결과 파일을 만들지 못했습니다: {type(exc).__name__}: {exc}"
     finally:
+        for c in 만든것:
+            c.close()
         with _잠금:
             작업.update(돌고있음=False, 끝=time.time())
-            (폴더 / 결과_목록).parent.mkdir(parents=True, exist_ok=True)
-            (폴더 / 결과_목록).write_text(json.dumps(작업, ensure_ascii=False), encoding="utf-8")
+            _기록하기()
+
+
+def _파일만들기(학습: dict) -> None:
+    된것 = [r for r in _결과들 if r is not None]
+    자리 = _결과자리(작업["번호"])
+    자리.mkdir(parents=True, exist_ok=True)
+    if not 된것:
+        return
+    (자리 / 결과_1장).write_bytes(generate.한장파일(된것, (폴더 / learn.틀_1장).read_bytes()))
+    (자리 / 결과_요약).write_bytes(generate.요약파일(된것, (폴더 / learn.틀_요약).read_bytes(), 학습))
+
+
+def _기록하기() -> None:
+    """진행 표를 결과 폴더에 남긴다 (잠금 안에서 부른다)."""
+    if not 작업.get("번호"):
+        return
+    자리 = _결과자리(작업["번호"])
+    자리.mkdir(parents=True, exist_ok=True)
+    (자리 / 결과_목록).write_text(json.dumps(작업, ensure_ascii=False), encoding="utf-8")
+
+
+def 지난결과() -> list[dict]:
+    """[{번호, 때, 사람, 셈, 파일있음}] 최근 것부터."""
+    나온것 = []
+    for d in sorted((폴더 / 결과_폴더).glob("*"), reverse=True):
+        if not (d.is_dir() and _번호꼴.match(d.name)):
+            continue
+        try:
+            기록 = json.loads((d / 결과_목록).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            기록 = {"줄": []}
+        셈: dict[str, int] = {}
+        for x in 기록.get("줄", []):
+            셈[x.get("상태", "")] = 셈.get(x.get("상태", ""), 0) + 1
+        나온것.append({"번호": d.name, "때": time.strftime("%Y-%m-%d %H:%M", time.localtime(기록.get("시작") or d.stat().st_mtime)),
+                     "사람": len(기록.get("줄", [])), "셈": 셈,
+                     "파일있음": (d / 결과_1장).exists() and (d / 결과_요약).exists()})
+    return 나온것
+
+
+def _마지막_불러오기() -> None:
+    """프로그램을 다시 켜도 마지막 진행 표가 보이게 (원본이 없으니 '다시 하기' 는 안 된다)."""
+    지난 = 지난결과()
+    if not 지난:
+        return
+    try:
+        기록 = json.loads((_결과자리(지난[0]["번호"]) / 결과_목록).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    기록["돌고있음"] = False
+    for x in 기록.get("줄", []):
+        if x.get("상태") in ("대기", "처리중"):
+            x.update(상태="실패", 메모="프로그램이 꺼져 끝나지 못했습니다.")
+    작업.update(기록)
 
 
 # --- 화면 ----------------------------------------------------------------------------
@@ -143,7 +278,7 @@ padding:9px 18px;font-size:14.5px;cursor:pointer;text-decoration:none;display:in
 button.sec,.btn.sec{background:#fff;color:var(--acc);border:1px solid #c9d6ea}button:disabled{opacity:.45;cursor:default}
 table{width:100%;border-collapse:collapse;margin-top:10px;font-size:14px}th,td{border-bottom:1px solid var(--line);
 padding:7px 8px;text-align:left;vertical-align:top}th{background:#f7f9fc;font-weight:600;color:var(--muted)}
-.pill{display:inline-block;border-radius:999px;padding:1px 10px;font-size:12.5px;font-weight:600;background:#eef2f7}
+.pill{display:inline-block;white-space:nowrap;border-radius:999px;padding:1px 10px;font-size:12.5px;font-weight:600;background:#eef2f7}
 .s-완료{background:#dcfce7;color:var(--ok)}.s-확인필요{background:#fef3c7;color:var(--warn)}
 .s-실패{background:#fee2e2;color:var(--bad)}.s-처리중{background:var(--acc2);color:var(--acc)}
 textarea{width:100%;min-height:260px;font:13.5px/1.6 'Malgun Gothic',sans-serif;border:1px solid var(--line);
@@ -245,6 +380,34 @@ def _결과칸() -> str:
             "<div id='진행몸'><p class='muted'>아직 돌린 작업이 없습니다.</p></div></div>")
 
 
+def _지난결과칸() -> str:
+    지난 = 지난결과()
+    if not 지난:
+        return ""
+    줄 = "".join(
+        f"<tr><td>{html.escape(x['때'])}</td><td>{x['사람']}명</td><td>"
+        + " ".join(f"<span class='pill s-{html.escape(k)}'>{html.escape(k)} {v}</span>" for k, v in x["셈"].items())
+        + "</td><td>"
+        + (f"<a href='/past/{x['번호']}/1'>1장 통합본</a> · <a href='/past/{x['번호']}/2'>요약표</a> · "
+           if x["파일있음"] else "<span class='muted'>파일 없음</span> · ")
+        + f"<a href='/past/{x['번호']}'>진행 표</a></td></tr>" for x in 지난)
+    return ("<div class='card'><h2>지난 결과</h2>"
+            f"<p class='muted'>돌릴 때마다 여기 남습니다 · 저장 위치: {html.escape(str(폴더 / 결과_폴더))}</p>"
+            f"<table><tr><th>돌린 때</th><th>사람</th><th>상태</th><th>받기</th></tr>{줄}</table></div>")
+
+
+def _지난표(번호: str) -> str:
+    기록 = json.loads((_결과자리(번호) / 결과_목록).read_text(encoding="utf-8"))
+    줄 = "".join(
+        "<tr>" + "".join(f"<td>{html.escape(str(x.get(k) or ''))}</td>"
+                         for k in ("파일", "후보자", "상태", "전문성", "역량", "작성자", "메모")) + "</tr>"
+        for x in 기록.get("줄", []))
+    return (f"<div class='card'><h2>{html.escape(번호)} 진행 표</h2><p><a href='/'>← 처음으로</a> · "
+            f"<a href='/past/{번호}/1'>1장 통합본</a> · <a href='/past/{번호}/2'>요약표</a></p>"
+            "<table><tr><th>파일</th><th>후보자</th><th>상태</th><th>전문성/성과</th><th>연구전문가 역량</th>"
+            f"<th>작성자</th><th>메모</th></tr>{줄}</table></div>")
+
+
 _JS = """<script>
 function esc(s){return String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 async function poll(){
@@ -254,10 +417,17 @@ async function poll(){
   let h='<p>'+(s.돌고있음?'<b>처리 중</b> ':'<b>끝남</b> ')+done+' / '+n+'명</p>';
   if(s.오류) h+='<div class="msg bad">'+esc(s.오류)+'</div>';
   if(!s.돌고있음 && s.파일있음) h+='<div class="row"><a class="btn" href="/download/1">1장 통합본 받기</a>'+
-     '<a class="btn" href="/download/2">요약표 받기</a><span class="muted">확인필요 표시된 사람은 워드에서 한 번 봐 주세요.</span></div>';
+     '<a class="btn" href="/download/2">요약표 받기</a><span class="muted">확인필요 표시된 사람은 워드에서 한 번 봐 주세요. '+
+     '파일은 아래 「지난 결과」에도 남습니다.</span></div>';
+  let 실패=s.줄.filter(x=>x.상태==='실패').length;
+  if(!s.돌고있음 && 실패 && s.다시가능) h+='<form method="post" action="/retry" class="row"><button>실패한 '+실패+
+     '명 다시 하기</button><span class="muted">LLM 타임아웃 등으로 실패한 사람만 다시 돌리고 결과 파일을 새로 만듭니다.</span></form>';
+  if(!s.돌고있음 && 실패 && !s.다시가능) h+='<p class="muted">프로그램을 다시 켜서 원본이 없습니다. 실패한 사람은 파일을 다시 넣어 주세요.</p>';
   h+='<table><tr><th>파일</th><th>후보자</th><th>읽은 내용</th><th>상태</th><th>전문성/성과</th><th>연구전문가 역량</th><th>작성자</th><th>메모</th></tr>';
   for(const x of s.줄){ h+='<tr><td>'+esc(x.파일)+'</td><td>'+esc(x.후보자)+'</td><td class="muted">'+esc(x.읽음)+'</td><td><span class="pill s-'+esc(x.상태)+'">'+esc(x.상태)+
      '</span></td><td>'+esc(x.전문성)+'</td><td>'+esc(x.역량)+'</td><td>'+esc(x.작성자)+'</td><td class="muted">'+esc(x.메모)+
+     (!s.돌고있음 && s.다시가능 && x.상태!=='대기' && x.읽음 ? '<form method="post" action="/retry" style="margin-top:4px">'+
+       '<input type="hidden" name="i" value="'+s.줄.indexOf(x)+'"><button class="sec" style="padding:2px 10px;font-size:12.5px">이 사람 다시</button></form>' : '')+
      (x.원답?'<details><summary>LLM 답 보기</summary><pre style="white-space:pre-wrap;font-size:12px;max-width:420px">'+esc(x.원답)+'</pre></details>':'')+'</td></tr>'; }
   el.innerHTML=h+'</table>';
   if(s.돌고있음) setTimeout(poll, 2000);
@@ -315,7 +485,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _첫화면(self, 알림: str = "", 나쁨: bool = False):
         학습 = learn.불러오기(폴더)
-        self._보냄(_쪽(_학습칸(학습) + _실행칸(학습) + _결과칸(), 알림, 나쁨))
+        self._보냄(_쪽(_학습칸(학습) + _실행칸(학습) + _결과칸() + _지난결과칸(), 알림, 나쁨))
 
     def do_GET(self):
         if not self._문지기():
@@ -327,11 +497,24 @@ class Handler(BaseHTTPRequestHandler):
         if 경로 == "/status":
             with _잠금:
                 s = dict(작업)
-            s["파일있음"] = (폴더 / 결과_1장).exists() and (폴더 / 결과_요약).exists() and bool(s["끝"])
+                s["다시가능"] = bool(_자료들)
+            자리 = _결과자리(s["번호"]) if s.get("번호") else None
+            s["파일있음"] = bool(자리 and (자리 / 결과_1장).exists() and (자리 / 결과_요약).exists() and s["끝"])
             return self._보냄(json.dumps(s, ensure_ascii=False).encode(), "application/json")
-        if 경로 in ("/download/1", "/download/2"):
+        m = re.fullmatch(r"/past/([0-9-]+)(?:/([12]))?", 경로)
+        if m and _번호꼴.match(m.group(1)) and _결과자리(m.group(1)).is_dir():
+            if not m.group(2):
+                try:
+                    return self._보냄(_쪽(_지난표(m.group(1))))
+                except (OSError, ValueError):
+                    return self._보냄("진행 표가 없습니다".encode(), 코드=404)
+            경로, 번호 = "/download/" + m.group(2), m.group(1)
+        else:
+            with _잠금:
+                번호 = 작업.get("번호") or ""
+        if 경로 in ("/download/1", "/download/2") and 번호:
             이름 = 결과_1장 if 경로.endswith("1") else 결과_요약
-            p = 폴더 / 이름
+            p = _결과자리(번호) / 이름
             if not p.exists():
                 return self._보냄("아직 결과가 없습니다".encode(), 코드=404)
             return self._보냄(p.read_bytes(),
@@ -386,10 +569,21 @@ class Handler(BaseHTTPRequestHandler):
             목록 = 파일.get("files", [])
             if not 목록:
                 return self._돌아가기("파일을 골라 주세요.", True)
-            for f in (폴더 / 결과_1장, 폴더 / 결과_요약):
-                f.unlink(missing_ok=True)
             작업시작(목록, 학습)
             return self._돌아가기(f"{len(목록)}개 파일을 정리하기 시작했습니다.")
+        if 경로 == "/retry":
+            학습 = learn.불러오기(폴더)
+            if not 학습:
+                return self._돌아가기("먼저 예시를 분석해 주세요.", True)
+            if not _자료들:
+                return self._돌아가기("프로그램을 다시 켜서 원본이 없습니다. 파일을 다시 넣어 주세요.", True)
+            값 = urllib.parse.parse_qs(본문.decode("utf-8", "replace")).get("i", [""])[0]
+            n = 다시하기([int(값)] if 값.isdigit() else None, 학습)
+            if n < 0:
+                return self._돌아가기("이미 돌고 있는 작업이 있습니다.", True)
+            if n == 0:
+                return self._돌아가기("다시 할 사람이 없습니다.", True)
+            return self._돌아가기(f"{n}명을 다시 돌립니다. 끝나면 결과 파일을 새로 만듭니다.")
         self._보냄(b"not found", 코드=404)
 
 
@@ -415,5 +609,6 @@ def main() -> None:
             print("  (같은 망의 누구나 열 수 있습니다. 막으려면 .env 에 VERIFYSUM_PASSWORD=비밀번호)")
     else:
         print(f"검증 자료 정리: http://{호스트}:{포트}")
-    print(f"  데이터: {폴더}", flush=True)
+    print(f"  데이터: {폴더}  (결과 파일은 {폴더 / 결과_폴더})", flush=True)
+    _마지막_불러오기()
     ThreadingHTTPServer((호스트, 포트), Handler).serve_forever()
