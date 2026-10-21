@@ -29,6 +29,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 
@@ -302,7 +303,9 @@ def 프롬프트(자료: D.검증자료, 학습: dict) -> list[dict]:
         "    · 예시 요약표 줄의 말투·단어 수준·강조 방식과 같은 느낌으로 쓴다.\n"
         "- 작성자: **이번 후보자 원본** 끝에 적힌 작성자 이름만 순서대로 (직함·'작성자' 같은 말은 빼고). "
         "예시 자료의 이름을 쓰지 마라.\n\n"
-        "[출력 형식] 충분히 생각한 뒤, 마지막에 아래 모양 그대로만 써라. 대괄호 표시는 바꾸지 마라.\n"
+        "[생각할 때] 원본에서 남길 내용을 고르는 데만 생각을 써라. 글자 수·줄 수를 세거나 같은 답을 여러 번 "
+        "고쳐 보지 마라 — 분량·줄 맞춤은 프로그램이 검사해서 필요하면 다시 알려 준다.\n\n"
+        "[출력 형식] 생각을 마친 뒤, 아래 모양 그대로만 써라. 대괄호 표시는 바꾸지 마라.\n"
         + "".join(f"[의견{i + 1}]\n- ({a} 검증 의견)\n- (구분되는 내용이 더 있으면)\n"
                   for i, (a, _b) in enumerate(자료.항목))
         + f"[전문성_성과]\n{점} (내용)\n{점} (두 번째 내용 — 있으면)\n"
@@ -448,9 +451,27 @@ def 풀기(글: str, n: int) -> dict | None:
     }
 
 
+#: 추론 모델은 temperature 0(매번 가장 그럴듯한 말만)이면 생각이 같은 말을 맴돌다 토큰 한도까지
+#: 가는 일이 잦다. 그래서 조금 풀어 준다 (VERIFYSUM_TEMPERATURE).
+온도 = float(os.environ.get("VERIFYSUM_TEMPERATURE", "0.6"))
+
+_짧게 = ("생각을 짧게 하고 바로 [표시] 형식으로 답을 써라. 글자 수·줄 수를 하나하나 세지 마라 — "
+       "분량은 대략만 맞추면 프로그램이 세어서 알려 준다.")
+
+
+def _글받기(client, 메시지: list[dict]) -> str:
+    """답 글. 생각만 하다 토큰 한도에 걸리면 '생각을 짧게' 를 붙여 한 번 더."""
+    try:
+        return client.chat_text(메시지, strict=True, temperature=온도)
+    except Exception as exc:  # noqa: BLE001
+        if type(exc).__name__ != "LLMTruncated" and "생각만" not in str(exc):
+            raise
+    return client.chat_text(메시지 + [{"role": "user", "content": _짧게}], strict=True, temperature=온도)
+
+
 def _묻기(client, 메시지: list[dict], n: int) -> tuple[dict, str]:
     """(나눈 답, 원래 글). 글로 받고, 못 나누면 그 글을 JSON 으로 옮기게 한 번 더."""
-    글 = client.chat_text(메시지, strict=True)
+    글 = _글받기(client, 메시지)
     답 = 풀기(글, n)
     if 답 is None:
         답 = client.chat_json(

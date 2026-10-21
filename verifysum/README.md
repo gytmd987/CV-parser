@@ -29,6 +29,7 @@ python3 /경로/CV-parser/verifysum_run.py      # 어느 폴더에서든
 | `VERIFYSUM_WORKERS` | 동시에 LLM 에 보낼 사람 수 | 2 |
 | `VERIFYSUM_LLM_TIMEOUT` | LLM 한 번 기다리는 시간(초) | 600 |
 | `VERIFYSUM_RETRIES` | 타임아웃·연결 끊김·서버 5xx 때 알아서 다시 하는 횟수 | 3 |
+| `VERIFYSUM_TEMPERATURE` | LLM temperature (0 이면 추론이 맴돌아 토큰 한도에 걸리기 쉽다) | 0.6 |
 | `VERIFYSUM_DATA_DIR` | 예시·결과 파일 둘 곳 | `~/.cvtool/verifysum` |
 
 ## 쓰는 순서

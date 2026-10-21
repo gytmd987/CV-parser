@@ -655,3 +655,18 @@ def test_원본_내용에_번호를_붙여_보낸다(학습):
     지시, 사용자 = (m["content"] for m in generate.프롬프트(자료, 학습))
     assert "(원본 내용 3개)" in 사용자 and "(3) 셋째 내용" in 사용자
     assert "빼고" in 지시 and "요약이지 바꿔 쓰기가 아니다" in 지시
+
+
+def test_토큰_한도에_걸리면_생각을_짧게_해서_한_번_더(학습):
+    from cvtool.clients.llm import LLMTruncated
+
+    class 긴생각LLM(가짜LLM):
+        def chat_text(self, messages, **kw):
+            assert kw.get("strict") and kw.get("temperature") == generate.온도
+            if "[출력 형식]" in messages[0]["content"] and not messages[-1]["content"].startswith("생각을 짧게"):
+                raise LLMTruncated("토큰 한도")
+            return super().chat_text(messages[:-1] if messages[-1]["content"].startswith("생각을 짧게")
+                                     else messages, **kw)
+    결 = generate.한사람(D.검증자료_읽기(검증파일()), 학습, 긴생각LLM())
+    assert 결.항목[0][1].startswith("- 의견 0")
+    assert "글자 수·줄 수를 세거나" in generate.프롬프트(D.검증자료_읽기(검증파일()), 학습)[0]["content"]
