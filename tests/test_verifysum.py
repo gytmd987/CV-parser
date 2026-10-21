@@ -476,3 +476,15 @@ def test_작성자는_파일마다_원본에서():
     h = learn.분석(검증파일(), 한장파일(), 요약파일())
     r = generate.한사람(자료, h, L())
     assert r.작성자 == ["강하늘", "문지기", "손보람"]
+
+
+def test_1장_칸은_내용_두개_다섯줄까지(학습):
+    자료 = D.검증자료_읽기(검증파일())
+    긴 = "\n".join("- " + "가나다라 마바사 " * 6 for _ in range(4))
+    결 = generate.결과(자료=자료, 항목=[(a, generate.의견맞추기(긴, 학습)) for a, _b in 자료.항목],
+                     전문성=가짜LLM.짧, 역량=가짜LLM.역량)
+    문제 = generate.검사(결, 학습)
+    assert any("2개까지만" in m for m in 문제) and any("5줄 안으로" in m for m in 문제)
+    지킨 = generate.칸지키기(결.항목[0][1], 학습)
+    assert len(fit.항목_나누기(지킨)) <= 2 and len(지킨.split("\n")) <= 5
+    assert all(t <= 4 for t in generate.목표줄(자료, 학습))
