@@ -336,6 +336,10 @@ def _학습칸(학습: dict | None) -> str:
         f"{html.escape(학습.get('지침') or '')}</textarea>"
         "<div class='row'><button class='sec'>지침 저장</button></div></form>"
         + _들여다보기(학습) +
+        "<form method='post' action='/relearn' class='row' onsubmit=\"this.querySelector('button').disabled=true;"
+        "this.querySelector('button').textContent='분석 중… (1~2분)'\">"
+        "<button class='sec'>올려 둔 예시로 다시 분석</button><span class='muted'>파일을 다시 올리지 않고 "
+        "지침을 새로 만듭니다 (프로그램이 바뀌었을 때). 위에서 손으로 고친 지침은 새 것으로 바뀝니다.</span></form>"
         "<details style='margin-top:14px'><summary class='muted'>다른 예시로 다시 분석하기</summary>"
         f"{양식}</details></div>")
 
@@ -548,8 +552,17 @@ class Handler(BaseHTTPRequestHandler):
                 학습["지침"] = learn.지침_만들기(학습, c)
             finally:
                 getattr(c, "close", lambda: None)()
-            learn.저장(폴더, 학습, 한장, 요약)
+            learn.저장(폴더, 학습, 한장, 요약, 원본)
             return self._돌아가기("예시를 분석했습니다. 지침을 확인하고 2단계로 넘어가세요.")
+        if 경로 == "/relearn":
+            c = _클라이언트()
+            try:
+                learn.다시분석(폴더, c)
+            except D.형식오류 as exc:
+                return self._돌아가기(str(exc), True)
+            finally:
+                getattr(c, "close", lambda: None)()
+            return self._돌아가기("올려 둔 예시로 다시 분석했습니다. 지침을 확인해 주세요.")
         if 경로 == "/guide":
             학습 = learn.불러오기(폴더)
             if not 학습:

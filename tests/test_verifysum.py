@@ -559,3 +559,19 @@ def test_긴_문장_하나면_두_내용으로_나누게_한다(학습):
     assert any("2개로 나눠" in m for m in generate.검사(결, 학습))
     지시 = generate.프롬프트(자료, 학습)[0]["content"]
     assert "칸마다 내용 2개가 보통" in 지시 and "합쳐도 된다" not in 지시
+
+
+def test_올려_둔_예시로_다시_분석(tmp_path):
+    학습 = learn.분석(검증파일(), 한장파일(), 요약파일())
+    학습["지침"] = "옛 지침"
+    learn.저장(tmp_path, 학습, 한장파일(), 요약파일())          # 예전처럼 원본 파일 없이
+    새 = learn.다시분석(tmp_path, 가짜LLM())
+    assert 새["지침"].startswith("[문체]") and 새["원본"]["제목"] == "홍길동 책임연구원"
+    assert learn.불러오기(tmp_path)["지침"] == 새["지침"]
+    learn.저장(tmp_path, 새, 원본=검증파일())                     # 원본 파일이 있으면 그걸로
+    assert learn.다시분석(tmp_path, 가짜LLM())["원본"]["항목"] == 새["원본"]["항목"]
+
+
+def test_요약은_있어_보이게(학습):
+    지시 = generate.프롬프트(D.검증자료_읽기(검증파일()), 학습)[0]["content"]
+    assert "있어 보이게" in 지시 and "전문가" in 지시
