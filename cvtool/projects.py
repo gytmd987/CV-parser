@@ -419,3 +419,144 @@ def curated_meta(path: str | Path) -> dict:
         "필드": sorted({k for p_ in (data.get("projects") or [])
                       if isinstance(p_, dict) for k in p_}),
     }
+
+
+# ---------------------------------------------------------------------------
+# 엑셀(.xlsx · .csv)로 과제 추가 · 갱신
+# ---------------------------------------------------------------------------
+# 한 줄 = 과제 하나, 첫 줄 = 항목 이름. 항목 이름은 JSON 필드와 똑같이 알아본다
+# (과제명 · 과제번호 · 키워드 · 부서 …). 모르는 열은 버리지 않고 설명에 붙는다.
+#
+# 이미 있는 과제와는 **과제번호(없으면 과제명)** 로 맞춘다. 같은 번호면 엑셀에 값이
+# 있는 칸만 덮어쓰고, 빈 칸은 원래 값을 둔다. 없는 번호는 새로 넣는다. 지우지는 않는다.
+# 번호가 바뀌면 기존 매칭 결과와 이어지지 않으니 번호 열을 꼭 넣는 게 좋다.
+
+_역할들 = (("과제명", _이름_후보), ("과제번호", _번호_후보), ("키워드", _키워드_후보),
+         ("담당", _담당_후보), ("설명", _설명_후보))
+
+
+def 열역할(이름: str) -> str:
+    """엑셀 열 이름이 무엇으로 읽히는지 (화면 미리보기용)."""
+    for 역할, 후보 in _역할들:
+        if 이름 in 후보:
+            return 역할
+    return "설명에 붙음"
+
+
+def _머리정리(이름: str) -> str:
+    """'과제 명' · 'Project Name' 처럼 띄어 쓴 열 이름도 아는 이름으로."""
+    이름 = (이름 or "").strip()
+    붙임 = 이름.replace(" ", "").replace("_", "").lower()
+    for _역할, 후보 in _역할들:
+        for k in 후보:
+            if k.replace("_", "").lower() == 붙임:
+                return k
+    return 이름
+
+
+def 표_읽기(파일명: str, 내용: bytes) -> list[list[str]]:
+    """.xlsx(첫 시트) · .csv 를 글자 표로."""
+    import csv
+    import io
+
+    끝 = Path(파일명 or "").suffix.lower()
+    if 끝 == ".csv":
+        for 인코딩 in ("utf-8-sig", "cp949"):
+            try:
+                글 = 내용.decode(인코딩)
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            raise ProjectsError("CSV 글자 인코딩을 알 수 없습니다. UTF-8 로 저장해 주세요.")
+        return [list(r) for r in csv.reader(io.StringIO(글))]
+    if 끝 in (".xlsx", ".xlsm"):
+        from .xlsx_read import XlsxError, read_sheet
+        try:
+            return read_sheet(내용)
+        except XlsxError as exc:
+            raise ProjectsError(str(exc)) from exc
+    raise ProjectsError("엑셀(.xlsx) 이나 .csv 파일을 올려 주세요. (.xls 는 xlsx 로 다시 저장)")
+
+
+def 표를_과제로(표: list[list[str]]) -> tuple[list[dict], list[str]]:
+    """(과제 사전 목록, 열 이름들). 첫 번째 글 있는 줄이 머리줄."""
+    줄들 = [[str(c or "").strip() for c in r] for r in 표]
+    줄들 = [r for r in 줄들 if any(r)]
+    if not 줄들:
+        raise ProjectsError("표가 비어 있습니다.")
+    머리, 본 = 줄들[0], 줄들[1:]
+    이름들: list[str] = []
+    for i, h in enumerate(머리):
+        h = _머리정리(h) or f"열{i + 1}"
+        n, 원 = 2, h
+        while h in 이름들:                 # 같은 이름이 두 번 나오면 뒤에 번호
+            h, n = f"{원}{n}", n + 1
+        이름들.append(h)
+    if not any(열역할(h) == "과제명" for h in 이름들) and not any(열역할(h) == "과제번호" for h in 이름들):
+        raise ProjectsError(
+            "첫 줄에서 과제명(또는 과제번호) 열을 찾지 못했습니다. 첫 줄에 '과제명' · '과제번호' "
+            "같은 항목 이름을 적어 주세요. 지금 첫 줄: " + ", ".join(머리[:8]))
+    나온것 = []
+    for r in 본:
+        d = {이름들[i]: v for i, v in enumerate(r) if i < len(이름들) and v}
+        if to_project(d) is not None:
+            나온것.append(d)
+    if not 나온것:
+        raise ProjectsError("과제 줄을 하나도 읽지 못했습니다. 과제명 칸이 비어 있지 않은지 확인해 주세요.")
+    return 나온것, 이름들
+
+
+@dataclass
+class 갱신결과:
+    과제들: list[dict]                       # 합친 전체 목록 (저장할 것)
+    추가: list[str] = field(default_factory=list)
+    갱신: list[tuple[str, list[str]]] = field(default_factory=list)   # (과제, 바뀐 항목들)
+    같음: list[str] = field(default_factory=list)
+
+
+def 추가갱신(기존: list[tuple[str, dict]], 새것: list[dict], *,
+         남길필드: set[str] | None = None) -> 갱신결과:
+    """기존 과제에 새 과제들을 과제번호(없으면 과제명) 기준으로 더하고 고친다.
+
+    `남길필드` 를 주면 (다듬은 파일) 그 필드와 이름 · 번호 필드만 남긴다.
+    """
+    과제들: list[dict] = []
+    자리: dict[str, int] = {}
+    for 기본키, 원본 in 기존:
+        d = dict(원본)
+        if 기본키 and not any(k in d for k in _번호_후보):
+            d["과제번호"] = 기본키            # 사전 키로만 있던 번호를 살려 둔다
+        자리.setdefault(item_key("", d), len(과제들))
+        과제들.append(d)
+    결과 = 갱신결과(과제들=과제들)
+    for 새 in 새것:
+        if 남길필드 is not None:
+            새 = {k: v for k, v in 새.items()
+                 if k in 남길필드 or k in ALWAYS_KEEP or k in _번호_후보}
+        키 = item_key("", 새)
+        이름 = _첫값(새, _이름_후보) or 키
+        if 키 not in 자리:
+            자리[키] = len(과제들)
+            과제들.append(dict(새))
+            결과.추가.append(이름)
+            continue
+        옛 = 과제들[자리[키]]
+        이름 = _첫값(새, _이름_후보) or _첫값(옛, _이름_후보) or 키
+        바뀐 = [k for k, v in 새.items() if _평탄화(v) and _평탄화(옛.get(k)) != _평탄화(v)]
+        if 바뀐:
+            for k in 바뀐:
+                옛[k] = 새[k]
+            결과.갱신.append((이름, [label_of(k) for k in 바뀐]))
+        else:
+            결과.같음.append(이름)
+    return 결과
+
+
+def save_projects(path: str | Path, 과제들: list[dict], *, 출처: str = "", 만든이: str = "") -> Path:
+    """가져온 과제 원본 파일을 쓴다 (모양은 다듬은 파일과 같다)."""
+    p = save_curated(path, 과제들, 출처=출처, 만든이=만든이)
+    data = json.loads(p.read_text(encoding="utf-8"))
+    data["_설명"] = "지원자 관리 도구가 관리하는 과제 원본입니다. 화면의 '엑셀로 과제 추가·갱신' 으로 바뀝니다."
+    p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return p

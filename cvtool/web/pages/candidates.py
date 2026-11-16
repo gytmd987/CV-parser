@@ -34,7 +34,7 @@ from .dashboard import _프로필값
 from .match import _등급칸
 
 from ..state import audit, auth, CONTENT_TYPES, mailing, recruit, registry, store
-from ..jobs import _enqueue, _set_status, _status, _status_lock
+from ..jobs import _enqueue, _set_status, _status, _status_lock, 원본과제경로
 from ..columns import (
     열이름도움,
     _cell, _editable, _tsv_to_xlsx, _볼수있나, _표값맵, MAIL_COLUMN, MANAGE_COLUMNS, 라벨, 머리글, 열폭,
@@ -968,7 +968,7 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
     매칭 = store.matches(지원자_ID)
     매칭카드 = ""
     # 매칭 결과에는 회사 연구 과제 전체가 들어 있다. 현업에게는 보이면 안 된다.
-    if settings.projects_json and can(me, "과제매칭_조회"):
+    if 원본과제경로() and can(me, "과제매칭_조회"):
         보여줄수 = max(1, settings.match_show)
 
         def 매칭줄(m: dict) -> str:

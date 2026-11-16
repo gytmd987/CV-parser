@@ -30,6 +30,19 @@ def 다듬은파일() -> Path:
     return DATA_DIR / "과제_선별.json"
 
 
+def 가져온과제파일() -> Path:
+    """엑셀로 과제를 추가 · 갱신하면 생기는 과제 원본. 생긴 뒤로는 이것이 원본이다."""
+    return DATA_DIR / "과제_원본.json"
+
+
+def 원본과제경로() -> str:
+    """과제 원본 경로. 엑셀로 가져온 적이 있으면 그 파일, 아니면 .env 의 CVTOOL_PROJECTS_JSON."""
+    가져온 = 가져온과제파일()
+    if 가져온.is_file():
+        return str(가져온)
+    return settings.projects_json
+
+
 def 쓰는과제파일() -> tuple[str, bool]:
     """(실제로 매칭에 쓰는 경로, 다듬은 파일인지).
 
@@ -38,7 +51,7 @@ def 쓰는과제파일() -> tuple[str, bool]:
     다듬 = 다듬은파일()
     if 다듬.is_file():
         return str(다듬), True
-    return settings.projects_json, False
+    return 원본과제경로(), False
 
 
 def 과제목록(다시: bool = False) -> tuple[list, str]:
@@ -199,7 +212,7 @@ def _worker() -> None:
 
             # 과제 매칭. 실패해도 지원자 등록은 이미 끝났으니 메모만 남긴다.
             매칭메모 = ""
-            if settings.match_auto and settings.projects_json:
+            if settings.match_auto and 원본과제경로():
                 개수, 매칭오류 = 매칭실행(rec)
                 if 매칭오류:
                     매칭메모 = f" / 과제 매칭 실패: {매칭오류}"

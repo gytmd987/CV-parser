@@ -32,6 +32,7 @@ def web_client(tmp_path_factory):
 
     class Client:
         module = mod
+        base_url = base
 
         def __init__(self):
             self.opener = urllib.request.build_opener(

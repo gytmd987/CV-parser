@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import html
+import json
 import urllib.parse
 
 from ... import projects as projectsmod
@@ -12,7 +13,8 @@ from ...config import settings
 from ...matching import GRADE_RUBRIC, 점수등급
 
 from ..state import audit, store
-from ..jobs import 과제목록, 다듬은파일, 매칭실행, 쓰는과제파일
+from ..jobs import 가져온과제파일, 과제목록, 다듬은파일, 매칭실행, 쓰는과제파일, 원본과제경로
+from ..multipart import parse_multipart
 from ..layout import _page, _알림, _없는주소
 from ..router import 라우트
 
@@ -48,7 +50,7 @@ def _curate_page(me: User, error: str = "", msg: str = "") -> bytes:
     길어지고 판단이 흐려진다. 사람이 한 번 골라 다듬은 파일을 만들고, 매칭은
     그 파일을 쓴다. **원본은 건드리지 않는다.**
     """
-    원본경로 = settings.projects_json
+    원본경로 = 원본과제경로()
     다듬 = 다듬은파일()
     메타 = projectsmod.curated_meta(다듬)
 
@@ -109,7 +111,7 @@ def _curate_page(me: User, error: str = "", msg: str = "") -> bytes:
     현황 = (
         f"<table><tr><th style='width:150px'>원본 파일</th>"
         f"<td><code>{html.escape(str(projectsmod.resolve_path(원본경로) or '(설정 안 됨)'))}"
-        f"</code> <span class='muted'>.env 의 CVTOOL_PROJECTS_JSON</span></td></tr>"
+        f"</code> <span class='muted'>{'엑셀로 가져온 과제' if 가져온과제파일().is_file() else '.env 의 CVTOOL_PROJECTS_JSON'}</span></td></tr>"
         f"<tr><th>원본 과제</th><td>{len(항목)}개 · 필드 {len(필드)}종</td></tr>"
         f"<tr><th>다듬은 파일</th><td><code>{html.escape(str(다듬))}</code></td></tr>"
         + (f"<tr><th>지금 쓰는 것</th><td><b>다듬은 파일</b> — 과제 {메타['과제수']}개 · "
@@ -218,13 +220,18 @@ def _projects_page(me: User, error: str = "", msg: str = "") -> bytes:
         알림 + 오류
         + "<div class='card'><p><a class='btn sec' href='/org'>부서·과제로</a></p></div>"
         + "<div class='card'><h2>과제 파일</h2>" + 설정
-        + "<p class='muted'>경로는 <code>.env</code> 의 "
-        "<code>CVTOOL_PROJECTS_JSON</code> 으로 정합니다. 상대경로는 "
-        "<b>CV-parser 폴더 기준</b>입니다.</p>"
+        + ("<p class='muted'>엑셀로 가져온 과제를 쓰고 있습니다 (<code>.env</code> 의 "
+           "<code>CVTOOL_PROJECTS_JSON</code> 파일은 처음 가져올 때 합쳐 넣었고, 그 뒤로는 안 씁니다).</p>"
+           if 가져온과제파일().is_file() else
+           "<p class='muted'>경로는 <code>.env</code> 의 "
+           "<code>CVTOOL_PROJECTS_JSON</code> 으로 정합니다. 상대경로는 "
+           "<b>CV-parser 폴더 기준</b>입니다. 아래 '엑셀로 과제 추가·갱신' 을 쓰면 그 뒤로는 "
+           "가져온 과제 파일을 씁니다.</p>")
         + ("<p><a class='btn' href='/match/curate'>과제 파일 다듬기</a>"
            "<span class='muted'> 원본에서 매칭에 쓸 과제·정보만 골라 둡니다.</span></p>"
            if can(me, "지원자_등록") else "")
         + "</div>"
+        + (_가져오기카드() if can(me, "지원자_등록") else "")
         + f"<div class='card'><h2>연구 과제 {len(목록)}개</h2><div class='scroll'>"
         "<table data-name='연구 과제'><tr><th>번호</th><th>과제명</th><th>키워드</th>"
         "<th>담당</th><th>설명</th></tr>" + 과제줄 + "</table></div></div>"
@@ -235,6 +242,133 @@ def _projects_page(me: User, error: str = "", msg: str = "") -> bytes:
         f"<pre class='rubric'>{html.escape(GRADE_RUBRIC)}</pre></div>",
         me=me,
     )
+
+
+def _가져오기카드() -> str:
+    되돌리기 = (
+        "<form method='post' action='/match/import/reset' style='margin-top:10px'"
+        " onsubmit=\"return confirm('엑셀로 가져온 과제를 지우고 .env 의 과제 파일로 돌아갑니다. 진행할까요?')\">"
+        "<button class='danger'>가져온 과제 지우기</button>"
+        "<span class='muted'> .env 의 과제 파일로 돌아갑니다 (그 파일은 그대로 있습니다).</span></form>"
+        if 가져온과제파일().is_file() and settings.projects_json else "")
+    return (
+        "<div class='card'><h2>엑셀로 과제 추가·갱신</h2>"
+        "<p class='muted'>한 줄에 과제 하나, <b>첫 줄은 항목 이름</b>(과제번호 · 과제명 · 부서 · 키워드 · "
+        "핵심기술 · 산출물 …). <b>과제번호가 같으면 엑셀에 값이 있는 칸만 고치고</b>, 없는 번호는 새로 넣습니다. "
+        "지우지는 않습니다. 번호 열이 없으면 과제명으로 맞춥니다 — 번호가 바뀌면 기존 매칭 결과와 이어지지 "
+        "않으니 번호 열을 넣어 주세요. 모르는 항목 이름도 버리지 않고 설명에 붙습니다.</p>"
+        "<form method='post' action='/match/import' enctype='multipart/form-data' class='mergebar'>"
+        "<input type='file' name='file' accept='.xlsx,.csv' required>"
+        "<button type='submit'>읽어 보기</button><span class='muted'>바로 바뀌지 않습니다 — "
+        "무엇이 추가·갱신되는지 먼저 보여 드립니다.</span></form>" + 되돌리기 + "</div>")
+
+
+def _가져오기_합치기(새것: list[dict]):
+    """(원본 합친 결과, 다듬은 파일 합친 결과 또는 None). 저장은 하지 않는다."""
+    경로 = 원본과제경로()
+    기존 = projectsmod.raw_items(projectsmod.read_json(경로)) if 경로 else []
+    원본결과 = projectsmod.추가갱신(기존, 새것)
+    다듬 = 다듬은파일()
+    다듬결과 = None
+    if 다듬.is_file():
+        원본필드 = {k for _키, d in 기존 for k in d}
+        고른 = set(projectsmod.curated_meta(다듬).get("필드") or [])
+        # 원본에 없던 새 항목 이름(엑셀에만 있는 열)은 다듬은 파일에도 남긴다
+        남길 = 고른 | ({k for d in 새것 for k in d} - 원본필드)
+        다듬결과 = projectsmod.추가갱신(
+            projectsmod.raw_items(projectsmod.read_json(str(다듬))), 새것, 남길필드=남길)
+    return 원본결과, 다듬결과
+
+
+def _미리보기(me: User, 새것: list[dict], 열들: list[str], 파일명: str) -> bytes:
+    try:
+        r, 다듬r = _가져오기_합치기(새것)
+    except projectsmod.ProjectsError as exc:
+        return _page("엑셀로 과제 추가·갱신", _알림(err=str(exc))
+                     + "<p><a class='btn sec' href='/match'>돌아가기</a></p>", me=me)
+    열표 = "".join(
+        f"<tr><td><b>{html.escape(h)}</b></td><td>{html.escape(projectsmod.열역할(h))}</td></tr>"
+        for h in 열들)
+    갱신줄 = "".join(f"<li><b>{html.escape(n)}</b> <span class='muted'>— {html.escape(', '.join(k))}</span></li>"
+                   for n, k in r.갱신)
+    추가줄 = "".join(f"<li>{html.escape(n)}</li>" for n in r.추가)
+    본문 = (
+        f"<div class='card'><h2>{html.escape(파일명)} — 과제 {len(새것)}개 읽음</h2>"
+        "<table><tr><th style='width:150px'>새로 추가</th>"
+        f"<td><b>{len(r.추가)}개</b></td></tr>"
+        f"<tr><th>고침</th><td><b>{len(r.갱신)}개</b></td></tr>"
+        f"<tr><th>그대로</th><td>{len(r.같음)}개 <span class='muted'>(바뀐 칸 없음)</span></td></tr>"
+        f"<tr><th>반영 뒤 전체</th><td>{len(r.과제들)}개</td></tr></table>"
+        + ("<p class='muted'>다듬은 과제 파일에도 같이 반영합니다 (다듬을 때 고른 항목과 새 항목 이름만).</p>"
+           if 다듬r is not None else "")
+        + "<form method='post' action='/match/import/apply' class='mergebar'>"
+        f"<input type='hidden' name='rows' value='{html.escape(json.dumps(새것, ensure_ascii=False))}'>"
+        f"<input type='hidden' name='name' value='{html.escape(파일명)}'>"
+        "<button type='submit'>이대로 반영</button>"
+        "<a class='btn sec' href='/match'>취소</a></form></div>"
+        "<div class='card'><h2>항목 이름을 이렇게 읽었습니다</h2>"
+        "<table><tr><th>엑셀 첫 줄</th><th>쓰임</th></tr>" + 열표 + "</table></div>"
+        + (f"<div class='card'><h2>새로 추가 {len(r.추가)}개</h2><ul>{추가줄}</ul></div>" if 추가줄 else "")
+        + (f"<div class='card'><h2>고침 {len(r.갱신)}개</h2><ul>{갱신줄}</ul></div>" if 갱신줄 else "")
+    )
+    return _page("엑셀로 과제 추가·갱신", 본문, me=me)
+
+
+@라우트("POST", '/match/import', 권한='지원자_등록')
+def post_match_import(self, me, path):
+    form = parse_multipart(self._read_body(), self.headers.get("Content-Type", ""))
+    올린것 = [f for f in form.files if f.content]
+    if not 올린것:
+        return self._redirect("/match?err=" + urllib.parse.quote("엑셀 파일을 골라 주세요."))
+    f = 올린것[0]
+    try:
+        새것, 열들 = projectsmod.표를_과제로(projectsmod.표_읽기(f.filename, f.content))
+    except projectsmod.ProjectsError as exc:
+        return self._redirect("/match?err=" + urllib.parse.quote(str(exc)))
+    return self._send(_미리보기(me, 새것, 열들, f.filename))
+    return _없는주소(self)
+
+
+@라우트("POST", '/match/import/apply', 권한='지원자_등록')
+def post_match_import_apply(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    try:
+        새것 = json.loads((data.get("rows") or ["[]"])[0])
+        assert isinstance(새것, list) and all(isinstance(x, dict) for x in 새것)
+    except (ValueError, AssertionError):
+        return self._redirect("/match?err=" + urllib.parse.quote("올린 내용을 읽지 못했습니다. 다시 올려 주세요."))
+    파일명 = (data.get("name") or [""])[0]
+    try:
+        r, 다듬r = _가져오기_합치기(새것)
+    except projectsmod.ProjectsError as exc:
+        return self._redirect("/match?err=" + urllib.parse.quote(str(exc)))
+    projectsmod.save_projects(가져온과제파일(), r.과제들, 출처=f"엑셀 {파일명}", 만든이=me.아이디)
+    if 다듬r is not None:
+        옛 = projectsmod.curated_meta(다듬은파일())
+        projectsmod.save_curated(다듬은파일(), 다듬r.과제들, 출처=옛.get("출처", ""), 만든이=me.아이디)
+    과제목록(다시=True)
+    audit.record(me.아이디, "과제", str(가져온과제파일()), 항목="엑셀로 과제 추가·갱신",
+                 새값=f"{파일명}: 추가 {len(r.추가)} · 고침 {len(r.갱신)} · 그대로 {len(r.같음)}")
+    return self._redirect("/match?msg=" + urllib.parse.quote(
+        f"과제 {len(r.추가)}개를 추가하고 {len(r.갱신)}개를 고쳤습니다 (전체 {len(r.과제들)}개). "
+        "이미 맞춰본 지원자에 반영하려면 아래 '이미 맞춰본 사람도 다시' 를 켜고 맞춰보기를 돌리세요."))
+    return _없는주소(self)
+
+
+@라우트("POST", '/match/import/reset', 권한='지원자_등록')
+def post_match_import_reset(self, me, path):
+    가져온 = 가져온과제파일()
+    if not settings.projects_json:
+        return self._redirect("/match?err=" + urllib.parse.quote(
+            ".env 에 과제 파일이 없어 지울 수 없습니다 (지우면 과제가 하나도 없게 됩니다)."))
+    있었나 = 가져온.is_file()
+    가져온.unlink(missing_ok=True)
+    과제목록(다시=True)
+    if 있었나:
+        audit.record(me.아이디, "과제", str(가져온), 비고="엑셀로 가져온 과제 파일 삭제")
+    return self._redirect("/match?msg=" + urllib.parse.quote(
+        "가져온 과제를 지웠습니다. 이제 .env 의 과제 파일을 씁니다." if 있었나 else "지울 파일이 없습니다."))
+    return _없는주소(self)
 
 
 @라우트("GET", '/match/curate', 권한='지원자_등록', 거부말='과제 파일을 다듬는 건 채용담당자 이상만 할 수 있습니다.')
@@ -263,7 +397,7 @@ def post_match_curate(self, me, path):
         return self._redirect("/match/curate?err=" + urllib.parse.quote(
             "남길 과제를 하나 이상 고르세요."))
     try:
-        항목 = projectsmod.raw_items(projectsmod.read_json(settings.projects_json))
+        항목 = projectsmod.raw_items(projectsmod.read_json(원본과제경로()))
     except projectsmod.ProjectsError as exc:
         return self._redirect("/match/curate?err="
                               + urllib.parse.quote(str(exc)))
@@ -271,7 +405,7 @@ def post_match_curate(self, me, path):
     if not 고른것:
         return self._redirect("/match/curate?err=" + urllib.parse.quote(
             "고른 조건으로 남는 과제가 없습니다. 필드를 더 고르세요."))
-    원본 = projectsmod.resolve_path(settings.projects_json)
+    원본 = projectsmod.resolve_path(원본과제경로())
     저장위치 = projectsmod.save_curated(
         다듬은파일(), 고른것, 출처=str(원본 or ""), 만든이=me.아이디,
     )
