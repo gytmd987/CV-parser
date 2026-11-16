@@ -342,10 +342,15 @@ def post_match_import_apply(self, me, path):
         r, 다듬r = _가져오기_합치기(새것)
     except projectsmod.ProjectsError as exc:
         return self._redirect("/match?err=" + urllib.parse.quote(str(exc)))
-    projectsmod.save_projects(가져온과제파일(), r.과제들, 출처=f"엑셀 {파일명}", 만든이=me.아이디)
-    if 다듬r is not None:
-        옛 = projectsmod.curated_meta(다듬은파일())
-        projectsmod.save_curated(다듬은파일(), 다듬r.과제들, 출처=옛.get("출처", ""), 만든이=me.아이디)
+    try:
+        projectsmod.save_projects(가져온과제파일(), r.과제들, 출처=f"엑셀 {파일명}", 만든이=me.아이디)
+        if 다듬r is not None:
+            옛 = projectsmod.curated_meta(다듬은파일())
+            projectsmod.save_curated(다듬은파일(), 다듬r.과제들, 출처=옛.get("출처", ""), 만든이=me.아이디)
+    except OSError as exc:
+        return self._redirect("/match?err=" + urllib.parse.quote(
+            f"과제 파일을 저장하지 못했습니다 ({getattr(exc, 'filename', '') or 가져온과제파일()}): "
+            f"{exc.strerror or exc}. 이 프로그램을 띄운 계정이 그 폴더에 쓸 수 있는지 확인하세요."))
     과제목록(다시=True)
     audit.record(me.아이디, "과제", str(가져온과제파일()), 항목="엑셀로 과제 추가·갱신",
                  새값=f"{파일명}: 추가 {len(r.추가)} · 고침 {len(r.갱신)} · 그대로 {len(r.같음)}")

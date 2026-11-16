@@ -213,6 +213,21 @@ def parse(data) -> list[Project]:
     return 나온것
 
 
+def _읽기오류(p: Path, exc: OSError) -> str:
+    """파일을 못 읽은 이유를 사람이 고칠 수 있게. 권한 문제(오류 13)가 가장 흔하다."""
+    if isinstance(exc, PermissionError):
+        import getpass
+
+        try:
+            누구 = getpass.getuser()
+        except Exception:  # noqa: BLE001
+            누구 = "?"
+        return (f"과제 파일을 읽을 권한이 없습니다 (오류 13) — {p}. 이 프로그램을 띄운 계정({누구})이 "
+                "이 파일을 읽을 수 없습니다. 다른 계정이나 sudo 로 만든 파일인지, 윈도우라면 다른 "
+                "프로그램이 파일을 열고 있지 않은지 확인하세요.")
+    return f"과제 파일을 읽지 못했습니다 ({p}): {exc}"
+
+
 class ProjectsError(RuntimeError):
     """과제 파일을 못 읽었다. 메시지를 그대로 화면에 보여준다."""
 
@@ -231,7 +246,7 @@ def load(path: str | Path | None) -> list[Project]:
     try:
         raw = p.read_text(encoding="utf-8")
     except OSError as exc:
-        raise ProjectsError(f"과제 파일을 읽지 못했습니다: {exc}") from exc
+        raise ProjectsError(_읽기오류(p, exc)) from exc
     except UnicodeDecodeError as exc:
         raise ProjectsError(
             f"UTF-8 로 읽히지 않습니다 ({p}). 파일 인코딩을 확인하세요: {exc}"
@@ -281,7 +296,7 @@ def read_json(path: str | Path | None):
             f"UTF-8 로 읽히지 않습니다 ({p}). 파일 인코딩을 확인하세요: {exc}"
         ) from exc
     except OSError as exc:
-        raise ProjectsError(f"과제 파일을 읽지 못했습니다: {exc}") from exc
+        raise ProjectsError(_읽기오류(p, exc)) from exc
     try:
         return json.loads(raw)
     except json.JSONDecodeError as exc:

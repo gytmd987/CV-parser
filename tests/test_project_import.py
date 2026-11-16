@@ -117,3 +117,15 @@ def test_웹에서_엑셀로_추가_갱신(web_client, tmp_path, monkeypatch):
 def test_웹_엑셀이_이상하면_알려준다(web_client):
     코드, 화면 = _올리기(web_client, "/match/import", "x.xls", b"abc")
     assert 코드 == 200 and "xlsx 로 다시 저장" in 화면
+
+
+def test_권한이_없으면_어느_파일인지_알려준다(tmp_path, monkeypatch):
+    f = tmp_path / "과제.json"
+    f.write_text("[]", encoding="utf-8")
+
+    def 막힘(*a, **k):
+        raise PermissionError(13, "Permission denied", str(f))
+    monkeypatch.setattr(type(f), "read_text", 막힘)
+    with pytest.raises(P.ProjectsError) as e:
+        P.read_json(str(f))
+    assert "권한이 없습니다 (오류 13)" in str(e.value) and str(f) in str(e.value)
