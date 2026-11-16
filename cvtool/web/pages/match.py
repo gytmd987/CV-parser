@@ -264,28 +264,41 @@ def _가져오기카드() -> str:
 
 
 def _가져오기_합치기(새것: list[dict]):
-    """(원본 합친 결과, 다듬은 파일 합친 결과 또는 None). 저장은 하지 않는다."""
+    """(원본 합친 결과, 다듬은 파일 합친 결과 또는 None, 다듬은 파일을 버릴지, 알림들).
+    저장은 하지 않는다.
+
+    엑셀 업로드는 **기존 파일 사정과 상관없이** 되어야 한다. 기존 과제 파일을 못 읽으면
+    (권한 · 깨진 파일) 합치지 않고 엑셀 내용만으로 만들고, 그 사실을 알린다. 못 읽는
+    다듬은 파일은 버린다 — 남겨 두면 매칭이 계속 그 파일을 읽으려다 실패한다.
+    """
+    알림: list[str] = []
     경로 = 원본과제경로()
-    기존 = projectsmod.raw_items(projectsmod.read_json(경로)) if 경로 else []
+    기존: list = []
+    if 경로:
+        try:
+            기존 = projectsmod.raw_items(projectsmod.read_json(경로))
+        except projectsmod.ProjectsError as exc:
+            알림.append(f"기존 과제 파일을 읽지 못해 합치지 않고 엑셀 내용만으로 새로 만듭니다. ({exc})")
     원본결과 = projectsmod.추가갱신(기존, 새것)
     다듬 = 다듬은파일()
-    다듬결과 = None
+    다듬결과, 다듬버림 = None, False
     if 다듬.is_file():
-        원본필드 = {k for _키, d in 기존 for k in d}
-        고른 = set(projectsmod.curated_meta(다듬).get("필드") or [])
-        # 원본에 없던 새 항목 이름(엑셀에만 있는 열)은 다듬은 파일에도 남긴다
-        남길 = 고른 | ({k for d in 새것 for k in d} - 원본필드)
-        다듬결과 = projectsmod.추가갱신(
-            projectsmod.raw_items(projectsmod.read_json(str(다듬))), 새것, 남길필드=남길)
-    return 원본결과, 다듬결과
+        try:
+            다듬항목 = projectsmod.raw_items(projectsmod.read_json(str(다듬)))
+            원본필드 = {k for _키, d in 기존 for k in d}
+            고른 = set(projectsmod.curated_meta(다듬).get("필드") or [])
+            # 원본에 없던 새 항목 이름(엑셀에만 있는 열)은 다듬은 파일에도 남긴다
+            남길 = 고른 | ({k for d in 새것 for k in d} - 원본필드)
+            다듬결과 = projectsmod.추가갱신(다듬항목, 새것, 남길필드=남길)
+        except projectsmod.ProjectsError as exc:
+            다듬버림 = True
+            알림.append("다듬은 과제 파일을 읽지 못해 지우고, 매칭은 새 과제 파일 전체를 씁니다 "
+                      f"(필요하면 '과제 파일 다듬기' 를 다시 하세요). ({exc})")
+    return 원본결과, 다듬결과, 다듬버림, 알림
 
 
 def _미리보기(me: User, 새것: list[dict], 열들: list[str], 파일명: str) -> bytes:
-    try:
-        r, 다듬r = _가져오기_합치기(새것)
-    except projectsmod.ProjectsError as exc:
-        return _page("엑셀로 과제 추가·갱신", _알림(err=str(exc))
-                     + "<p><a class='btn sec' href='/match'>돌아가기</a></p>", me=me)
+    r, 다듬r, _버림, 알림 = _가져오기_합치기(새것)
     열표 = "".join(
         f"<tr><td><b>{html.escape(h)}</b></td><td>{html.escape(projectsmod.열역할(h))}</td></tr>"
         for h in 열들)
@@ -293,7 +306,8 @@ def _미리보기(me: User, 새것: list[dict], 열들: list[str], 파일명: st
                    for n, k in r.갱신)
     추가줄 = "".join(f"<li>{html.escape(n)}</li>" for n in r.추가)
     본문 = (
-        f"<div class='card'><h2>{html.escape(파일명)} — 과제 {len(새것)}개 읽음</h2>"
+        "".join(f"<div class='warn'>{html.escape(m)}</div>" for m in 알림)
+        + f"<div class='card'><h2>{html.escape(파일명)} — 과제 {len(새것)}개 읽음</h2>"
         "<table><tr><th style='width:150px'>새로 추가</th>"
         f"<td><b>{len(r.추가)}개</b></td></tr>"
         f"<tr><th>고침</th><td><b>{len(r.갱신)}개</b></td></tr>"
@@ -338,12 +352,11 @@ def post_match_import_apply(self, me, path):
     except (ValueError, AssertionError):
         return self._redirect("/match?err=" + urllib.parse.quote("올린 내용을 읽지 못했습니다. 다시 올려 주세요."))
     파일명 = (data.get("name") or [""])[0]
-    try:
-        r, 다듬r = _가져오기_합치기(새것)
-    except projectsmod.ProjectsError as exc:
-        return self._redirect("/match?err=" + urllib.parse.quote(str(exc)))
+    r, 다듬r, 다듬버림, 알림 = _가져오기_합치기(새것)
     try:
         projectsmod.save_projects(가져온과제파일(), r.과제들, 출처=f"엑셀 {파일명}", 만든이=me.아이디)
+        if 다듬버림:
+            다듬은파일().unlink(missing_ok=True)
         if 다듬r is not None:
             옛 = projectsmod.curated_meta(다듬은파일())
             projectsmod.save_curated(다듬은파일(), 다듬r.과제들, 출처=옛.get("출처", ""), 만든이=me.아이디)
@@ -356,7 +369,8 @@ def post_match_import_apply(self, me, path):
                  새값=f"{파일명}: 추가 {len(r.추가)} · 고침 {len(r.갱신)} · 그대로 {len(r.같음)}")
     return self._redirect("/match?msg=" + urllib.parse.quote(
         f"과제 {len(r.추가)}개를 추가하고 {len(r.갱신)}개를 고쳤습니다 (전체 {len(r.과제들)}개). "
-        "이미 맞춰본 지원자에 반영하려면 아래 '이미 맞춰본 사람도 다시' 를 켜고 맞춰보기를 돌리세요."))
+        "이미 맞춰본 지원자에 반영하려면 아래 '이미 맞춰본 사람도 다시' 를 켜고 맞춰보기를 돌리세요."
+        + "".join(" / " + m.split(" (")[0] for m in 알림)))
     return _없는주소(self)
 
 

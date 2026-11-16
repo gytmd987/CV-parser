@@ -391,21 +391,31 @@ def curate(항목: list[tuple[str, dict]], 고른키: set[str] | None,
     return 나온것
 
 
+def _쓰기(p: Path, 글: str) -> None:
+    """파일을 쓴다. 다른 계정이 만든 파일이라 덮어쓸 수 없으면 지우고 새로 만든다
+    (폴더는 이 프로그램 것이므로 지우기는 된다)."""
+    try:
+        p.write_text(글, encoding="utf-8")
+    except PermissionError:
+        p.unlink(missing_ok=True)
+        p.write_text(글, encoding="utf-8")
+
+
 def save_curated(path: str | Path, 과제들: list[dict], *, 출처: str = "",
-                 만든이: str = "") -> Path:
+                 만든이: str = "", 설명: str = "") -> Path:
     """다듬은 과제 파일을 쓴다. 읽을 때는 그냥 `load()` 로 읽힌다."""
     from .timeutil import now_kst
 
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     본문 = {
-        "_설명": "지원자 관리 도구가 만든 파일입니다. 원본에서 고른 과제·필드만 담겨 있습니다.",
+        "_설명": 설명 or "지원자 관리 도구가 만든 파일입니다. 원본에서 고른 과제·필드만 담겨 있습니다.",
         "_출처": 출처,
         "_만든일시": now_kst().strftime("%Y-%m-%d %H:%M:%S"),
         "_만든이": 만든이,
         "projects": 과제들,
     }
-    p.write_text(json.dumps(본문, ensure_ascii=False, indent=2), encoding="utf-8")
+    _쓰기(p, json.dumps(본문, ensure_ascii=False, indent=2))
     try:
         from .fsutil import secure_file
 
@@ -570,8 +580,5 @@ def 추가갱신(기존: list[tuple[str, dict]], 새것: list[dict], *,
 
 def save_projects(path: str | Path, 과제들: list[dict], *, 출처: str = "", 만든이: str = "") -> Path:
     """가져온 과제 원본 파일을 쓴다 (모양은 다듬은 파일과 같다)."""
-    p = save_curated(path, 과제들, 출처=출처, 만든이=만든이)
-    data = json.loads(p.read_text(encoding="utf-8"))
-    data["_설명"] = "지원자 관리 도구가 관리하는 과제 원본입니다. 화면의 '엑셀로 과제 추가·갱신' 으로 바뀝니다."
-    p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    return p
+    return save_curated(path, 과제들, 출처=출처, 만든이=만든이,
+                        설명="지원자 관리 도구가 관리하는 과제 원본입니다. 화면의 '엑셀로 과제 추가·갱신' 으로 바뀝니다.")

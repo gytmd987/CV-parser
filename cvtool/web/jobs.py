@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import os
+
 import queue
 import threading
 import traceback
@@ -49,7 +51,7 @@ def 쓰는과제파일() -> tuple[str, bool]:
     다듬은 파일이 있으면 그것을 쓴다. 원본에는 매칭에 쓸모없는 항목이 많다.
     """
     다듬 = 다듬은파일()
-    if 다듬.is_file():
+    if 다듬.is_file() and os.access(다듬, os.R_OK):
         return str(다듬), True
     return 원본과제경로(), False
 

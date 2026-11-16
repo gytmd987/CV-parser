@@ -129,3 +129,58 @@ def test_권한이_없으면_어느_파일인지_알려준다(tmp_path, monkeypa
     with pytest.raises(P.ProjectsError) as e:
         P.read_json(str(f))
     assert "권한이 없습니다 (오류 13)" in str(e.value) and str(f) in str(e.value)
+
+
+def test_기존_파일을_못_읽어도_엑셀_업로드는_된다(web_client, tmp_path, monkeypatch):
+    """권한 문제(오류 13) 등으로 기존 과제 · 다듬은 파일을 못 읽어도 엑셀 내용으로 반영된다."""
+    import dataclasses
+    import html as _h
+
+    from cvtool.config import settings
+    from cvtool.web import jobs
+    from cvtool.web.pages import match
+
+    c = web_client
+    원본 = tmp_path / "과제.json"
+    원본.write_text('{"projects": [{"과제명": "옛 과제"}]}', encoding="utf-8")
+    바꾼 = dataclasses.replace(settings, projects_json=str(원본))
+    monkeypatch.setattr(jobs, "settings", 바꾼)
+    monkeypatch.setattr(match, "settings", 바꾼)
+    jobs.가져온과제파일().unlink(missing_ok=True)
+    P.save_curated(jobs.다듬은파일(), [{"과제명": "옛 과제"}])
+
+    진짜 = P.read_json
+
+    def 막힘(path):
+        if str(path) in (str(원본), str(jobs.다듬은파일())):
+            raise P.ProjectsError(f"과제 파일을 읽을 권한이 없습니다 (오류 13) — {path}")
+        return 진짜(path)
+    monkeypatch.setattr(P, "read_json", 막힘)
+
+    코드, 화면 = _올리기(c, "/match/import", "새.xlsx",
+                       _엑셀([{"과제번호": "P-9", "과제명": "새 과제"}], ["과제번호", "과제명"]))
+    assert 코드 == 200 and "엑셀 내용만으로 새로 만듭니다" in 화면 and "다듬은 과제 파일을 읽지 못해" in 화면
+    rows = 화면.split("name='rows' value='")[1].split("'")[0]
+    c.post("/match/import/apply", rows=_h.unescape(rows), name="새.xlsx")
+    assert not jobs.다듬은파일().exists()
+    monkeypatch.setattr(P, "read_json", 진짜)
+    목록, 오류 = jobs.과제목록(다시=True)
+    assert not 오류 and [p.이름 for p in 목록] == ["새 과제"]
+    jobs.가져온과제파일().unlink(missing_ok=True)
+
+
+def test_다른_계정이_만든_파일이면_지우고_새로_쓴다(tmp_path, monkeypatch):
+    f = tmp_path / "과제_원본.json"
+    f.write_text("옛것", encoding="utf-8")
+    진짜, 번 = type(f).write_text, []
+
+    def 처음엔_막힘(self, *a, **k):
+        번.append(self.exists())
+        if len(번) == 1:
+            raise PermissionError(13, "Permission denied", str(self))
+        return 진짜(self, *a, **k)
+    monkeypatch.setattr(type(f), "write_text", 처음엔_막힘)
+    P.save_projects(f, [{"과제명": "새"}])
+    assert 번 == [True, False]                     # 지운 뒤 새로 썼다
+    monkeypatch.setattr(type(f), "write_text", 진짜)
+    assert [p.이름 for p in P.load(f)] == ["새"]
