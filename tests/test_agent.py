@@ -1,4 +1,4 @@
-"""운영 설정(화면에서 켜고 끄기) · 에이전트(사내 클코) 토큰 · MCP · 대신 판단하기."""
+"""운영 설정(화면에서 켜고 끄기) · 에이전트(사내 코워크) 토큰 · MCP · 대신 판단하기."""
 
 from __future__ import annotations
 
@@ -78,12 +78,12 @@ def test_토큰_없이는_MCP_가_안_열린다(web_client):
 
 def test_관리자_화면에서_토큰을_발급하면_한_번만_보인다(web_client):
     c = web_client
-    코드, 화면 = c.post("/admin/agent/token", 이름="채용팀클코")
+    코드, 화면 = c.post("/admin/agent/token", 이름="채용팀코워크")
     assert 코드 == 200 and "지금 한 번만 보입니다" in 화면
     토큰 = 화면.split("cvt_", 1)[1].split("<", 1)[0]
-    assert c.module.auth.user_for_api_token("cvt_" + 토큰).아이디 == "agent:채용팀클코"
+    assert c.module.auth.user_for_api_token("cvt_" + 토큰).아이디 == "agent:채용팀코워크"
     assert "cvt_" + 토큰 not in c.get("/admin/agent")
-    assert "클코용 설명서" in c.get("/admin/agent") and "cv_submit" in c.get("/admin/agent")
+    assert "코워크용 설명서" in c.get("/admin/agent") and "cv_submit" in c.get("/admin/agent")
 
 
 def test_MCP_첫인사와_도구_목록(web_client):
@@ -119,7 +119,7 @@ _결과 = {
 }
 
 
-def test_사내_클코가_CV_를_분석해_등록하고_과제를_맞춘다(web_client):
+def test_사내_코워크가_CV_를_분석해_등록하고_과제를_맞춘다(web_client):
     c = web_client
     m = c.module
     jobs = _jobs()
@@ -183,7 +183,7 @@ def test_서버_LLM_으로_되돌리면_기다리던_CV_를_이어서_분석한�
     cid = "CV-TEST0001"
     저장명 = m.store.store_file(cid, "a.txt", b"x")
     jobs._enqueue("a.txt", cid, 저장명)
-    assert 넣은것 == [] and jobs._status["a.txt"]["state"] == "클코 대기"
+    assert 넣은것 == [] and jobs._status["a.txt"]["state"] == "코워크 대기"
     c.post("/admin/settings", 이름="llm_mode", 값="server")
     assert [x[1] for x in 넣은것] == [cid]
     m.store.finish_job(cid)

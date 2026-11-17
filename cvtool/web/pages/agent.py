@@ -1,8 +1,8 @@
-"""운영 설정 · 사내 클코(에이전트) 연결 — 관리자만.
+"""운영 설정 · 사내 코워크(에이전트) 연결 — 관리자만.
 
 - `/admin/settings` : .env 를 고치지 않고 화면에서 켜고 끄는 운영 항목 (AI 분석 방식,
   메일 연습 모드, 자동 매칭 …). 바꾸면 바로 반영되고 변경 이력에 남는다.
-- `/admin/agent`    : 에이전트 토큰 발급 · 끄기 · 삭제, MCP 연결 방법, 클코용 설명서.
+- `/admin/agent`    : 에이전트 토큰 발급 · 끄기 · 삭제, MCP 연결 방법, 코워크용 설명서.
 - `/mcp`            : MCP (Streamable HTTP, JSON 응답). 토큰으로만 들어온다.
 - `/api/agent/call` : 같은 도구를 JSON 으로 ({"tool": …, "args": {…}}) — MCP 가 안 될 때.
 """
@@ -110,14 +110,14 @@ def post_admin_settings(self, me, path):
         audit.record(me.아이디, "설정", 이름, 항목=라벨, 이전값=_보임(이름, 전), 새값=_보임(이름, 후))
         알림 = f"{라벨}: {_보임(이름, 전)} → {_보임(이름, 후)}"
         if 이름 == "llm_mode" and 후 == "server":
-            n = _resume_jobs()        # 클코를 기다리던 CV 를 서버 LLM 이 이어서 분석한다
+            n = _resume_jobs()        # 코워크를 기다리던 CV 를 서버 LLM 이 이어서 분석한다
             if n:
                 알림 += f" (기다리던 CV {n}건을 서버 LLM 이 이어서 분석합니다)"
     return self._redirect(f"{뒤로}?msg=" + urllib.parse.quote(알림))
     return _없는주소(self)
 
 
-# --- 사내 클코 연결 (토큰 · 설명서) --------------------------------------------------------
+# --- 사내 코워크 연결 (토큰 · 설명서) --------------------------------------------------------
 def _주소(handler) -> str:
     return f"http://{handler.headers.get('Host') or '이-서버-주소:포트'}/mcp"
 
@@ -137,12 +137,12 @@ def _agent_page(handler, me: User, msg: str = "", err: str = "", 새토큰: str 
         f"<input type='hidden' name='id' value='{t['id']}'>"
         f"<button class='sec'>{'끄기' if t['활성'] else '켜기'}</button></form> "
         "<form method='post' action='/admin/agent/token/delete' style='display:inline'"
-        " onsubmit=\"return confirm('이 토큰을 지웁니다. 이 토큰을 쓰던 클코는 더 이상 접속할 수 없습니다.')\">"
+        " onsubmit=\"return confirm('이 토큰을 지웁니다. 이 토큰을 쓰던 코워크는 더 이상 접속할 수 없습니다.')\">"
         f"<input type='hidden' name='id' value='{t['id']}'><button class='danger'>삭제</button></form></td></tr>"
         for t in auth.tokens()) or "<tr><td colspan='6' class='muted'>아직 발급한 토큰이 없습니다.</td></tr>"
     새것 = (
         "<div class='card' style='border:2px solid #16a34a'><h2>새 토큰 — 지금 한 번만 보입니다</h2>"
-        "<p>아래 토큰을 복사해 사내 클코 설정에 넣으세요. 이 화면을 벗어나면 다시 볼 수 없습니다 "
+        "<p>아래 토큰을 복사해 사내 코워크 설정에 넣으세요. 이 화면을 벗어나면 다시 볼 수 없습니다 "
         "(잃어버리면 지우고 새로 발급).</p>"
         f"<pre style='white-space:pre-wrap;word-break:break-all;font-size:15px'>{html.escape(새토큰)}</pre></div>"
         if 새토큰 else "")
@@ -152,42 +152,42 @@ def _agent_page(handler, me: User, msg: str = "", err: str = "", 새토큰: str 
     도구줄 = "".join(f"<tr><td class='ctl'><code>{html.escape(t.이름)}</code></td><td class='ctl'>{html.escape(t.설명)}</td></tr>"
                    for t in 도구들.values())
     return _page(
-        "사내 클코 연결",
+        "사내 코워크 연결",
         _알림(msg=msg, err=err) + 새것
-        + "<div class='card'><h2>사내 클코 연결</h2>"
-        "<p class='muted'>사내 클코(에이전트)가 MCP 로 이 시스템에 붙어 CV 분석 · 과제 매칭 · 조회 · 수정을 합니다. "
-        "AI 분석을 클코에게 맡기려면 «AI 분석을 누가 하나» 를 <b>사내 클코</b> 로 두세요 — 그러면 CV 를 "
-        "올려도 시스템은 LLM 을 부르지 않고 «클코 대기» 로 쌓아 둡니다. 클코에게 «CV 분석 대기 처리해줘», "
-        "«매칭 대기 처리해줘» 라고 시키면 클코가 가져가 처리합니다.</p>"
+        + "<div class='card'><h2>사내 코워크 연결</h2>"
+        "<p class='muted'>사내 코워크(에이전트)가 MCP 로 이 시스템에 붙어 CV 분석 · 과제 매칭 · 조회 · 수정을 합니다. "
+        "AI 분석을 코워크에게 맡기려면 «AI 분석을 누가 하나» 를 <b>사내 코워크</b> 로 두세요 — 그러면 CV 를 "
+        "올려도 시스템은 LLM 을 부르지 않고 «코워크 대기» 로 쌓아 둡니다. 코워크에게 «CV 분석 대기 처리해줘», "
+        "«매칭 대기 처리해줘» 라고 시키면 코워크가 가져가 처리합니다.</p>"
         + _설정표(("agent_api", "llm_mode"), "/admin/agent") + "</div>"
         + "<div class='card'><h2>토큰</h2>"
-        "<p class='muted'>클코 하나에 토큰 하나. 토큰으로 들어온 클코는 <b>채용담당자</b> 권한으로 일하고, "
+        "<p class='muted'>코워크 하나에 토큰 하나. 토큰으로 들어온 코워크는 <b>채용담당자</b> 권한으로 일하고, "
         "바꾼 것은 변경 이력에 «agent:토큰이름» 으로 남습니다.</p>"
         "<table><tr><th>이름</th><th>권한</th><th>만든 때</th><th>마지막 사용</th><th>상태</th><th></th></tr>"
         + 토큰줄 + "</table>"
         "<form method='post' action='/admin/agent/token' class='mergebar' style='margin-top:12px'>"
-        "<input name='이름' placeholder='토큰 이름 (예: 사내클코-채용팀)' required style='min-width:260px'>"
+        "<input name='이름' placeholder='토큰 이름 (예: 사내코워크-채용팀)' required style='min-width:260px'>"
         "<button>토큰 발급</button></form></div>"
         + "<div class='card'><h2>MCP 연결 방법</h2>"
         f"<table><tr><th style='width:150px'>MCP 주소</th><td class='ctl'><code>{html.escape(주소)}</code> "
         "<span class='muted'>(Streamable HTTP)</span></td></tr>"
         "<tr><th>인증</th><td class='ctl'><code>Authorization: Bearer 토큰</code></td></tr></table>"
-        "<p class='muted'>클코의 MCP 설정 예 (형식은 사내 클코 안내를 따르세요):</p>"
+        "<p class='muted'>코워크의 MCP 설정 예 (형식은 사내 코워크 안내를 따르세요):</p>"
         f"<pre>{html.escape(설정예)}</pre>"
         "<p class='muted'>명령으로 넣는 경우 예:</p>"
         f"<pre>claude mcp add --transport http cvtool {html.escape(주소)} --header \"Authorization: Bearer cvt_발급받은토큰\"</pre>"
         "<p class='muted'>MCP 를 못 쓰면 같은 도구를 JSON 으로 부를 수 있습니다: "
         f"<code>POST {html.escape(주소[:-4])}/api/agent/call</code> 본문 "
         "<code>{\"tool\": \"status\", \"args\": {}}</code> · 같은 인증 머리.</p></div>"
-        + "<div class='card'><h2>클코용 설명서</h2>"
-        "<p class='muted'>클코가 접속하면 이 설명서를 받습니다 (guide 도구로도 읽습니다).</p>"
+        + "<div class='card'><h2>코워크용 설명서</h2>"
+        "<p class='muted'>코워크가 접속하면 이 설명서를 받습니다 (guide 도구로도 읽습니다).</p>"
         f"<pre style='white-space:pre-wrap'>{html.escape(설명서)}</pre>"
         "<h3 style='font-size:15px'>도구 목록</h3><table><tr><th>도구</th><th>하는 일</th></tr>"
         + 도구줄 + "</table></div>",
         me=me)
 
 
-@라우트("GET", '/admin/agent', 권한='에이전트_관리', 거부말='사내 클코 연결은 관리자만 볼 수 있습니다.')
+@라우트("GET", '/admin/agent', 권한='에이전트_관리', 거부말='사내 코워크 연결은 관리자만 볼 수 있습니다.')
 def get_admin_agent(self, me, path):
     q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
     return self._send(_agent_page(self, me, (q.get("msg") or [""])[0], (q.get("err") or [""])[0]))

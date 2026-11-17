@@ -697,7 +697,7 @@ def _설정들(me: User | None, badge: str) -> list[tuple[str, str, tuple[str, .
         ("계정", "/users", ("/users",), can(me, "계정_현업추가")),
         ("변경 이력", "/history", ("/history",), can(me, "변경이력_조회")),
         ("운영 설정", "/admin/settings", ("/admin/settings",), can(me, "운영_설정")),
-        ("사내 클코 연결", "/admin/agent", ("/admin/agent",), can(me, "에이전트_관리")),
+        ("사내 코워크 연결", "/admin/agent", ("/admin/agent",), can(me, "에이전트_관리")),
     ]
     return [(라벨, 주소, 소속) for 라벨, 주소, 소속, 보임 in 후보 if 보임]
 

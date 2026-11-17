@@ -1,4 +1,4 @@
-"""에이전트(사내 클코 등)가 쓰는 도구들 — MCP 와 JSON API 가 같이 쓴다.
+"""에이전트(사내 코워크 등)가 쓰는 도구들 — MCP 와 JSON API 가 같이 쓴다.
 
 사내 LLM API 를 시스템이 직접 부를 수 없을 때, LLM 이 하던 판단을 에이전트가 대신한다.
 
@@ -65,7 +65,7 @@ def _기록(me: User, cid: str, 비고: str, 항목: str = "", 새값: str = "")
 
 
 # --- 설명서 · 상태 ------------------------------------------------------------------
-설명서 = """# 지원자 관리 시스템 — 에이전트(사내 클코) 사용 설명서
+설명서 = """# 지원자 관리 시스템 — 에이전트(사내 코워크) 사용 설명서
 
 이 시스템은 연구직 지원자 CV 를 분석해 등록하고, 회사 연구 과제와 맞춰 본다.
 사내 LLM 을 직접 부를 수 없어서 **AI 판단은 에이전트(당신)가 한다.** 시스템은 할 일 ·
@@ -103,7 +103,7 @@ def _status(me: User, args: dict) -> dict:
     목록, 오류 = 과제목록()
     매칭된 = set(store.top_matches())
     return {
-        "AI 분석 모드": "사내 클코(에이전트)" if 에이전트모드() else "서버 LLM",
+        "AI 분석 모드": "사내 코워크(에이전트)" if 에이전트모드() else "서버 LLM",
         "CV 분석 대기": len(store.pending_jobs()),
         "매칭 대기": sum(1 for r in store.list_all() if r.지원자_ID not in 매칭된) if 목록 else 0,
         "지원자 수": store.count(),
@@ -164,7 +164,7 @@ def _cv_submit(me: User, args: dict) -> dict:
         raise 도구오류(str(exc)) from exc
     상태 = 등록마무리(rec, text, j["파일명"], cid, j["저장_파일명"], j.get("메모") or "")
     store.finish_job(cid)
-    _기록(me, cid, "사내 클코가 CV 분석" if j.get("메모") != 채우기메모 else "사내 클코가 빈 항목 채우기")
+    _기록(me, cid, "사내 코워크가 CV 분석" if j.get("메모") != 채우기메모 else "사내 코워크가 빈 항목 채우기")
     저장 = store.get(cid)
     return {"지원자_ID": cid, "상태": 상태,
             "이름": (저장.한글_이름 or 저장.영문_이름) if 저장 else "",
@@ -186,7 +186,7 @@ def _cv_upload(me: User, args: dict) -> dict:
     cid = f"CV-{uuid.uuid4().hex[:8].upper()}"
     저장명 = store.store_file(cid, 파일명, 내용)
     _enqueue(파일명, cid, 저장명)
-    _기록(me, cid, f"사내 클코가 CV 올림: {파일명}")
+    _기록(me, cid, f"사내 코워크가 CV 올림: {파일명}")
     return {"지원자_ID": cid, "파일명": 파일명,
             "다음": "cv_task 로 분석하세요" if 에이전트모드() else "서버 LLM 이 분석합니다"}
 
@@ -232,7 +232,7 @@ def _match_submit(me: User, args: dict) -> dict:
         raise 도구오류(str(exc)) from exc
     store.save_matches(rec.지원자_ID, 나온것)
     if 나온것:
-        _기록(me, rec.지원자_ID, "사내 클코가 과제 매칭", 항목="과제 매칭",
+        _기록(me, rec.지원자_ID, "사내 코워크가 과제 매칭", 항목="과제 매칭",
               새값=f"{나온것[0].과제명} ({나온것[0].등급})")
     빠진 = [m.과제명 for m in 나온것 if not m.평가됨]
     return {"지원자_ID": rec.지원자_ID,
@@ -292,7 +292,7 @@ def _candidate_update(me: User, args: dict) -> dict:
     if 전 != 후:
         store.save(rec)
         audit.record(me.아이디, "지원자", rec.지원자_ID, 항목=항목, 이전값=전, 새값=후,
-                     비고="사내 클코가 수정")
+                     비고="사내 코워크가 수정")
     return {"지원자_ID": rec.지원자_ID, "항목": 항목, "이전값": 전, "새값": 후, "바뀜": 전 != 후}
 
 

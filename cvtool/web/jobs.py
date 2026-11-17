@@ -76,9 +76,9 @@ def 과제목록(다시: bool = False) -> tuple[list, str]:
     return _projects_cache["목록"], _projects_cache["오류"]
 
 
-#: 사내 클코(에이전트) 모드일 때 시스템이 LLM 일을 하려 하면 보여 줄 말
-에이전트모드말 = ("지금은 «사내 클코» 가 AI 분석을 하는 모드라 시스템이 LLM 을 부르지 않습니다. "
-              "클코에게 «매칭 대기 처리해줘» 라고 시키세요 (운영 설정에서 바꿀 수 있습니다).")
+#: 사내 코워크(에이전트) 모드일 때 시스템이 LLM 일을 하려 하면 보여 줄 말
+에이전트모드말 = ("지금은 «사내 코워크» 가 AI 분석을 하는 모드라 시스템이 LLM 을 부르지 않습니다. "
+              "코워크에게 «매칭 대기 처리해줘» 라고 시키세요 (운영 설정에서 바꿀 수 있습니다).")
 
 
 def 에이전트모드() -> bool:
@@ -143,13 +143,13 @@ def _set_status(name: str, state: str, message: str = "", cid: str = "") -> None
 
 #: 메모리 대기열에 들어 있는 지원자 (모드를 오갈 때 두 번 넣지 않게)
 _줄선것: set[str] = set()
-#: 사내 클코 모드에서 분석을 기다리는 상태 이름
-클코대기 = "클코 대기"
+#: 사내 코워크 모드에서 분석을 기다리는 상태 이름
+코워크대기 = "코워크 대기"
 
 
 def _줄세우기(filename: str, 지원자_ID: str, 저장_파일명: str, 메모: str) -> None:
     if 에이전트모드():
-        _set_status(filename, 클코대기, "사내 클코에게 «CV 분석 대기 처리해줘» 라고 시키세요",
+        _set_status(filename, 코워크대기, "사내 코워크에게 «CV 분석 대기 처리해줘» 라고 시키세요",
                     cid=지원자_ID)
         return
     if 지원자_ID in _줄선것:
@@ -209,9 +209,9 @@ def _worker() -> None:
         filename, 지원자_ID, 저장_파일명, 메모 = _jobs.get()
         넘김 = False
         try:
-            if 에이전트모드():            # 줄 서 있는 사이 사내 클코 모드로 바뀌었다
+            if 에이전트모드():            # 줄 서 있는 사이 사내 코워크 모드로 바뀌었다
                 넘김 = True
-                _set_status(filename, 클코대기, "사내 클코에게 맡깁니다", cid=지원자_ID)
+                _set_status(filename, 코워크대기, "사내 코워크에게 맡깁니다", cid=지원자_ID)
                 continue
             _set_status(filename, "처리중", cid=지원자_ID)
             path = store.files_dir / 저장_파일명
@@ -228,7 +228,7 @@ def _worker() -> None:
             traceback.print_exc()
         finally:
             # 실패도 끝난 것이다. 남겨 두면 재시작할 때마다 같은 실패를 되풀이한다.
-            # 사내 클코 모드로 바뀌어 손대지 않은 것은 남겨 둔다 (클코가 가져간다).
+            # 사내 코워크 모드로 바뀌어 손대지 않은 것은 남겨 둔다 (코워크가 가져간다).
             _줄선것.discard(지원자_ID)
             if not 넘김:
                 try:
