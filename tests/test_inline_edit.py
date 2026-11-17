@@ -349,11 +349,11 @@ def test_grade_and_display_saved_together(web):
     나 = reg.observe("학회", "International Conference on Sample Things")
     code, body = web.post("/names/save", kind="학회", id=나.id,
                           **{f"표시명_{나.id}": "ICST",
-                             f"등급_{나.id}": "최우수",
+                             f"등급_{나.id}": "일반",
                              f"국내해외_{나.id}": "해외"})
     이후 = reg.get(나.id)
-    assert (이후.표시명, 이후.등급, 이후.국내해외) == ("ICST", "최우수", "해외")
-    assert "등급 최우수" in body and "해외" in body
+    assert (이후.표시명, 이후.등급, 이후.국내해외) == ("ICST", "일반", "해외")
+    assert "등급 일반" in body and "해외" in body
 
 
 def test_school_kind_renamed_to_affiliation(web):

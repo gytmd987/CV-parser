@@ -51,7 +51,8 @@ def test_rename_group_moves_every_spelling(reg):
 def test_rename_group_into_existing_name_merges_and_keeps_its_class(reg):
     a = reg.observe("학회", "ICML")
     b = reg.observe("학회", "International Conference on Machine Learning")
-    reg.classify(a.id, 등급="최우수", 국내해외="해외")
+    reg.우수_저장("ICML", "최우수")
+    reg.classify(a.id, 국내해외="해외")
     reg.classify(b.id, 등급="일반")
     reg.rename_group("학회·저널", b.표시명, "ICML")
     합친것 = reg.get(b.id)
@@ -61,7 +62,8 @@ def test_rename_group_into_existing_name_merges_and_keeps_its_class(reg):
 
 def test_rename_group_to_new_name_carries_the_class(reg):
     a = reg.observe("저널", "Nano Energy")
-    reg.classify(a.id, 등급="우수", IF="17.9")
+    reg.우수_저장("Nano Energy", "우수")
+    reg.classify(a.id, IF="17.9")
     reg.rename_group("학회·저널", "Nano Energy", "NANO ENERGY")
     나 = reg.get(a.id)
     assert (나.표시명, 나.등급, 나.IF) == ("NANO ENERGY", "우수", "17.9")
@@ -79,7 +81,7 @@ def test_merge_to_new_name_takes_class_from_most_seen(reg):
     a = reg.observe("학회", "NIPS")
     for _ in range(3):
         b = reg.observe("학회", "NeurIPS")
-    reg.classify(b.id, 등급="최우수")
+    reg.우수_저장("NeurIPS", "최우수")
     reg.merge([a.id, b.id], "NeurIPS (NIPS)")
     assert reg.get(a.id).등급 == "최우수"
 
@@ -284,9 +286,13 @@ def test_name_view_saves_class_for_the_whole_name(web):
     그룹들 = re.findall(r"name='g' value='([^']*)'", page)
     g = 그룹들.index("WebConf-테스트")
     web.post("/names/save_groups", kind="학회·저널", g=그룹들,
-             **{f"등급_{g}": "우수", f"국내해외_{g}": "해외"})
+             **{f"등급_{g}": "일반", f"국내해외_{g}": "해외"})
     나 = reg.get(a.id)
-    assert (나.등급, 나.국내해외) == ("우수", "해외")
+    assert (나.등급, 나.국내해외) == ("일반", "해외")
+    # 최우수 · 우수는 이름별 화면에서 못 고른다 (리스트에서만)
+    _코드, body = web.post("/names/save_groups", kind="학회·저널", g=그룹들,
+                         **{f"등급_{g}": "우수", f"국내해외_{g}": "해외"})
+    assert reg.get(a.id).등급 == "일반" and "리스트" in body
 
 
 def test_merge_names_in_the_name_view(web):

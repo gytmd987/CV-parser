@@ -77,6 +77,17 @@ DEFAULT_TIERS = [
     ("제외", 4, 0),
 ]
 
+#: 이 등급은 **우수 학회·저널 리스트** 에서만 정한다. 리스트에 있는 곳만 이 등급이 되고,
+#: 나머지 학회·저널은 사람이 일반 · 제외(· 미분류)로만 둔다.
+LIST_TIERS = ("최우수", "우수")
+#: 리스트 밖 학회·저널에 손으로 줄 수 있는 등급
+MANUAL_TIERS = ("미분류", "일반", "제외")
+
+
+class 리스트등급오류(ValueError):
+    """최우수 · 우수를 리스트 밖에서 정하려 했다."""
+
+
 _YEAR_RE = re.compile(r"\b(19|20)\d{2}\b")
 _PAREN_RE = re.compile(r"[(（\[][^)）\]]*[)）\]]")
 _VENUE_NOISE_RE = re.compile(
@@ -163,6 +174,20 @@ CREATE TABLE IF NOT EXISTS name_classes (
     IF          TEXT DEFAULT '',
     PRIMARY KEY (종류, 표시명)
 );
+CREATE TABLE IF NOT EXISTS excellent_venues (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    이름         TEXT UNIQUE NOT NULL,
+    등급         TEXT NOT NULL,
+    별칭         TEXT DEFAULT '',
+    학회저널      TEXT DEFAULT '',
+    비고         TEXT DEFAULT '',
+    고친이        TEXT DEFAULT '',
+    고친때        TEXT DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS registry_meta (
+    키           TEXT PRIMARY KEY,
+    값           TEXT DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS tiers (
     이름         TEXT PRIMARY KEY,
     순서         INTEGER DEFAULT 99,
@@ -222,6 +247,9 @@ class NameRegistry:
         self._conn.executescript(_SCHEMA)
         self._add_missing_columns()
         self._seed_tiers()
+        self._우수표_캐시: dict | None = None
+        self._우수_이름캐시: dict[str, str] = {}
+        self._seed_excellent()
         self._conn.commit()
         for suffix in ("", "-wal", "-shm"):
             secure_file(Path(str(self.path) + suffix))
@@ -288,6 +316,7 @@ class NameRegistry:
                 국내해외=row.get("국내해외") or "불명",
                 유형=row.get("유형") or "불명",
                 IF=row.get("IF") or "",
+                _옛등급그대로=True,
             )
         self._conn.execute("DROP TABLE names_old")
         if "name_aliases" in 있는표:
@@ -303,7 +332,7 @@ class NameRegistry:
             표시명 = row["표시명"]
             self._put("학회·저널", 표시명, row["정규화키"], 표시명,
                       row["발견횟수"] or 0, row["최초등록"] or "")
-            self._set_class("학회·저널", 표시명, 등급=row["등급"] or "미분류",
+            self._set_class("학회·저널", 표시명, _옛등급그대로=True, 등급=row["등급"] or "미분류",
                             국내해외=row["국내해외"] or "불명",
                             유형="저널" if (row["유형"] or "") == "저널" else "학회")
         self._conn.commit()
@@ -336,11 +365,25 @@ class NameRegistry:
             "등급": "미분류" if 종류 in GRADED_KINDS else "",
             "국내해외": "불명", "유형": "불명", "IF": "",
         }
-        return {**기본, **{k: row[k] for k in _CLASS_COLS}} if row else 기본
+        d = {**기본, **{k: row[k] for k in _CLASS_COLS}} if row else 기본
+        if 종류 in GRADED_KINDS:
+            # 최우수 · 우수는 **리스트가 정한다.** 리스트에 없으면 손으로 적힌 최우수 ·
+            # 우수(리스트에서 빠진 곳)는 미분류로 본다 — 다시 일반 · 제외를 골라야 한다.
+            리스트 = self.우수등급(표시명)
+            if 리스트:
+                d["등급"] = 리스트
+            elif d["등급"] in LIST_TIERS:
+                d["등급"] = "미분류"
+        return d
 
-    def _set_class(self, 종류: str, 표시명: str, **값들) -> None:
+    def _set_class(self, 종류: str, 표시명: str, _옛등급그대로: bool = False, **값들) -> None:
         현재 = self._class_of(종류, 표시명)
         새것 = {k: (값들.get(k) if 값들.get(k) is not None else 현재[k]) for k in _CLASS_COLS}
+        # 옛 DB 를 옮길 때는 최우수 · 우수를 그대로 둔다 — 곧바로 리스트로 옮겨진다
+        if 종류 in GRADED_KINDS and 새것["등급"] in LIST_TIERS and not _옛등급그대로:
+            # 최우수 · 우수는 리스트에서만 온다. 이름을 바꾸거나 합칠 때 옮겨 적는 값은
+            # 저장하지 않는다 (리스트에 맞으면 읽을 때 다시 붙는다).
+            새것["등급"] = "미분류"
         self._conn.execute(
             "INSERT INTO name_classes (종류,표시명,등급,국내해외,유형,IF) VALUES (?,?,?,?,?,?)"
             " ON CONFLICT(종류,표시명) DO UPDATE SET"
@@ -355,6 +398,9 @@ class NameRegistry:
 
     # -- 조회 캐시 -----------------------------------------------------------
     def _forget_memo(self) -> None:
+        # 리스트가 걸리는 이름(표기 · 표시명)도 바뀌었을 수 있다
+        self._우수표_캐시 = None
+        self._우수_이름캐시 = {}
         with self._memo_lock:
             self._memo.clear()
             self._memo_version = None
@@ -372,6 +418,8 @@ class NameRegistry:
         판 = self._conn.execute("PRAGMA data_version").fetchone()[0]
         with self._memo_lock:
             if self._memo_version != 판:
+                self._우수표_캐시 = None
+                self._우수_이름캐시 = {}
                 self._memo.clear()
                 self._memo_version = 판
                 self._memo_gen += 1
@@ -588,6 +636,7 @@ class NameRegistry:
         나 = self.get(name_id)
         if 나 is None:
             return
+        _손등급_검사(나.종류, 등급)
         이름 = 나.표시명
         if 표시명 is not None and str(표시명).strip() and str(표시명).strip() != 이름:
             이름 = str(표시명).strip()
@@ -672,6 +721,7 @@ class NameRegistry:
         """이름에 붙은 분류를 바꾼다 (이름별 화면에서). 빈 값은 건너뛴다. IF 는 지울 수 있다."""
         값들 = {k: v for k, v in 값들.items()
                if k in _CLASS_COLS and v is not None and (k == "IF" or str(v).strip())}
+        _손등급_검사(종류, 값들.get("등급"))
         if 값들:
             self._set_class(canonical_kind(종류), 표시명,
                             **{k: str(v).strip() for k, v in 값들.items()})
@@ -746,6 +796,141 @@ class NameRegistry:
         self._conn.commit()
         return 나.원표기
 
+    # -- 우수 학회·저널 리스트 -------------------------------------------------
+    # 최우수 · 우수는 이 리스트가 정한다. 사전의 이름(표시명)이나 그 이름에 묶인
+    # 표기 중 하나가 리스트의 이름 · 별칭과 묶기 키(normalize)로 맞으면 그 등급이다.
+    def _seed_excellent(self) -> None:
+        """처음 한 번: 지금 최우수 · 우수인 이름을 리스트로 옮긴다 (있던 등급이 그대로 유지되게)."""
+        if self._conn.execute("SELECT 1 FROM registry_meta WHERE 키='우수리스트_시작'").fetchone():
+            return
+        for r in list(self._conn.execute(
+                "SELECT 표시명, 등급, 유형 FROM name_classes WHERE 종류='학회·저널' AND 등급 IN (?,?)",
+                LIST_TIERS)):
+            별칭 = [x["원표기"] for x in self._conn.execute(
+                "SELECT 원표기 FROM names WHERE 종류='학회·저널' AND 표시명=? AND 원표기<>?",
+                (r["표시명"], r["표시명"]))]
+            self._conn.execute(
+                "INSERT OR IGNORE INTO excellent_venues (이름,등급,별칭,학회저널,비고,고친이,고친때)"
+                " VALUES (?,?,?,?,?,?,?)",
+                (r["표시명"], r["등급"], "\n".join(별칭),
+                 r["유형"] if r["유형"] in ("학회", "저널") else "",
+                 "기존 등급에서 옮김", "(자동)", now_kst().strftime("%Y-%m-%d %H:%M")))
+        self._conn.execute("INSERT INTO registry_meta (키, 값) VALUES ('우수리스트_시작', ?)",
+                           (now_kst().strftime("%Y-%m-%d %H:%M"),))
+
+    def _forget_excellent(self) -> None:
+        self._우수표_캐시 = None
+        self._우수_이름캐시 = {}
+
+    def _우수표(self) -> dict[str, tuple[str, str]]:
+        """{묶기 키: (등급, 리스트 이름)}."""
+        표 = getattr(self, "_우수표_캐시", None)
+        if 표 is None:
+            표 = {}
+            try:
+                줄들 = list(self._conn.execute("SELECT 이름, 등급, 별칭 FROM excellent_venues"))
+            except sqlite3.OperationalError:       # 옛 DB 를 옮기는 중 (표가 아직 없다)
+                return {}
+            for r in 줄들:
+                for 글 in [r["이름"], *_별칭들(r["별칭"])]:
+                    키 = normalize(글, "학회·저널")
+                    if 키:
+                        표.setdefault(키, (r["등급"], r["이름"]))
+            self._우수표_캐시 = 표
+        return 표
+
+    def 우수항목(self, 표시명: str) -> tuple[str, str] | None:
+        """이 이름이 리스트에 걸리면 (등급, 리스트 이름). 이름에 묶인 표기도 본다."""
+        표 = self._우수표()
+        if not 표:
+            return None
+        키 = normalize(표시명 or "", "학회·저널")
+        if 키 in 표:
+            return 표[키]
+        캐시 = self._우수_이름캐시
+        if 표시명 in 캐시:
+            v = 캐시[표시명]
+            return 표.get(v) if v else None
+        찾음 = ""
+        for r in self._conn.execute(
+                "SELECT 원표기 FROM names WHERE 종류='학회·저널' AND 표시명=?", (표시명,)):
+            k = normalize(r["원표기"], "학회·저널")
+            if k in 표:
+                찾음 = k
+                break
+        캐시[표시명] = 찾음
+        return 표.get(찾음) if 찾음 else None
+
+    def 우수등급(self, 표시명: str) -> str:
+        항목 = self.우수항목(표시명)
+        return 항목[0] if 항목 else ""
+
+    def 우수목록(self) -> list[dict]:
+        목록 = [dict(r) for r in self._conn.execute(
+            "SELECT * FROM excellent_venues ORDER BY CASE 등급 WHEN '최우수' THEN 0 ELSE 1 END,"
+            " 이름 COLLATE NOCASE")]
+        # 사전에서 이 항목에 걸린 이름들 (리스트가 실제로 무엇에 붙는지 보여 준다)
+        걸림: dict[str, list[str]] = {}
+        for 이름 in self.display_names("학회·저널"):
+            항목 = self.우수항목(이름)
+            if 항목:
+                걸림.setdefault(항목[1], []).append(이름)
+        for d in 목록:
+            d["사전이름"] = 걸림.get(d["이름"], [])
+        return 목록
+
+    @atomic
+    def 우수_저장(self, 이름: str, 등급: str, *, 별칭: str = "", 학회저널: str = "",
+               비고: str = "", 누가: str = "", id: int | None = None) -> dict:
+        """리스트 항목을 넣거나 고친다 (id 가 있으면 그 항목, 없으면 이름이 같은 항목). 저장된 항목."""
+        이름 = (이름 or "").strip()
+        등급 = (등급 or "").strip()
+        if not 이름:
+            raise ValueError("학회·저널 이름을 적어 주세요.")
+        if 등급 not in LIST_TIERS:
+            raise ValueError(f"리스트 등급은 {' · '.join(LIST_TIERS)} 중 하나입니다: {등급}")
+        if 학회저널 and 학회저널 not in ("학회", "저널"):
+            raise ValueError("학회저널은 '학회' · '저널' · 빈칸 중 하나입니다.")
+        별칭글 = "\n".join(dict.fromkeys(x for x in _별칭들(별칭) if x != 이름))
+        if id is None:
+            옛 = self._conn.execute("SELECT id FROM excellent_venues WHERE 이름=?", (이름,)).fetchone()
+            id = 옛["id"] if 옛 else None
+        # 다른 항목과 같은 학회·저널로 읽히면 등급이 둘이 될 수 있다 — 막는다
+        내키 = {normalize(x, "학회·저널") for x in [이름, *_별칭들(별칭글)]} - {""}
+        for r in self._conn.execute("SELECT id, 이름, 별칭 FROM excellent_venues"):
+            if r["id"] == id:
+                continue
+            겹침 = 내키 & ({normalize(x, "학회·저널") for x in [r["이름"], *_별칭들(r["별칭"])]} - {""})
+            if 겹침:
+                raise ValueError(f"'{r['이름']}' 항목과 같은 학회·저널로 읽힙니다. 그 항목을 고치세요.")
+        때 = now_kst().strftime("%Y-%m-%d %H:%M")
+        if id is None:
+            self._conn.execute(
+                "INSERT INTO excellent_venues (이름,등급,별칭,학회저널,비고,고친이,고친때)"
+                " VALUES (?,?,?,?,?,?,?)", (이름, 등급, 별칭글, 학회저널, 비고.strip(), 누가, 때))
+        else:
+            try:
+                self._conn.execute(
+                    "UPDATE excellent_venues SET 이름=?,등급=?,별칭=?,학회저널=?,비고=?,고친이=?,고친때=?"
+                    " WHERE id=?", (이름, 등급, 별칭글, 학회저널, 비고.strip(), 누가, 때, id))
+            except sqlite3.IntegrityError as exc:
+                raise ValueError(f"같은 이름의 항목이 이미 있습니다: {이름}") from exc
+        self._conn.commit()
+        self._forget_excellent()
+        return dict(self._conn.execute(
+            "SELECT * FROM excellent_venues WHERE 이름=?", (이름,)).fetchone())
+
+    @atomic
+    def 우수_지우기(self, id: int) -> dict | None:
+        """리스트에서 뺀다. 그 학회·저널은 미분류가 된다 (일반 · 제외를 다시 고른다)."""
+        r = self._conn.execute("SELECT * FROM excellent_venues WHERE id=?", (id,)).fetchone()
+        if r is None:
+            return None
+        self._conn.execute("DELETE FROM excellent_venues WHERE id=?", (id,))
+        self._conn.commit()
+        self._forget_excellent()
+        return dict(r)
+
     # -- 등급 관리 -----------------------------------------------------------
     def tiers(self) -> list[sqlite3.Row]:
         return list(self._conn.execute("SELECT * FROM tiers ORDER BY 순서, 이름"))
@@ -775,6 +960,19 @@ class NameRegistry:
 
     def close(self) -> None:
         self._conn.close()
+
+
+def _손등급_검사(종류: str, 등급) -> None:
+    if (canonical_kind(종류) in GRADED_KINDS and 등급 is not None
+            and str(등급).strip() in LIST_TIERS):
+        raise 리스트등급오류(
+            f"'{str(등급).strip()}' 은 «우수 학회·저널 리스트» 에 올려야 붙습니다. "
+            "리스트 밖 학회·저널은 일반 · 제외로만 정합니다.")
+
+
+def _별칭들(글: str) -> list[str]:
+    """별칭 칸 (줄바꿈 · 세미콜론으로 구분 — 학회 이름에 쉼표가 들어가기도 한다)."""
+    return [x.strip() for x in re.split(r"[\n;]+", 글 or "") if x.strip()]
 
 
 def observe_record(rec, registry: NameRegistry) -> list[str]:

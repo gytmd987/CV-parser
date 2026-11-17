@@ -107,7 +107,8 @@ def test_observe_does_not_mutate_the_record(reg):
     rec = _rec()
     observe_record(rec, reg)
     icml = reg.lookup("학회", "International Conference on Machine Learning")
-    reg.classify(icml.id, 표시명="ICML", 등급="최우수", 국내해외="국내")
+    reg.우수_저장("ICML", "최우수")
+    reg.classify(icml.id, 표시명="ICML", 국내해외="국내")
 
     assert rec.논문[0].제출처 == "International Conference on Machine Learning"
     assert rec.논문[0].국내해외 == "해외"      # 저장값은 그대로
@@ -120,7 +121,7 @@ def test_reviewer_classification_beats_llm_guess(reg):
     rec = CVRecord(지원자_ID="T", 논문=[Paper(제출처="어떤학회", 유형="학회", 국내해외="국내")])
     observe_record(rec, reg)
     v = reg.lookup("학회", "어떤학회")
-    reg.classify(v.id, 등급="우수", 국내해외="해외")
+    reg.classify(v.id, 등급="일반", 국내해외="해외")
     assert rec.to_row(reg)["1저자_해외논문_제출처"].startswith("어떤학회")
 
 
@@ -142,7 +143,8 @@ def test_tier_counts(reg):
     for 제출처, 등급 in [("International Conference on Machine Learning", "최우수"),
                        ("NeurIPS", "우수")]:
         v = reg.lookup("학회", 제출처)
-        reg.classify(v.id, 등급=등급, 국내해외="해외")
+        reg.우수_저장(v.표시명, 등급)
+        reg.classify(v.id, 국내해외="해외")
     row = rec.to_row(reg)
     assert row["1저자_해외논문_최우수"] == "1"
     assert row["1저자_해외논문_우수"] == "1"
@@ -217,7 +219,8 @@ def test_classification_follows_the_display_name(reg):
     a = reg.observe("학회", "ICML")
     b = reg.observe("학회", "국제기계학습학회")
     reg.classify(b.id, 표시명="ICML")                    # 같은 이름으로 부르기로
-    reg.classify(a.id, 등급="최우수", 국내해외="해외")
+    reg.우수_저장("ICML", "최우수")
+    reg.classify(a.id, 국내해외="해외")
     assert reg.get(b.id).등급 == "최우수"
     assert reg.get(b.id).국내해외 == "해외"
 

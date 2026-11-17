@@ -28,7 +28,9 @@ def reg(tmp_path):
         ("무명학회", "학회", "미분류", ""),
     ):
         n = r.observe(종류, 이름)
-        r.classify(n.id, 등급=등급, 유형=종류, IF=IF, 국내해외="해외")
+        r.classify(n.id, 유형=종류, IF=IF, 국내해외="해외")
+        if 등급 in ("최우수", "우수"):              # 최우수 · 우수는 리스트에서
+            r.우수_저장(이름, 등급)
     return r
 
 
@@ -89,7 +91,7 @@ def test_연도가_없는_것은_맨_뒤로(reg):
 
 def test_IF_를_안_넣었으면_연도만(reg):
     n = reg.lookup("저널", "Nano Energy")
-    reg.classify(n.id, 등급="최우수", 유형="저널", IF="", 국내해외="해외")
+    reg.classify(n.id, 유형="저널", IF="", 국내해외="해외")
     rec = _사람(Paper(제출처="Nano Energy", 연도="2023", 유형="저널"))
     assert rec.등급별_제출처(reg)["최우수"] == "Nano Energy ('23) 1저자"
 
@@ -98,7 +100,9 @@ def test_이름과_등급과_IF_는_볼_때마다_사전에서_읽는다(reg):
     """명칭 관리에서 고치면 이미 등록된 표에도 곧바로 반영돼야 한다."""
     rec = _사람(Paper(제출처="Nano Energy", 연도="2023", 유형="저널"))
     n = reg.lookup("저널", "Nano Energy")
-    reg.classify(n.id, 표시명="Nano En.", 등급="우수", 유형="저널", IF="20", 국내해외="해외")
+    리스트 = next(x for x in reg.우수목록() if x["이름"] == "Nano Energy")
+    reg.우수_저장("Nano Energy", "우수", id=리스트["id"])
+    reg.classify(n.id, 표시명="Nano En.", 유형="저널", IF="20", 국내해외="해외")
     것 = rec.등급별_제출처(reg)
     assert "최우수" not in 것
     assert 것["우수"] == "Nano En. ('23, IF 20) 1저자"

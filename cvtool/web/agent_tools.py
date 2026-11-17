@@ -89,6 +89,13 @@ def _기록(me: User, cid: str, 비고: str, 항목: str = "", 새값: str = "")
    근거는 지원자 정보에 적힌 표현을 인용한다. 준 과제키만 쓰고 하나도 빠뜨리지 않는다.
 4. `match_submit(지원자_ID, result)` 로 보낸다.
 
+## 우수 학회·저널 리스트 (사람이 «리스트에 ○○ 넣어줘 / 정리해줘» 라고 하면)
+- 최우수 · 우수는 **이 리스트에 있는 학회·저널만** 된다. 나머지는 일반 · 제외(미분류)뿐이다.
+- `venue_list` 로 리스트를, `venue_names` 로 지원자 CV 에 실제로 나온 학회·저널과 지금 등급을 본다.
+- `venue_list_save` 로 넣거나 고친다 (이름이 같으면 고침). 약어 · 풀네임이 다르면 별칭에 같이 적는다.
+  사람이 정해 준 등급만 넣는다 — 스스로 판단해 최우수 · 우수를 매기지 않는다 (제안은 사람에게 먼저 보여 준다).
+- `venue_list_remove` 로 뺀다. 빼면 그 학회·저널은 미분류가 된다.
+
 ## 그 밖에
 - `candidates_search` · `candidate_get` · `projects_list` 로 저장된 정보를 본다.
 - `candidate_update` 로 지원자 항목 하나를 고친다 (사람이 시킨 것만). 이전값이 지금 값과
@@ -301,6 +308,70 @@ def _projects_list(me: User, args: dict) -> dict:
                     "담당": p.담당, "설명": p.설명} for p in _과제들()]}
 
 
+# --- 우수 학회·저널 리스트 -------------------------------------------------------------
+def _venue_list(me: User, args: dict) -> dict:
+    return {"리스트": [{k: x[k] for k in ("이름", "등급", "학회저널", "비고", "고친때", "고친이")}
+                    | {"별칭": [a for a in x["별칭"].split("\n") if a], "CV에서_걸린_이름": x["사전이름"]}
+                    for x in registry.우수목록()],
+            "규칙": "최우수 · 우수는 이 리스트에 있는 학회·저널만. 나머지는 일반 · 제외(미분류)."}
+
+
+def _venue_names(me: User, args: dict) -> dict:
+    말 = str(args.get("검색어") or "").strip().lower()
+    묶음: dict[str, dict] = {}
+    for n in registry.list_all("학회·저널"):
+        d = 묶음.setdefault(n.표시명, {"이름": n.표시명, "등급": n.등급, "학회저널": n.유형,
+                                    "표기들": [], "발견횟수": 0,
+                                    "리스트": bool(registry.우수등급(n.표시명))})
+        d["표기들"].append(n.원표기)
+        d["발견횟수"] += n.발견횟수
+    나온것 = [d for d in 묶음.values()
+            if not 말 or 말 in (d["이름"] + " " + " ".join(d["표기들"])).lower()]
+    나온것.sort(key=lambda d: -d["발견횟수"])
+    return {"개수": len(나온것), "학회저널": 나온것[:300]}
+
+
+def _venue_list_save(me: User, args: dict) -> dict:
+    from .pages.names import 우수리스트_기록
+
+    항목들 = args.get("항목")
+    if not isinstance(항목들, list) or not 항목들:
+        raise 도구오류('항목은 [{"이름": ..., "등급": "최우수|우수", "별칭": [...], "학회저널": "학회|저널", "비고": ...}] 입니다.')
+    전부 = {x["이름"]: x for x in registry.우수목록()}
+    결과, 실패 = [], []
+    for x in 항목들:
+        if not isinstance(x, dict):
+            실패.append({"항목": x, "이유": "객체가 아닙니다"})
+            continue
+        별칭 = x.get("별칭") or ""
+        if isinstance(별칭, list):
+            별칭 = "\n".join(str(a) for a in 별칭)
+        이름 = str(x.get("이름") or "").strip()
+        전 = 전부.get(이름)
+        try:
+            후 = registry.우수_저장(이름, str(x.get("등급") or ""), 별칭=str(별칭),
+                               학회저널=str(x.get("학회저널") or ""), 비고=str(x.get("비고") or ""),
+                               누가=me.아이디, id=전["id"] if 전 else None)
+        except ValueError as exc:
+            실패.append({"이름": 이름, "이유": str(exc)})
+            continue
+        우수리스트_기록(me.아이디, 전, 후)
+        결과.append({"이름": 후["이름"], "등급": 후["등급"], "처리": "고침" if 전 else "넣음"})
+    return {"저장": 결과, **({"실패": 실패} if 실패 else {})}
+
+
+def _venue_list_remove(me: User, args: dict) -> dict:
+    from .pages.names import 우수리스트_기록
+
+    이름 = str(args.get("이름") or "").strip()
+    x = next((x for x in registry.우수목록() if x["이름"] == 이름), None)
+    if x is None:
+        raise 도구오류(f"리스트에 없는 이름입니다: {이름} (venue_list 의 이름 그대로)")
+    뺀것 = registry.우수_지우기(x["id"])
+    우수리스트_기록(me.아이디, 뺀것, None)
+    return {"뺌": 이름, "알림": "이 학회·저널은 이제 미분류입니다."}
+
+
 # --- 도구 표 -------------------------------------------------------------------------
 도구들: dict[str, 도구] = {t.이름: t for t in (
     도구("guide", "이 시스템을 에이전트로 쓰는 방법 (처음에 한 번 읽는다).", _입력(), "지원자_목록",
@@ -335,6 +406,19 @@ def _projects_list(me: User, args: dict) -> dict:
            이전값=_글("지금 값 (candidate_get 에서 읽은 그대로, 비어 있으면 빈 문자열)")),
        "지원자_수정", _candidate_update),
     도구("projects_list", "회사 연구 과제 목록 (매칭에 쓰는 것).", _입력(), "과제매칭_조회", _projects_list),
+    도구("venue_list", "우수 학회·저널 리스트 (최우수 · 우수는 여기 있는 것만).", _입력(), "명칭_관리", _venue_list),
+    도구("venue_names", "지원자 CV 에 나온 학회·저널 이름 · 지금 등급 · 리스트 여부 (많이 나온 순).",
+       _입력(검색어=_글("찾을 글자 (비우면 전체)")), "명칭_관리", _venue_names),
+    도구("venue_list_save", "우수 학회·저널 리스트에 넣거나 고친다 (이름이 같으면 고침). 사람이 정해 준 것만.",
+       _입력(("항목",), 항목={"type": "array", "description": "넣거나 고칠 항목들", "items": {
+           "type": "object", "required": ["이름", "등급"], "properties": {
+               "이름": {"type": "string"}, "등급": {"type": "string", "enum": ["최우수", "우수"]},
+               "별칭": {"type": "array", "items": {"type": "string"}, "description": "약어 · 다른 표기"},
+               "학회저널": {"type": "string", "enum": ["", "학회", "저널"]},
+               "비고": {"type": "string"}}}}),
+       "명칭_관리", _venue_list_save),
+    도구("venue_list_remove", "우수 학회·저널 리스트에서 뺀다 (그 학회·저널은 미분류가 된다).",
+       _입력(("이름",), 이름=_글("venue_list 의 이름 그대로")), "명칭_관리", _venue_list_remove),
 )}
 
 

@@ -19,7 +19,8 @@ def reg(tmp_path):
     r = NameRegistry(tmp_path / "n.db")
     for 이름, 등급 in (("CVPR", "최우수"), ("Nano Energy", "최우수")):
         나 = r.observe("학회" if 이름 == "CVPR" else "저널", 이름)
-        r.classify(나.id, 등급=등급, 국내해외="해외",
+        r.우수_저장(이름, 등급)
+        r.classify(나.id, 국내해외="해외",
                    유형="학회" if 이름 == "CVPR" else "저널",
                    IF="" if 이름 == "CVPR" else "17.9")
     return r

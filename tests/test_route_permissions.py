@@ -75,6 +75,7 @@ GET_정책 = {
     "/mcp": 무관,                    # 로그인 대신 에이전트 토큰으로만 (따로 시험)
     "/match/curate": 거부,
     "/names": 거부,
+    "/names/excellent": 거부,
     "/org": 거부,
     "/org/edit": 거부,
     "/status/rows": 거부,            # 업로드 현황 조각 (지원자 추가 권한과 같다)
@@ -147,6 +148,8 @@ POST_정책 = {
     "/match/import/apply": 거부,
     "/match/import/reset": 거부,
     "/admin/settings": 거부,
+    "/names/excellent/save": 거부,
+    "/names/excellent/delete": 거부,
     "/admin/agent/token": 거부,
     "/admin/agent/token/toggle": 거부,
     "/admin/agent/token/delete": 거부,

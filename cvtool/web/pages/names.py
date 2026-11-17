@@ -7,7 +7,10 @@ import html
 import urllib.parse
 
 from ...auth import User
-from ...names import AUTO_CAREER, AUTO_SAME_NAME, canonical_kind, GRADED_KINDS, KINDS, SUBTYPES
+from ...names import (
+    AUTO_CAREER, AUTO_SAME_NAME, canonical_kind, GRADED_KINDS, KINDS, LIST_TIERS, SUBTYPES,
+    리스트등급오류,
+)
 
 from ..state import audit, registry
 from ..layout import _page, _알림, _없는주소
@@ -30,7 +33,8 @@ def _names_page(종류: str, me: User | None = None,
     if 종류 not in KINDS:
         종류 = "학회·저널"
     전부 = registry.list_all(종류)           # 표시명 오름차순이 기본
-    등급목록 = registry.tier_names()
+    # 최우수 · 우수는 리스트에서만 정한다 — 여기서는 고를 수 없다
+    등급목록 = [g for g in registry.tier_names() if g not in LIST_TIERS]
     등급종류 = 종류 in GRADED_KINDS
 
     # 아직 사람이 안 본 줄을 **위로** 올린다. 할 일이 화면 아래로 밀려나면
@@ -61,7 +65,15 @@ def _names_page(종류: str, me: User | None = None,
             for t in registry.tiers()
             if t["이름"] != "미분류"
         )
+        목록 = registry.우수목록()
         등급열 = (
+            "<div class='card'><h2>우수 학회·저널 리스트 "
+            f"<span class='muted'>최우수 {sum(1 for x in 목록 if x['등급'] == '최우수')} · "
+            f"우수 {sum(1 for x in 목록 if x['등급'] == '우수')}</span></h2>"
+            "<p class='muted'><b>최우수 · 우수는 이 리스트에 있는 학회·저널만</b> 됩니다. 나머지는 아래 표에서 "
+            "일반 · 제외로만 정합니다. 리스트에 올리면 같은 학회·저널로 읽히는 표기(약어 · 연도 붙은 것 · "
+            "별칭)에 저절로 붙습니다.</p>"
+            "<p><a class='btn' href='/names/excellent'>리스트 관리</a></p></div>"
             "<div class='card'><h2>표에 개수 열로 낼 등급</h2>"
             "<form method='post' action='/names/tiers'>"
             f"<input type='hidden' name='kind' value='{html.escape(종류)}'>"
@@ -95,6 +107,10 @@ def _names_page(종류: str, me: User | None = None,
                 f"<option{' selected' if g == i.등급 else ''}>{html.escape(g)}</option>"
                 for g in 등급목록
             )
+            등급고르기 = (
+                _리스트등급(i.등급) if i.등급 in LIST_TIERS else
+                f"<select form='saveform' name='등급_{i.id}'"
+                f" data-orig='{html.escape(i.등급)}' onchange='markDirty(this)'>{등급opt}</select>")
             해외opt = "".join(
                 f"<option{' selected' if v == i.국내해외 else ''}>{v}</option>"
                 for v in ("불명", "해외", "국내")
@@ -103,8 +119,7 @@ def _names_page(종류: str, me: User | None = None,
                 f"<td class='ctl'><select form='saveform' name='유형_{i.id}'"
                 f" data-orig='{html.escape(i.유형)}' onchange='markDirty(this)'>{유형opt}"
                 f"</select></td>"
-                f"<td class='ctl'><select form='saveform' name='등급_{i.id}'"
-                f" data-orig='{html.escape(i.등급)}' onchange='markDirty(this)'>{등급opt}</select></td>"
+                f"<td class='ctl'>{등급고르기}</td>"
                 f"<td class='ctl'><select form='saveform' name='국내해외_{i.id}'"
                 f" data-orig='{html.escape(i.국내해외)}' onchange='markDirty(this)'>{해외opt}"
                 f"</select></td>"
@@ -247,6 +262,13 @@ def _names_page(종류: str, me: User | None = None,
     )
 
 
+def _리스트등급(등급: str) -> str:
+    """리스트에서 온 등급 — 여기서는 못 바꾼다 (리스트로 가는 길만)."""
+    return (f"<a href='/names/excellent' title='우수 학회·저널 리스트에서 정합니다'>"
+            f"<span class='pill p-완료'>{html.escape(등급)}</span></a>"
+            " <span class='muted'>리스트</span>")
+
+
 def _names_group_table(종류: str, 전부: list, 무리: dict, 등급목록: list[str],
                        등급종류: bool) -> tuple[str, str]:
     """이름별 화면 — **이름 하나당 한 줄**. (저장바, 표) 를 돌려준다.
@@ -276,7 +298,8 @@ def _names_group_table(종류: str, 전부: list, 무리: dict, 등급목록: li
                         f"{opts}</select></td>")
             분류칸 = (
                 고르개("유형", SUBTYPES, 대표.유형)
-                + 고르개("등급", 등급목록, 대표.등급)
+                + (f"<td class='ctl'>{_리스트등급(대표.등급)}</td>" if 대표.등급 in LIST_TIERS
+                   else 고르개("등급", 등급목록, 대표.등급))
                 + 고르개("국내해외", ("불명", "해외", "국내"), 대표.국내해외)
                 + f"<td class='ctl'><input type='text' form='groupform' name='IF_{g}'"
                 f" value='{html.escape(대표.IF)}' style='width:64px' placeholder='예: 12.5'"
@@ -378,14 +401,17 @@ def post_names_save(self, me, path):
         이전 = registry.get(nid)
         if 이전 is None:
             continue
-        registry.classify(
-            nid,
-            표시명=(data.get(f"표시명_{nid}") or [None])[0],
-            등급=(data.get(f"등급_{nid}") or [None])[0],
-            국내해외=(data.get(f"국내해외_{nid}") or [None])[0],
-            유형=(data.get(f"유형_{nid}") or [None])[0],
-            IF=(data.get(f"IF_{nid}") or [""])[0] if f"IF_{nid}" in data else None,
-        )
+        try:
+            registry.classify(
+                nid,
+                표시명=(data.get(f"표시명_{nid}") or [None])[0],
+                등급=(data.get(f"등급_{nid}") or [None])[0],
+                국내해외=(data.get(f"국내해외_{nid}") or [None])[0],
+                유형=(data.get(f"유형_{nid}") or [None])[0],
+                IF=(data.get(f"IF_{nid}") or [""])[0] if f"IF_{nid}" in data else None,
+            )
+        except 리스트등급오류 as exc:
+            return self._redirect(f"{뒤로}&err=" + urllib.parse.quote(str(exc)))
         이후 = registry.get(nid)
         if 이후 is None:
             continue
@@ -497,7 +523,10 @@ def post_names_save_groups(self, me, path):
             새값 = {열: (data.get(f"{열}_{g}") or [None])[0]
                    for 열 in ("유형", "등급", "국내해외", "IF")
                    if f"{열}_{g}" in data}
-            registry.set_class(kind, 옛이름, **새값)
+            try:
+                registry.set_class(kind, 옛이름, **새값)
+            except 리스트등급오류 as exc:
+                return self._redirect(f"{뒤로}&err=" + urllib.parse.quote(str(exc)))
             후 = registry.class_of(kind, 옛이름)
             변경 = [(열, 전[열], 후[열]) for 열 in ("유형", "등급", "국내해외", "IF")
                   if 전[열] != 후[열]]
@@ -582,3 +611,116 @@ def post_names_tiers(self, me, path):
             registry.set_tier_column(t["이름"], t["이름"] in 켠것)
     return self._redirect(f"/names?kind={urllib.parse.quote(kind)}")
     return _없는주소(self)
+
+
+# --- 우수 학회·저널 리스트 ------------------------------------------------------------
+def _excellent_page(me: User, msg: str = "", err: str = "") -> bytes:
+    목록 = registry.우수목록()
+
+    def 등급고르개(현재: str, 폼: str = "") -> str:
+        return (f"<select name='등급'{폼}>" + "".join(
+            f"<option{' selected' if g == 현재 else ''}>{g}</option>" for g in LIST_TIERS)
+            + "</select>")
+
+    def 유형고르개(현재: str, 폼: str = "") -> str:
+        return (f"<select name='학회저널'{폼}>" + "".join(
+            f"<option value='{v}'{' selected' if v == 현재 else ''}>{v or '-'}</option>"
+            for v in ("", "학회", "저널")) + "</select>")
+
+    줄 = []
+    for x in 목록:
+        폼 = f" form='ev{x['id']}'"
+        걸림 = ", ".join(x["사전이름"][:6]) + (" 외" if len(x["사전이름"]) > 6 else "")
+        줄.append(
+            f"<tr><td class='ctl'><form id='ev{x['id']}' method='post' action='/names/excellent/save'>"
+            f"<input type='hidden' name='id' value='{x['id']}'></form>"
+            f"<input name='이름' value='{html.escape(x['이름'])}'{폼} style='width:100%;min-width:180px'></td>"
+            f"<td class='ctl'>{등급고르개(x['등급'], 폼)}</td>"
+            f"<td class='ctl'>{유형고르개(x['학회저널'], 폼)}</td>"
+            f"<td class='ctl'><textarea name='별칭'{폼} rows='2' style='width:100%;min-width:200px'"
+            f" placeholder='줄마다 하나 (약어 · 다른 표기)'>{html.escape(x['별칭'])}</textarea></td>"
+            f"<td class='ctl'><input name='비고'{폼} value='{html.escape(x['비고'])}' style='width:100%'></td>"
+            f"<td class='ctl'>{html.escape(걸림) or '<span class=muted>아직 CV 에 안 나옴</span>'}</td>"
+            f"<td class='ctl muted'>{html.escape(x['고친때'])}<br>{html.escape(x['고친이'])}</td>"
+            f"<td class='ctl'><button{폼}>저장</button> "
+            "<form method='post' action='/names/excellent/delete' style='display:inline'"
+            " onsubmit=\"return confirm('리스트에서 빼면 이 학회·저널은 미분류가 됩니다 (일반 · 제외를 다시 고릅니다).')\">"
+            f"<input type='hidden' name='id' value='{x['id']}'><button class='danger'>빼기</button></form></td></tr>")
+    표 = "".join(줄) or "<tr><td colspan='8' class='muted'>아직 리스트가 비어 있습니다.</td></tr>"
+    return _page(
+        "우수 학회·저널 리스트",
+        _알림(msg=msg, err=err)
+        + "<div class='card'><h2>우수 학회·저널 리스트</h2>"
+        "<p class='muted'><b>최우수 · 우수는 이 리스트에 있는 학회·저널만</b> 됩니다. 리스트에 없는 학회·저널은 "
+        "<a href='/names?kind=" + urllib.parse.quote("학회·저널") + "'>명칭 관리</a>에서 일반 · 제외로만 정합니다.</p>"
+        "<p class='muted'>CV 의 표기와는 <b>묶기 키</b>로 맞춥니다 — 대소문자 · 괄호 · 연도 · "
+        "Proc./Conference/Journal 같은 말을 빼고 견줍니다 (<code>Proc. of ICML 2023</code> → ICML). "
+        "약어와 풀네임이 다르면 별칭에 적어 두세요. 사내 코워크도 같은 리스트를 고칠 수 있습니다.</p>"
+        "<form method='post' action='/names/excellent/save' class='mergebar'>"
+        "<input name='이름' placeholder='학회·저널 이름 (예: CVPR)' required style='min-width:220px'>"
+        + 등급고르개("최우수") + 유형고르개("")
+        + "<input name='별칭' placeholder='별칭 (; 로 구분)' style='min-width:220px'>"
+        "<input name='비고' placeholder='비고'><button>리스트에 넣기</button></form></div>"
+        + f"<div class='card'><h2>리스트 {len(목록)}개</h2><div class='scroll'><table>"
+        "<tr><th>이름</th><th>등급</th><th>학회/저널</th><th>별칭</th><th>비고</th>"
+        "<th>CV 에서 걸린 이름</th><th>고친 때</th><th></th></tr>"
+        + 표 + "</table></div></div>",
+        me=me)
+
+
+@라우트("GET", '/names/excellent', 권한='명칭_관리')
+def get_names_excellent(self, me, path):
+    q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+    return self._send(_excellent_page(me, (q.get("msg") or [""])[0], (q.get("err") or [""])[0]))
+    return _없는주소(self)
+
+
+@라우트("POST", '/names/excellent/save', 권한='명칭_관리')
+def post_names_excellent_save(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"), keep_blank_values=True)
+    값 = {k: (data.get(k) or [""])[0] for k in ("이름", "등급", "별칭", "학회저널", "비고", "id")}
+    try:
+        id = int(값["id"]) if 값["id"] else None
+    except ValueError:
+        id = None
+    전 = next((x for x in registry.우수목록() if x["id"] == id), None) if id else None
+    try:
+        후 = registry.우수_저장(값["이름"], 값["등급"], 별칭=값["별칭"], 학회저널=값["학회저널"],
+                           비고=값["비고"], 누가=me.아이디, id=id)
+    except ValueError as exc:
+        return self._redirect("/names/excellent?err=" + urllib.parse.quote(str(exc)))
+    우수리스트_기록(me.아이디, 전, 후)
+    return self._redirect("/names/excellent?msg=" + urllib.parse.quote(
+        f"{후['이름']}: {후['등급']} 으로 {'고쳤' if 전 else '넣었'}습니다."))
+    return _없는주소(self)
+
+
+@라우트("POST", '/names/excellent/delete', 권한='명칭_관리')
+def post_names_excellent_delete(self, me, path):
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
+    try:
+        뺀것 = registry.우수_지우기(int((data.get("id") or ["0"])[0]))
+    except ValueError:
+        뺀것 = None
+    if not 뺀것:
+        return self._redirect("/names/excellent?err=" + urllib.parse.quote("없는 항목입니다."))
+    우수리스트_기록(me.아이디, 뺀것, None)
+    return self._redirect("/names/excellent?msg=" + urllib.parse.quote(
+        f"{뺀것['이름']} 을(를) 리스트에서 뺐습니다 — 이제 미분류입니다."))
+    return _없는주소(self)
+
+
+def 우수리스트_기록(누가: str, 전: dict | None, 후: dict | None) -> None:
+    """리스트 변경을 변경 이력에 (사람 · 사내 코워크 같이 쓴다)."""
+    이름 = (후 or 전 or {}).get("이름", "")
+    if 전 is None:
+        audit.record(누가, "명칭", f"우수리스트:{이름}", 항목="등급", 이전값="", 새값=후["등급"],
+                     비고="우수 학회·저널 리스트에 넣음")
+    elif 후 is None:
+        audit.record(누가, "명칭", f"우수리스트:{이름}", 항목="등급", 이전값=전["등급"], 새값="",
+                     비고="우수 학회·저널 리스트에서 뺌")
+    else:
+        for 열 in ("이름", "등급", "별칭", "학회저널", "비고"):
+            if (전.get(열) or "") != (후.get(열) or ""):
+                audit.record(누가, "명칭", f"우수리스트:{이름}", 항목=열,
+                             이전값=전.get(열) or "", 새값=후.get(열) or "")

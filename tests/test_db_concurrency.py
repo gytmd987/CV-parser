@@ -173,7 +173,7 @@ def test_the_name_registry_survives_a_crowd(tmp_path):
         try:
             for i in range(40):
                 reg.observe("학회·저널", f"새학회{i}", 국내해외="국내")
-                reg.classify(reg.observe("학회·저널", f"학회{i % 30}").id, 등급="우수")
+                reg.classify(reg.observe("학회·저널", f"학회{i % 30}").id, 등급="일반")
         except Exception as e:                     # noqa: BLE001
             오류.append(repr(e))
 
