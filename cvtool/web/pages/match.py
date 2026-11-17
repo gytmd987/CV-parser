@@ -187,7 +187,7 @@ def _projects_page(me: User, error: str = "", msg: str = "") -> bytes:
         f"<tr><th>맞춰본 지원자</th><td>{store.matched_count()}명 "
         f"/ 전체 {store.count()}명</td></tr>"
         f"<tr><th>자동 매칭</th><td>{'켜짐' if settings.match_auto else '꺼짐'} "
-        "<span class='muted'>(CVTOOL_MATCH_AUTO)</span></td></tr>"
+        "<span class='muted'>(운영 설정)</span></td></tr>"
         f"<tr><th>비교 방식</th><td>과제 <b>전부</b>와 비교 · "
         f"한 번에 {settings.match_batch}개씩 물어봄 "
         "<span class='muted'>(CVTOOL_MATCH_BATCH)</span></td></tr></table>"

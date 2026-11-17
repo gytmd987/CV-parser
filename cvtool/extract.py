@@ -351,6 +351,18 @@ def _지원자이름(data: dict) -> str:
     return 이름 or "(파악 실패)"
 
 
+def _전체안내() -> str:
+    """네 부분을 한 번에 채우라는 안내문 (한 번에 추출 · 에이전트가 같이 쓴다)."""
+    return _ALL_HINT.format(
+        basic=_BASIC_HINT,
+        edu=_EDU_HINT,
+        research=_RESEARCH_HINT.format(
+            이름="이력서 맨 앞에 적힌 본인 이름 (한글·영문 모두 같은 사람으로 봐라)"
+        ),
+        career=_CAREER_HINT,
+    )
+
+
 def _한번에(llm: LLMClient, text: str, digest: str,
           data: dict, 사유: list[str]) -> bool:
     """네 부분을 **한 호출로**. 성공하면 True.
@@ -366,14 +378,7 @@ def _한번에(llm: LLMClient, text: str, digest: str,
     논문 안내문에 넣어 줄 수 있는데, 한 번에 받으면 그럴 수가 없다. 그래서
     이력서에 적힌 이름으로 스스로 판단하라고 일러둔다.
     """
-    hint = _ALL_HINT.format(
-        basic=_BASIC_HINT,
-        edu=_EDU_HINT,
-        research=_RESEARCH_HINT.format(
-            이름="이력서 맨 앞에 적힌 본인 이름 (한글·영문 모두 같은 사람으로 봐라)"
-        ),
-        career=_CAREER_HINT,
-    )
+    hint = _전체안내()
     try:
         답 = _ask(llm, hint, SECTION_ALL, text, digest, "all")
     except LLMTruncated as exc:
@@ -782,3 +787,55 @@ def extract_cv_from_file(
         two_stage=two_stage,
         oneshot=oneshot,
     )
+
+
+# ---------------------------------------------------------------------------
+# 에이전트(사내 클코 등)가 LLM 대신 판단할 때
+# ---------------------------------------------------------------------------
+# 시스템이 LLM 에 보내던 지시문 · 스키마를 그대로 에이전트에게 주고, 돌려받은 JSON 을
+# **LLM 답과 똑같은 길**(`extract_cv_from_text` → `_assemble`)로 정리한다. 그래서 누가
+# 판단하든 정규화 · 검토 표시 · 이름 대조가 같다.
+
+#: 에이전트 결과의 네 부분
+에이전트_부분 = ("basic", "education", "research", "career")
+
+
+def 에이전트_요청(cv_text: str) -> dict:
+    """에이전트에게 줄 CV 분석 일감: 지시문 · 원문 · 결과 스키마."""
+    text, 경고 = guard_length(cv_text)
+    return {
+        "system": _SYSTEM,
+        "instructions": _전체안내() + "\n\n결과는 아래 schema 에 맞는 JSON 객체 하나로 보낸다 "
+                        "(최상위 키: basic · education · research · career). 모르는 값은 빈 문자열.",
+        "cv_text": text,
+        "schema": SECTION_ALL,
+        **({"주의": 경고} if 경고 else {}),
+    }
+
+
+class _정해진답:
+    """LLM 자리에 끼우는 가짜 — 에이전트가 준 답을 그대로 돌려준다."""
+
+    def __init__(self, 답: dict) -> None:
+        self.답 = 답
+
+    def chat_json(self, messages, schema, *, schema_name: str = "", **_k) -> dict:
+        if schema_name == "all":
+            return self.답
+        조각 = self.답.get(schema_name)
+        return 조각 if isinstance(조각, dict) else {}
+
+    def chat_text(self, *_a, **_k) -> str:
+        return ""
+
+    def close(self) -> None:
+        pass
+
+
+def 에이전트_결과로(cv_text: str, 답: dict, *, 지원자_ID: str, 원본_파일명: str = "") -> CVRecord:
+    """에이전트가 돌려준 JSON → CVRecord (LLM 답과 같은 정리를 거친다)."""
+    if not isinstance(답, dict) or not any(isinstance(답.get(k), dict) for k in 에이전트_부분):
+        raise ValueError("결과에 basic · education · research · career 가 하나도 없습니다. "
+                         "cv_task 가 준 schema 모양대로 보내 주세요.")
+    return extract_cv_from_text(cv_text, client=_정해진답(답), 지원자_ID=지원자_ID,
+                                원본_파일명=원본_파일명, two_stage=False, oneshot=True)

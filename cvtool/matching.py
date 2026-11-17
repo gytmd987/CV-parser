@@ -342,3 +342,36 @@ def match(profile: str, projects: list[Project], *, client: LLMClient | None = N
     나온것.sort(key=lambda m: (m.평가됨, m.점수, m.유사도 if m.유사도 is not None else -1),
               reverse=True)
     return 나온것
+
+
+# ---------------------------------------------------------------------------
+# 에이전트(사내 클코 등)가 LLM 대신 판단할 때
+# ---------------------------------------------------------------------------
+def 에이전트_요청(profile: str, projects: list[Project]) -> dict:
+    """에이전트에게 줄 매칭 일감 — LLM 에 보내던 지시문 그대로 (과제는 한 번에 전부)."""
+    메시지 = _prompt(profile, projects)
+    return {"system": 메시지[0]["content"], "user": 메시지[1]["content"],
+            "schema": MATCH_SCHEMA, "과제수": len(projects)}
+
+
+class _정해진답:
+    def __init__(self, 답: dict) -> None:
+        self.답 = 답
+
+    def chat_json(self, *_a, **_k) -> dict:
+        return self.답
+
+    def close(self) -> None:
+        pass
+
+
+def 에이전트_결과로(profile: str, projects: list[Project], 답: dict,
+                embed_client=None) -> list[Match]:
+    """에이전트가 돌려준 {"결과": [...]} → Match 목록 (LLM 답과 같은 정리 · 정렬)."""
+    if not isinstance(답, dict) or not isinstance(답.get("결과"), list):
+        raise ValueError('결과는 {"결과": [{"과제키", "등급", "사유", "근거"}, ...]} 모양이어야 합니다.')
+    틀린등급 = sorted({str(x.get("등급")) for x in 답["결과"]
+                     if isinstance(x, dict) and str(x.get("등급") or "") not in 등급점수})
+    if 틀린등급:
+        raise ValueError(f"모르는 등급: {', '.join(틀린등급)} — {' · '.join(GRADES)} 중에서 고르세요.")
+    return match(profile, projects, client=_정해진답(답), embed_client=embed_client, batch=0)

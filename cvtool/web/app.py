@@ -38,8 +38,8 @@ from .router import 라우터, 통과
 #: 테스트는 새 임시 폴더를 가리킨 뒤 이 모듈을 **다시 읽는다**(reload). 그때 나눈
 #: 모듈들도 이 차례대로 다시 읽어야 화면들이 새 DB(`state.store` …)를 가리킨다.
 _모듈차례 = (
-    "state", "jobs", "columns", "mail_targets", "layout",
-    "pages.login", "pages.help", "pages.todo", "pages.match", "pages.find", "pages.org", "pages.names", "pages.mail",
+    "state", "jobs", "agent_tools", "columns", "mail_targets", "layout",
+    "pages.login", "pages.agent", "pages.help", "pages.todo", "pages.match", "pages.find", "pages.org", "pages.names", "pages.mail",
     "pages.recruit", "pages.fields", "pages.dashboard", "pages.candidates",
 )
 _다시읽기 = "_모듈들" in globals()

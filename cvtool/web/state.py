@@ -22,6 +22,11 @@ WEB_PASSWORD = os.environ.get("CVTOOL_WEB_PASSWORD", "")
 HOST = os.environ.get("CVTOOL_WEB_HOST", "0.0.0.0")
 PORT = int(os.environ.get("CVTOOL_WEB_PORT", "8600"))
 
+# 관리자가 화면(운영 설정)에서 바꾼 값을 읽는다. .env 값 위에 덮어쓴다.
+from ..config import settings as _settings  # noqa: E402
+
+_settings.파일쓰기(DATA_DIR / "운영설정.json")
+
 CONTENT_TYPES = {
     ".pdf": "application/pdf",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",

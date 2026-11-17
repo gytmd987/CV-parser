@@ -118,5 +118,116 @@ class Settings:
     # --- 시간대 (서버 시계는 UTC, 표시는 항상 KST) ---
     timezone: str = _env("CVTOOL_TZ", "Asia/Seoul")
 
+    # --- AI 분석을 누가 하나 ---
+    # server : 이 시스템이 사내 LLM(위 CVTOOL_LLM_*)을 직접 부른다
+    # agent  : LLM 을 부르지 않는다. CV 분석 · 과제 매칭을 «대기» 로 쌓아 두고,
+    #          사내 클코 같은 에이전트가 MCP/API 로 가져가 판단해 돌려준다.
+    llm_mode: str = _env("CVTOOL_LLM_MODE", "server")
+    # 에이전트(MCP · API) 접속을 받을지. 토큰이 있어도 이게 꺼져 있으면 모두 거절한다.
+    agent_api: bool = _env("CVTOOL_AGENT_API", "0").lower() in ("1", "true", "yes")
 
-settings = Settings()
+
+#: 관리자가 화면(운영 설정)에서 바꿀 수 있는 항목. 비밀값·주소는 넣지 않는다 (.env 로만).
+#: (이름, 라벨, 종류, 설명) — 종류: bool · int · 고르기:값=라벨|값=라벨
+운영항목 = (
+    ("llm_mode", "AI 분석을 누가 하나", "고르기:server=서버 LLM|agent=사내 클코 (에이전트)",
+     "사내 클코를 고르면 시스템이 LLM 을 부르지 않습니다. CV 분석 · 과제 매칭이 «대기» 로 쌓이고, "
+     "클코에게 «대기 중인 것 처리해줘» 라고 시키면 클코가 가져가 처리합니다."),
+    ("agent_api", "에이전트 접속 받기 (MCP · API)", "bool",
+     "끄면 토큰이 있어도 모든 에이전트 요청을 거절합니다."),
+    ("match_auto", "CV 분석 뒤 과제 매칭 자동", "bool",
+     "서버 LLM 일 때만 시스템이 바로 맞춰 봅니다. 사내 클코일 때는 매칭 대기로 쌓입니다."),
+    ("mail_dry_run", "메일 연습 모드 (실제로 안 보냄)", "bool",
+     "켜져 있으면 발송을 눌러도 기록만 남고 메일은 나가지 않습니다."),
+    ("store_cv_text", "CV 원문 텍스트 보관", "bool",
+     "켜면 재업로드 없이 재분석할 수 있지만 CV 전문이 DB 에 남습니다."),
+    ("two_stage", "서버 LLM: 2단계 추출 (먼저 읽고 정리)", "bool", "서버 LLM 일 때만 씁니다."),
+    ("oneshot", "서버 LLM: 한 번에 추출", "bool", "서버 LLM 일 때만 씁니다. 빠르지만 정확도는 직접 확인하세요."),
+    ("match_show", "지원자 상세에 보여 줄 상위 과제 수", "int", ""),
+)
+
+
+class 운영설정:
+    """`Settings` 에 관리자가 화면에서 바꾼 값을 덮어 보여 준다.
+
+    `.env` 값이 기본이고, 운영 설정 파일(데이터 폴더의 운영설정.json)에 있는 항목만
+    덮어쓴다. 코드는 지금처럼 `settings.match_auto` 로 읽으면 된다 — 바꾸면 다음
+    읽을 때부터 바로 반영된다 (다시 켤 필요 없음).
+    """
+
+    # dataclasses.replace(settings, …) 가 그대로 되게 (테스트가 많이 쓴다)
+    __dataclass_fields__ = Settings.__dataclass_fields__
+    __dataclass_params__ = Settings.__dataclass_params__
+
+    def __init__(self, 기본: Settings | None = None, **값) -> None:
+        if 기본 is None:
+            기본 = Settings(**값)
+        object.__setattr__(self, "기본값", 기본)
+        object.__setattr__(self, "_덮어씀", {})
+        object.__setattr__(self, "_파일", None)
+
+    def __getattr__(self, 이름: str):
+        덮어씀 = object.__getattribute__(self, "_덮어씀")
+        if 이름 in 덮어씀:
+            return 덮어씀[이름]
+        return getattr(object.__getattribute__(self, "기본값"), 이름)
+
+    def __setattr__(self, 이름, 값):
+        raise AttributeError("설정은 운영설정.바꾸기() 로만 바꿉니다")
+
+    # -- 운영 설정 파일 --------------------------------------------------------
+    def 파일쓰기(self, 경로) -> None:
+        """운영 설정 파일 위치를 정하고 읽는다 (웹 앱이 뜰 때 한 번)."""
+        from pathlib import Path
+
+        object.__setattr__(self, "_파일", Path(경로))
+        self._덮어씀.clear()
+        try:
+            import json
+
+            저장 = json.loads(Path(경로).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            저장 = {}
+        for 이름, 값 in (저장 or {}).items():
+            try:
+                self._덮어씀[이름] = _맞추기(이름, 값)
+            except (KeyError, ValueError):
+                continue
+
+    def 바꾸기(self, 값들: dict) -> dict:
+        """{이름: 새 값} 을 덮어쓰고 파일에 남긴다. 실제로 바뀐 것 {이름: (전, 후)}."""
+        바뀐 = {}
+        for 이름, 값 in 값들.items():
+            새 = _맞추기(이름, 값)
+            전 = getattr(self, 이름)
+            if 새 != 전:
+                바뀐[이름] = (전, 새)
+            self._덮어씀[이름] = 새
+        if self._파일 is not None:
+            import json
+
+            self._파일.parent.mkdir(parents=True, exist_ok=True)
+            self._파일.write_text(json.dumps(self._덮어씀, ensure_ascii=False, indent=1),
+                                 encoding="utf-8")
+        return 바뀐
+
+    def 화면에서_바꿈(self, 이름: str) -> bool:
+        return 이름 in self._덮어씀
+
+
+def _맞추기(이름: str, 값):
+    """운영 항목 값을 제 모양으로. 모르는 항목이면 KeyError, 값이 틀리면 ValueError."""
+    종류 = next(k for n, _l, k, _d in 운영항목 if n == 이름)
+    if 종류 == "bool":
+        if isinstance(값, bool):
+            return 값
+        return str(값).strip().lower() in ("1", "true", "yes", "on", "켜짐")
+    if 종류 == "int":
+        return max(0, int(str(값).strip()))
+    고를것 = [x.split("=", 1)[0] for x in 종류.split(":", 1)[1].split("|")]
+    if str(값) not in 고를것:
+        raise ValueError(f"{이름}: {값}")
+    return str(값)
+
+
+settings = 운영설정(Settings())

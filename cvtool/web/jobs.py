@@ -76,8 +76,19 @@ def 과제목록(다시: bool = False) -> tuple[list, str]:
     return _projects_cache["목록"], _projects_cache["오류"]
 
 
+#: 사내 클코(에이전트) 모드일 때 시스템이 LLM 일을 하려 하면 보여 줄 말
+에이전트모드말 = ("지금은 «사내 클코» 가 AI 분석을 하는 모드라 시스템이 LLM 을 부르지 않습니다. "
+              "클코에게 «매칭 대기 처리해줘» 라고 시키세요 (운영 설정에서 바꿀 수 있습니다).")
+
+
+def 에이전트모드() -> bool:
+    return settings.llm_mode == "agent"
+
+
 def 매칭실행(rec, *, 사용자: str = "") -> tuple[int, str]:
     """지원자 한 명을 과제와 맞춰 보고 저장한다. (매칭 수, 오류 메시지)"""
+    if 에이전트모드():
+        return 0, 에이전트모드말
     목록, 오류 = 과제목록()
     if 오류:
         return 0, 오류
@@ -130,6 +141,23 @@ def _set_status(name: str, state: str, message: str = "", cid: str = "") -> None
         }
 
 
+#: 메모리 대기열에 들어 있는 지원자 (모드를 오갈 때 두 번 넣지 않게)
+_줄선것: set[str] = set()
+#: 사내 클코 모드에서 분석을 기다리는 상태 이름
+클코대기 = "클코 대기"
+
+
+def _줄세우기(filename: str, 지원자_ID: str, 저장_파일명: str, 메모: str) -> None:
+    if 에이전트모드():
+        _set_status(filename, 클코대기, "사내 클코에게 «CV 분석 대기 처리해줘» 라고 시키세요",
+                    cid=지원자_ID)
+        return
+    if 지원자_ID in _줄선것:
+        return
+    _줄선것.add(지원자_ID)
+    _jobs.put((filename, 지원자_ID, 저장_파일명, 메모))
+
+
 def _enqueue(filename: str, 지원자_ID: str, 저장_파일명: str, 메모: str = "") -> None:
     """분석 대기열에 넣는다. **DB 에 먼저 적는다.**
 
@@ -139,16 +167,15 @@ def _enqueue(filename: str, 지원자_ID: str, 저장_파일명: str, 메모: st
     """
     store.add_job(지원자_ID, filename, 저장_파일명, 메모)
     _set_status(filename, "대기중", 메모, cid=지원자_ID)
-    _jobs.put((filename, 지원자_ID, 저장_파일명, 메모))
+    _줄세우기(filename, 지원자_ID, 저장_파일명, 메모)
 
 
 def _resume_jobs() -> int:
     """지난번에 끝내지 못한 분석을 다시 대기열에 넣는다. 넣은 개수."""
     남은것 = store.pending_jobs()
     for j in 남은것:
-        _set_status(j["파일명"], "대기중", "서버를 다시 켜서 이어서 분석합니다",
-                    cid=j["지원자_ID"])
-        _jobs.put((j["파일명"], j["지원자_ID"], j["저장_파일명"], j.get("메모") or ""))
+        _set_status(j["파일명"], "대기중", "이어서 분석합니다", cid=j["지원자_ID"])
+        _줄세우기(j["파일명"], j["지원자_ID"], j["저장_파일명"], j.get("메모") or "")
     return len(남은것)
 
 
@@ -180,7 +207,12 @@ def _빈칸채우기(지원자_ID: str, 새것, text: str, filename: str) -> Non
 def _worker() -> None:
     while True:
         filename, 지원자_ID, 저장_파일명, 메모 = _jobs.get()
+        넘김 = False
         try:
+            if 에이전트모드():            # 줄 서 있는 사이 사내 클코 모드로 바뀌었다
+                넘김 = True
+                _set_status(filename, 클코대기, "사내 클코에게 맡깁니다", cid=지원자_ID)
+                continue
             _set_status(filename, "처리중", cid=지원자_ID)
             path = store.files_dir / 저장_파일명
             # 보관된 원본에서 매번 새로 뽑는다. 그래야 PDF 파서를 개선하면
@@ -190,51 +222,63 @@ def _worker() -> None:
                 _set_status(filename, "실패", "텍스트를 추출하지 못했습니다(스캔 PDF?)")
                 continue
             rec = extract_cv_from_text(text, 원본_파일명=filename, 지원자_ID=지원자_ID)
-            if 메모 == 채우기메모:
-                _빈칸채우기(지원자_ID, rec, text, filename)
-                continue
-
-            # 이름들을 사전에 등록하고 검토 사유를 받는다. 레코드 값은 건드리지 않는다.
-            사전사유 = observe_record(rec, registry)
-            if 사전사유:
-                rec.검토_사유 = review.join([rec.검토_사유, *사전사유])
-                rec.검토_필요 = "Y"
-
-            # 중복 검토
-            fp = fingerprint(text)
-            후보 = find_duplicates(rec, fp, store.fingerprints())
-            메모 = " / ".join(str(m) for m in 후보)
-            if 후보:
-                확실 = [m for m in 후보 if m.수준 == "확실"]
-                말머리 = "중복 확실" if 확실 else "중복 의심"
-                rec.검토_사유 = f"{rec.검토_사유} / {말머리}: {메모}" if rec.검토_사유 else f"{말머리}: {메모}"
-                rec.검토_필요 = "Y"
-
-            store.save(rec, 원문_텍스트=text, 저장_파일명=저장_파일명, 지문=fp, 중복_메모=메모)
-
-            # 과제 매칭. 실패해도 지원자 등록은 이미 끝났으니 메모만 남긴다.
-            매칭메모 = ""
-            if settings.match_auto and 원본과제경로():
-                개수, 매칭오류 = 매칭실행(rec)
-                if 매칭오류:
-                    매칭메모 = f" / 과제 매칭 실패: {매칭오류}"
-                elif 개수:
-                    최고 = store.matches(rec.지원자_ID)[0]
-                    매칭메모 = f" / 과제: {최고['과제명']} ({점수등급(최고['점수'], 최고['평가됨'])})"
-
-            state = "중복의심" if 후보 else ("검토필요" if rec.검토_필요 == "Y" else "완료")
-            _set_status(filename, state, (rec.검토_사유 or "") + 매칭메모,
-                        cid=지원자_ID)
+            등록마무리(rec, text, filename, 지원자_ID, 저장_파일명, 메모)
         except Exception as exc:  # noqa: BLE001 - 워커가 죽으면 안 된다
             _set_status(filename, "실패", f"{type(exc).__name__}: {exc}")
             traceback.print_exc()
         finally:
             # 실패도 끝난 것이다. 남겨 두면 재시작할 때마다 같은 실패를 되풀이한다.
-            try:
-                store.finish_job(지원자_ID)
-            except Exception:  # noqa: BLE001 - 워커가 죽으면 안 된다
-                traceback.print_exc()
+            # 사내 클코 모드로 바뀌어 손대지 않은 것은 남겨 둔다 (클코가 가져간다).
+            _줄선것.discard(지원자_ID)
+            if not 넘김:
+                try:
+                    store.finish_job(지원자_ID)
+                except Exception:  # noqa: BLE001 - 워커가 죽으면 안 된다
+                    traceback.print_exc()
             _jobs.task_done()
+
+
+def 등록마무리(rec, text: str, filename: str, 지원자_ID: str, 저장_파일명: str,
+            메모: str = "") -> str:
+    """분석 결과(LLM 이든 에이전트든)를 등록한다. 상태 이름을 돌려준다.
+
+    이름 사전 · 중복 검토 · 저장 · (서버 LLM 이면) 자동 매칭까지 — 누가 분석했든 같은 길.
+    """
+    if 메모 == 채우기메모:
+        _빈칸채우기(지원자_ID, rec, text, filename)
+        return "완료"
+    # 이름들을 사전에 등록하고 검토 사유를 받는다. 레코드 값은 건드리지 않는다.
+    사전사유 = observe_record(rec, registry)
+    if 사전사유:
+        rec.검토_사유 = review.join([rec.검토_사유, *사전사유])
+        rec.검토_필요 = "Y"
+
+    # 중복 검토
+    fp = fingerprint(text)
+    후보 = find_duplicates(rec, fp, store.fingerprints())
+    메모 = " / ".join(str(m) for m in 후보)
+    if 후보:
+        확실 = [m for m in 후보 if m.수준 == "확실"]
+        말머리 = "중복 확실" if 확실 else "중복 의심"
+        rec.검토_사유 = f"{rec.검토_사유} / {말머리}: {메모}" if rec.검토_사유 else f"{말머리}: {메모}"
+        rec.검토_필요 = "Y"
+
+    store.save(rec, 원문_텍스트=text, 저장_파일명=저장_파일명, 지문=fp, 중복_메모=메모)
+
+    # 과제 매칭. 실패해도 지원자 등록은 이미 끝났으니 메모만 남긴다.
+    매칭메모 = ""
+    if settings.match_auto and 원본과제경로() and not 에이전트모드():
+        개수, 매칭오류 = 매칭실행(rec)
+        if 매칭오류:
+            매칭메모 = f" / 과제 매칭 실패: {매칭오류}"
+        elif 개수:
+            최고 = store.matches(rec.지원자_ID)[0]
+            매칭메모 = f" / 과제: {최고['과제명']} ({점수등급(최고['점수'], 최고['평가됨'])})"
+
+    state = "중복의심" if 후보 else ("검토필요" if rec.검토_필요 == "Y" else "완료")
+    _set_status(filename, state, (rec.검토_사유 or "") + 매칭메모,
+                cid=지원자_ID)
+    return state
 
 
 threading.Thread(target=_worker, daemon=True).start()

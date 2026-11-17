@@ -104,6 +104,9 @@ _PERMISSIONS: dict[str, tuple[str, ...]] = {
     "변경이력_조회": ("관리자", "채용담당자"),
     "메일_템플릿": ("관리자", "채용담당자"),
     "메일_발송": ("관리자", "채용담당자"),
+    # 운영 설정(AI 분석 방식 · 메일 연습 모드 …) · 에이전트 토큰 · 클코용 설명서
+    "운영_설정": ("관리자",),
+    "에이전트_관리": ("관리자",),
 }
 
 
@@ -128,6 +131,17 @@ CREATE TABLE IF NOT EXISTS sessions (
     아이디       TEXT NOT NULL REFERENCES users(아이디) ON DELETE CASCADE,
     만료         TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS api_tokens (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    이름         TEXT UNIQUE NOT NULL,
+    해시         TEXT UNIQUE NOT NULL,
+    앞자리        TEXT DEFAULT '',
+    역할         TEXT NOT NULL DEFAULT '채용담당자',
+    활성         INTEGER DEFAULT 1,
+    만든때        TEXT DEFAULT '',
+    만든이        TEXT DEFAULT '',
+    마지막사용     TEXT DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS departments (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     이름         TEXT UNIQUE NOT NULL
@@ -145,6 +159,10 @@ CREATE TABLE IF NOT EXISTS user_projects (
     PRIMARY KEY (아이디, project_id)
 );
 """
+
+
+def _토큰해시(토큰: str) -> str:
+    return hashlib.sha256(토큰.encode("utf-8")).hexdigest()
 
 
 class AuthStore:
@@ -259,6 +277,54 @@ class AuthStore:
 
     # -- 부서 / 과제 -------------------------------------------------------
     @atomic
+    # -- 에이전트(사내 클코 등) 토큰 ----------------------------------------
+    # 토큰 원문은 만들 때 한 번만 보여 주고 해시만 남긴다. 사람 계정과 섞이지 않게
+    # 따로 둔다 — 토큰으로 들어온 요청은 'agent:이름' 으로 기록된다.
+    def create_token(self, 이름: str, 만든이: str = "", 역할: str = "채용담당자") -> str:
+        """새 토큰 원문을 돌려준다 (다시 볼 수 없다)."""
+        이름 = (이름 or "").strip()
+        if not 이름:
+            raise ValueError("토큰 이름을 적어 주세요.")
+        if 역할 not in ROLES:
+            raise ValueError(f"알 수 없는 역할: {역할}")
+        토큰 = "cvt_" + secrets.token_urlsafe(32)
+        try:
+            self._conn.execute(
+                "INSERT INTO api_tokens (이름,해시,앞자리,역할,활성,만든때,만든이) VALUES (?,?,?,?,1,?,?)",
+                (이름, _토큰해시(토큰), 토큰[:10], 역할,
+                 now_kst().strftime("%Y-%m-%d %H:%M:%S"), 만든이))
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(f"같은 이름의 토큰이 이미 있습니다: {이름}") from exc
+        self._conn.commit()
+        return 토큰
+
+    def tokens(self) -> list[dict]:
+        return [dict(r) for r in self._conn.execute(
+            "SELECT id,이름,앞자리,역할,활성,만든때,만든이,마지막사용 FROM api_tokens ORDER BY id")]
+
+    def set_token_active(self, token_id: int, 활성: bool) -> None:
+        self._conn.execute("UPDATE api_tokens SET 활성=? WHERE id=?", (1 if 활성 else 0, token_id))
+        self._conn.commit()
+
+    def delete_token(self, token_id: int) -> None:
+        self._conn.execute("DELETE FROM api_tokens WHERE id=?", (token_id,))
+        self._conn.commit()
+
+    def user_for_api_token(self, 토큰: str) -> User | None:
+        """토큰 → 에이전트 사용자 (아이디 'agent:이름'). 없거나 꺼졌으면 None."""
+        토큰 = (토큰 or "").strip()
+        if not 토큰.startswith("cvt_"):
+            return None
+        r = self._conn.execute(
+            "SELECT id,이름,역할,활성 FROM api_tokens WHERE 해시=?", (_토큰해시(토큰),)
+        ).fetchone()
+        if r is None or not r["활성"]:
+            return None
+        self._conn.execute("UPDATE api_tokens SET 마지막사용=? WHERE id=?",
+                           (now_kst().strftime("%Y-%m-%d %H:%M:%S"), r["id"]))
+        self._conn.commit()
+        return User(아이디=f"agent:{r['이름']}", 이름=r["이름"], 역할=r["역할"])
+
     def add_department(self, 이름: str) -> int:
         이름 = (이름 or "").strip()
         if not 이름:

@@ -70,6 +70,9 @@ GET_정책 = {
     "/mail/test": 거부,
     "/mail/template": 거부,
     "/match": 거부,                  # 회사 연구 과제 전체가 보인다
+    "/admin/settings": 거부,
+    "/admin/agent": 거부,
+    "/mcp": 무관,                    # 로그인 대신 에이전트 토큰으로만 (따로 시험)
     "/match/curate": 거부,
     "/names": 거부,
     "/org": 거부,
@@ -143,6 +146,12 @@ POST_정책 = {
     "/match/import": 거부,
     "/match/import/apply": 거부,
     "/match/import/reset": 거부,
+    "/admin/settings": 거부,
+    "/admin/agent/token": 거부,
+    "/admin/agent/token/toggle": 거부,
+    "/admin/agent/token/delete": 거부,
+    "/mcp": 무관,                    # 로그인 대신 에이전트 토큰으로만 (따로 시험)
+    "/api/agent/call": 무관,
     "/match/one": 거부,
     "/names/forget": 거부,
     "/names/save": 거부,

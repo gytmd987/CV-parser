@@ -148,10 +148,10 @@ def _mail_page(me: User, error: str = "", msg: str = "") -> bytes:
     빠진것 = mailapi.missing_settings()
     if settings.mail_dry_run:
         설정경고 = (
-            "<div class='warn'><b>연습 모드입니다 (MAIL_DRY_RUN=1).</b> "
+            "<div class='warn'><b>연습 모드입니다.</b> "
             "발송을 눌러도 실제로 나가지 않고 기록만 남습니다. "
-            "설정을 확인한 뒤 <code>.env</code> 에서 <code>MAIL_DRY_RUN=0</code> 으로 "
-            "바꾸세요.</div>"
+            "설정을 확인한 뒤 관리자가 <a href='/admin/settings'>운영 설정</a>에서 "
+            "«메일 연습 모드» 를 끄면 실제로 나갑니다.</div>"
         )
     elif 빠진것:
         설정경고 = (
@@ -684,7 +684,7 @@ def _mail_compose_page(ids: list[str], tid: int, me: User, 뒤로: str = "/",
     딸림칸 = f"<p class='muted'>{' · '.join(딸림)}</p>" if 딸림 else ""
 
     연습 = (
-        "<div class='warn'><b>연습 모드 (MAIL_DRY_RUN=1)</b> — 실제로 나가지 않고 "
+        "<div class='warn'><b>연습 모드</b> — 실제로 나가지 않고 "
         "기록만 남습니다. 기록이 남으면 '이미 보냄' 으로 처리되니 주의하세요.</div>"
         if settings.mail_dry_run else ""
     )
@@ -814,7 +814,7 @@ def _mail_draft_page(tid: int, cid: str, me: User, error: str = "",
     if 막힘:
         경고.append(f"<div class='warn'><b>보낼 수 없습니다.</b> {html.escape(막힘)}</div>")
     if settings.mail_dry_run:
-        경고.append("<div class='warn'><b>연습 모드 (MAIL_DRY_RUN=1)</b> — 실제로 "
+        경고.append("<div class='warn'><b>연습 모드</b> — 실제로 "
                   "나가지 않고 기록만 남습니다.</div>")
     if tpl.탈락메일:
         경고.append("<div class='warn'><b>탈락 메일입니다.</b> 보내고 나면 이 지원자에게는 "
@@ -998,7 +998,7 @@ def _mail_test_page(tid: int, me: User, error: str = "", msg: str = "",
     알림 = _알림(msg=msg)
     오류 = _알림(err=error)
     연습 = (
-        "<div class='warn'><b>연습 모드 (MAIL_DRY_RUN=1)</b> — 실제로 나가지 "
+        "<div class='warn'><b>연습 모드</b> — 실제로 나가지 "
         "않습니다.</div>" if settings.mail_dry_run else ""
     )
     탈락표시 = (
@@ -1017,7 +1017,7 @@ def _mail_test_page(tid: int, me: User, error: str = "", msg: str = "",
         "설정이 맞는지 먼저 이걸로 확인하세요. "
         + ("지금은 연습 모드라 실제로 나가지 않고 요청 내용만 보여줍니다."
            if settings.mail_dry_run else
-           "<b>지금은 실제로 나갑니다 (MAIL_DRY_RUN=0).</b>")
+           "<b>지금은 실제로 나갑니다.</b>")
         + f" <a href='/mail/test?id={tpl.id}&peek=1'>보낼 요청 내용 보기</a></p></div>"
         if can(me, "메일_발송") else ""
     )
@@ -1409,7 +1409,7 @@ def post_mail_test(self, me, path):
         알림 = (f"{주소} 로 보냈습니다. API 응답 HTTP {결과.상태코드}: "
               f"{결과.응답[:200] or '(본문 없음)'}")
     else:
-        알림 = ("연습 모드(MAIL_DRY_RUN=1)라 보내지 않았습니다. "
+        알림 = ("연습 모드라 보내지 않았습니다. "
               "아래 '보낼 요청 내용' 에서 형식을 확인하세요.")
     return self._redirect(뒤로 + "&msg=" + urllib.parse.quote(알림)
                           + "&peek=1")
