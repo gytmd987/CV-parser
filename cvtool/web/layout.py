@@ -699,6 +699,7 @@ def _설정들(me: User | None, badge: str) -> list[tuple[str, str, tuple[str, .
         ("운영 설정", "/admin/settings", ("/admin/settings",), can(me, "운영_설정")),
         ("사내 코워크 연결", "/admin/agent", ("/admin/agent",), can(me, "에이전트_관리")),
         ("외부 탭", "/admin/tabs", ("/admin/tabs",), can(me, "운영_설정")),
+        ("알림 메일", "/admin/notify", ("/admin/notify",), can(me, "운영_설정")),
     ]
     return [(라벨, 주소, 소속) for 라벨, 주소, 소속, 보임 in 후보 if 보임]
 

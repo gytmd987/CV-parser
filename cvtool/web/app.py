@@ -39,7 +39,7 @@ from .router import 라우터, 통과
 #: 모듈들도 이 차례대로 다시 읽어야 화면들이 새 DB(`state.store` …)를 가리킨다.
 _모듈차례 = (
     "state", "jobs", "agent_tools", "columns", "mail_targets", "layout",
-    "pages.login", "pages.agent", "pages.exttabs", "pages.help", "pages.todo", "pages.match", "pages.find", "pages.org", "pages.names", "pages.mail",
+    "pages.login", "pages.agent", "pages.exttabs", "pages.notify", "pages.help", "pages.todo", "pages.match", "pages.find", "pages.org", "pages.names", "pages.mail",
     "pages.recruit", "pages.fields", "pages.dashboard", "pages.candidates",
 )
 _다시읽기 = "_모듈들" in globals()
@@ -246,6 +246,9 @@ def main() -> int:
         print("⚠️  candidates.db 를 다른 계정이 읽을 수 있습니다. 권한을 확인하세요.")
     print(f"지원자 {store.count()}명 / 학회·저널 미분류 {registry.unclassified_count()}건")
     print(f"http://{HOST}:{PORT}/ 에서 실행합니다. (Ctrl+C 로 종료)")
+    from .pages.notify import 알림시작
+
+    알림시작()                  # 평일 오전 9시 새 지원자 알림 메일 (켜져 있을 때만 보낸다)
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
     return 0
 

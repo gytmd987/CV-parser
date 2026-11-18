@@ -1079,5 +1079,12 @@ class CandidateStore:
     def count(self) -> int:
         return self._conn.execute("SELECT COUNT(*) c FROM candidates").fetchone()["c"]
 
+    def registered_between(self, 시작: str, 끝: str) -> list:
+        """시작 < 등록일시 <= 끝 인 지원자 [(레코드, 등록일시)] — 등록 순 (새 지원자 알림)."""
+        rows = self._conn.execute(
+            "SELECT record_json, 등록일시 FROM candidates WHERE 등록일시 > ? AND 등록일시 <= ?"
+            " ORDER BY 등록일시", (시작, 끝)).fetchall()
+        return [(self._row_to_record(r), r["등록일시"]) for r in rows]
+
     def close(self) -> None:
         self._conn.close()
