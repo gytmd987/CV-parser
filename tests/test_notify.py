@@ -106,3 +106,18 @@ def test_관리자_화면(web_client, 보낸것):
     assert n.설정()["받는사람"] == "hr@corp.com" and n.휴일들(n.설정()) == {__import__("datetime").date(2026, 12, 31)}
     c.post("/admin/notify/reset")
     assert n.설정()["제목"] == n.기본제목
+
+
+def test_메일_탭과_같은_발송_길을_쓴다():
+    """서버마다 고친 mail_local.py 가 있으면 그걸 써야 한다 — 알림 메일만 기본 mail.py 를 써서
+    «메일 API 에 연결하지 못했습니다» 가 났었다. 화면 코드는 mailer 로만 보낸다."""
+    import pathlib
+    import re
+
+    assert _n().mailapi.__name__ == "cvtool.clients.mailer"
+    뿌리 = pathlib.Path(__file__).resolve().parent.parent / "cvtool"
+    직접 = [str(p.relative_to(뿌리)) for p in 뿌리.rglob("*.py")
+          if p.name not in ("mailer.py", "mail.py")
+          and re.search(r"clients import mail\b(?!er)|clients\.mail import|clients import \(?[^)\n]*\bmail\b(?!er)",
+                        p.read_text(encoding="utf-8"))]
+    assert 직접 == []

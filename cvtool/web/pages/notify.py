@@ -20,7 +20,7 @@ import urllib.parse
 from datetime import date, datetime
 
 from ...auth import User
-from ...clients import mail as mailapi
+from ...clients import mailer as mailapi   # 서버의 mail_local.py 가 있으면 그것 (메일 탭과 같은 길)
 from ...mailing import split_addresses
 from ...matching import 점수등급
 from ...timeutil import now_kst
