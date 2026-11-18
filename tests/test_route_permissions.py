@@ -72,6 +72,8 @@ GET_정책 = {
     "/match": 거부,                  # 회사 연구 과제 전체가 보인다
     "/admin/settings": 거부,
     "/admin/agent": 거부,
+    "/admin/tabs": 거부,
+    "/ext": 거부,                    # 외부 탭은 관리자 · 채용담당자만
     "/mcp": 무관,                    # 로그인 대신 에이전트 토큰으로만 (따로 시험)
     "/match/curate": 거부,
     "/names": 거부,
@@ -150,6 +152,9 @@ POST_정책 = {
     "/admin/settings": 거부,
     "/names/excellent/save": 거부,
     "/names/excellent/delete": 거부,
+    "/admin/tabs/save": 거부,
+    "/admin/tabs/move": 거부,
+    "/admin/tabs/delete": 거부,
     "/admin/agent/token": 거부,
     "/admin/agent/token/toggle": 거부,
     "/admin/agent/token/delete": 거부,

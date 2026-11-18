@@ -698,6 +698,7 @@ def _설정들(me: User | None, badge: str) -> list[tuple[str, str, tuple[str, .
         ("변경 이력", "/history", ("/history",), can(me, "변경이력_조회")),
         ("운영 설정", "/admin/settings", ("/admin/settings",), can(me, "운영_설정")),
         ("사내 코워크 연결", "/admin/agent", ("/admin/agent",), can(me, "에이전트_관리")),
+        ("외부 탭", "/admin/tabs", ("/admin/tabs",), can(me, "운영_설정")),
     ]
     return [(라벨, 주소, 소속) for 라벨, 주소, 소속, 보임 in 후보 if 보임]
 
@@ -743,15 +744,22 @@ def _page(title: str, body: str, nav: bool = True, me: User | None = None,
     안보낸 = sum(_안보낸수(me).values()) if nav else 0
     메일배지 = f' <span class="pill p-안본것">{안보낸}</span>' if 안보낸 else ""
     경로 = 현재경로.get()
+    # 외부 탭 (다른 시스템 화면) — 관리자가 «설정 → 외부 탭» 에서 붙인다
+    from .pages.exttabs import 탭줄, 지금외부탭          # 화면들이 다 읽힌 뒤라 여기서 부른다
+
+    if 경로 == "/ext":
+        경로 = f"/ext#{지금외부탭.get()}"
+    탭 = [(*x, "") for x in _탭들(me, badge, 메일배지)] + 탭줄(me)
     켜진것 = ""
-    for _라벨, 주소, 소속, _하위 in _탭들(me, badge, 메일배지):
+    for _라벨, 주소, 소속, _하위, _창 in 탭:
         if _지금탭(경로, 소속):
             켜진것 = 주소
             break
     링크 = []
-    for 라벨, 주소, _소속, 하위 in _탭들(me, badge, 메일배지):
+    for 라벨, 주소, _소속, 하위, 창 in 탭:
         불 = " class=on" if 주소 == 켜진것 else ""
-        본체 = f"<a href='{주소}'{불}>{라벨}</a>"
+        새창 = f" target='{창}' rel='noopener'" if 창 else ""
+        본체 = f"<a href='{주소}'{불}{새창}>{라벨}</a>"
         if not 하위:
             링크.append(본체)
             continue
