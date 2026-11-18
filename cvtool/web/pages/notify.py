@@ -1,13 +1,13 @@
-"""새 지원자 알림 메일 — 평일 아침 9시에 전날까지 새로 등록된 지원자를 한 통으로.
+"""새 지원자 알림 메일 — CV 가 새로 등록되다가 10분 동안 더 없으면 그동안 쌓인 사람을 한 통으로.
 
 - 사람이 올린 것 · 사내 코워크가 등록한 것 모두.
-- 새로 등록된 사람이 없으면 보내지 않는다. 주말 · 휴일(관리자가 고치는 목록)에는 쉬고
-  다음 근무일 9시에 그동안 쌓인 것을 보낸다.
+- 여러 명을 한꺼번에 올리면 마지막 등록 뒤 10분(관리자가 바꿈)을 기다렸다가 한 통으로 보낸다.
+  새로 등록된 사람이 없으면 보내지 않는다. 보내지 못하면 30분 뒤에 다시 해 본다.
 - 보내는 길은 메일 기능 그대로 (`clients.mail.send`, 운영 설정의 «메일 연습 모드» 를 따른다).
   지원자별 메일 이력에는 남기지 않는다 (지원자에게 간 메일이 아니다).
-- 관리자가 «설정 → 알림 메일» 에서 켜고 끄고, 받는 사람 · 제목 · 본문 · 휴일을 정한다.
+- 관리자가 «설정 → 알림 메일» 에서 켜고 끄고, 받는 사람 · 기다릴 시간 · 제목 · 본문을 정한다.
 
-저장은 데이터 폴더의 알림메일.json. 서버가 9시에 꺼져 있었으면 켜진 뒤 그날 안에 보낸다.
+저장은 데이터 폴더의 알림메일.json. 서버가 꺼져 있던 사이 등록된 사람은 켜진 뒤 보낸다.
 """
 
 from __future__ import annotations
@@ -28,30 +28,17 @@ from ..layout import _page, _알림, _없는주소
 from ..router import 라우트
 from ..state import audit, DATA_DIR, registry, store
 
-보낼시각 = (9, 0)
-
-#: 기본 휴일 (관리자가 화면에서 고친다 — 해마다 확인하세요). 주말은 따로 쉰다.
-기본휴일 = """2026-12-25 성탄절
-2027-01-01 신정
-2027-02-08 설날 연휴
-2027-02-09 설날 대체공휴일
-2027-03-01 삼일절
-2027-05-05 어린이날
-2027-05-13 부처님오신날
-2027-08-16 광복절 대체공휴일
-2027-09-14 추석 연휴
-2027-09-15 추석
-2027-09-16 추석 연휴
-2027-10-04 개천절 대체공휴일
-2027-10-11 한글날 대체공휴일
-2027-12-27 성탄절 대체공휴일"""
+#: 마지막 등록 뒤 이만큼(분) 더 등록이 없으면 보낸다 (화면에서 바꿈)
+기본대기분 = 10
+#: 보내지 못했으면 이만큼(분) 뒤에 다시 해 본다 — 1분마다 실패 메일을 두드리지 않게
+다시시도분 = 30
 
 기본제목 = "[지원자 관리] 새 지원자 {건수}명 ({날짜})"
 
 기본본문 = """<p>지난 알림 뒤로 새로 등록된 지원자 <b>{건수}명</b>입니다
 (검토 필요 {검토필요}명 · 중복 의심 {중복의심}명).</p>
 {지원자표}
-<p style="color:#64748b;font-size:12px">이 메일은 지원자 관리 시스템이 평일 오전 9시에 보냅니다.
+<p style="color:#64748b;font-size:12px">이 메일은 새 지원자가 등록되면 지원자 관리 시스템이 보냅니다.
 자세한 내용은 <a href="{시스템주소}/">전체 명단</a>에서 확인하세요.</p>"""
 
 자리표시 = ("건수", "날짜", "검토필요", "중복의심", "지원자표", "시스템주소")
@@ -64,32 +51,28 @@ def _파일():
 
 
 def 설정() -> dict:
-    기본 = {"켜짐": False, "받는사람": "", "제목": 기본제목, "본문": 기본본문, "휴일": 기본휴일,
-          "시스템주소": "", "마지막기준": "", "마지막실행일": "", "마지막결과": ""}
+    기본 = {"켜짐": False, "받는사람": "", "제목": 기본제목, "본문": 기본본문, "대기분": 기본대기분,
+          "시스템주소": "", "마지막기준": "", "마지막실패": "", "마지막결과": ""}
     try:
         저장 = json.loads(_파일().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         저장 = {}
-    return {**기본, **(저장 if isinstance(저장, dict) else {})}
+    설 = {**기본, **(저장 if isinstance(저장, dict) else {})}
+    # 예전(평일 9시) 기본 본문을 그대로 쓰고 있었으면 새 문구로
+    설["본문"] = 설["본문"].replace("지원자 관리 시스템이 평일 오전 9시에 보냅니다.",
+                                "새 지원자가 등록되면 지원자 관리 시스템이 보냅니다.")
+    return 설
 
 
 def _저장(값: dict) -> None:
     _파일().write_text(json.dumps(값, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
-def 휴일들(설: dict) -> set[date]:
-    나온것 = set()
-    for 줄 in (설.get("휴일") or "").splitlines():
-        글 = 줄.strip()[:10]
-        try:
-            나온것.add(date.fromisoformat(글))
-        except ValueError:
-            continue
-    return 나온것
-
-
-def 근무일(날: date, 설: dict) -> bool:
-    return 날.weekday() < 5 and 날 not in 휴일들(설)
+def 대기분(설: dict) -> int:
+    try:
+        return max(1, int(설.get("대기분") or 기본대기분))
+    except (TypeError, ValueError):
+        return 기본대기분
 
 
 # --- 내용 만들기 ----------------------------------------------------------------------
@@ -169,8 +152,10 @@ def 보내기(지금: datetime | None = None, *, 누가: str = "시스템") -> s
                     결과 = (f"{len(목록)}명 알림을 보냈습니다 → {', '.join(받는사람)}" if r.보냄
                           else f"{len(목록)}명 알림 — 메일 연습 모드라 실제로는 보내지 않았습니다.")
                     설["마지막기준"] = 끝
+                    설["마지막실패"] = ""
                 except mailapi.MailError as exc:
-                    결과 = f"보내지 못했습니다 (다음 근무일에 다시): {exc}"
+                    결과 = f"보내지 못했습니다 ({다시시도분}분 뒤 다시): {exc}"
+                    설["마지막실패"] = 끝
         설["마지막결과"] = f"{지금.strftime('%Y-%m-%d %H:%M')} {결과}"
         _저장(설)
     if 누가 != "시스템":
@@ -179,23 +164,29 @@ def 보내기(지금: datetime | None = None, *, 누가: str = "시스템") -> s
 
 
 def 때가됐나(지금: datetime, 설: dict) -> bool:
-    오늘 = 지금.date()
-    return (bool(설.get("켜짐")) and 근무일(오늘, 설)
-            and (지금.hour, 지금.minute) >= 보낼시각
-            and 설.get("마지막실행일") != 오늘.isoformat())
+    """새로 등록된 사람이 있고, 마지막 등록 뒤 대기분이 지났으면 (실패한 뒤엔 다시시도분도)."""
+    if not 설.get("켜짐"):
+        return False
+    끝 = 지금.strftime("%Y-%m-%d %H:%M:%S")
+    목록 = 새지원자(설.get("마지막기준") or 끝, 끝)
+    if not 목록:
+        return False
+    마지막등록 = datetime.strptime(목록[-1][1], "%Y-%m-%d %H:%M:%S").replace(tzinfo=지금.tzinfo)
+    if (지금 - 마지막등록).total_seconds() < 대기분(설) * 60:
+        return False                      # 아직 올리는 중일 수 있다 — 조금 더 기다린다
+    if 설.get("마지막실패"):
+        실패 = datetime.strptime(설["마지막실패"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=지금.tzinfo)
+        if (지금 - 실패).total_seconds() < 다시시도분 * 60:
+            return False
+    return True
 
 
 def 한번_보기(지금: datetime | None = None) -> str:
-    """시계가 부른다: 때가 됐으면 보내고 오늘 했다고 적는다."""
+    """시계가 1분마다 부른다: 때가 됐으면 보낸다."""
     지금 = 지금 or now_kst()
-    설 = 설정()
-    if not 때가됐나(지금, 설):
+    if not 때가됐나(지금, 설정()):
         return ""
-    결과 = 보내기(지금)
-    설 = 설정()
-    설["마지막실행일"] = 지금.date().isoformat()
-    _저장(설)
-    return 결과
+    return 보내기(지금)
 
 
 _시계 = {"돌고있음": False}
@@ -231,8 +222,9 @@ def _화면(me: User, msg: str = "", err: str = "", 미리: str = "") -> bytes:
         + "<div class='card'><h2>새 지원자 알림 메일 "
         + ("<span class='pill p-완료'>켜짐</span>" if 켜짐 else "<span class='pill p-실패'>꺼짐</span>")
         + f" {단추}</h2>"
-        "<p class='muted'><b>평일 오전 9시</b>(휴일 빼고)에 지난 알림 뒤로 새로 등록된 지원자 — 사람이 올린 것 · "
-        "사내 코워크가 등록한 것 모두 — 를 한 통으로 보냅니다. 새로 등록된 사람이 없으면 보내지 않습니다. "
+        f"<p class='muted'>CV 가 새로 등록되면, <b>마지막 등록 뒤 {대기분(설)}분 동안 더 등록이 없을 때</b> 그동안 "
+        "쌓인 지원자 — 사람이 올린 것 · 사내 코워크가 등록한 것 모두 — 를 한 통으로 보냅니다. 여러 명을 한꺼번에 "
+        "올려도 한 통입니다. 보내지 못하면 30분 뒤 다시 해 봅니다. "
         "메일 연습 모드(운영 설정)가 켜져 있으면 실제로는 나가지 않습니다. 지원자별 메일 이력에는 남기지 않습니다.</p>"
         f"<p class='muted'>마지막: {html.escape(설.get('마지막결과') or '아직 없음')}</p>"
         "<form method='post' action='/admin/notify/save'>"
@@ -252,10 +244,9 @@ def _화면(me: User, msg: str = "", err: str = "", 미리: str = "") -> bytes:
         + " · ".join("{" + x + "}" for x in 자리표시)
         + " — {지원자표} 는 이름 · 현재 소속 · 박사 학교·전공 · 상태 · 검토 사유 · 과제 매칭 1~3순위 표입니다.</span>"
         "</td></tr>"
-        "<tr><th>휴일</th><td class='ctl'>"
-        f"<textarea name='휴일' rows='6' style='width:100%;font-family:monospace'>{html.escape(설.get('휴일') or '')}"
-        "</textarea><span class='muted'>줄마다 <code>YYYY-MM-DD 이름</code>. 주말은 따로 쉽니다. "
-        "대체공휴일 · 임시공휴일은 해마다 확인해 넣어 주세요.</span></td></tr>"
+        "<tr><th>기다릴 시간</th><td class='ctl'>"
+        f"<input name='대기분' value='{대기분(설)}' style='width:60px'> 분 "
+        "<span class='muted'>마지막 등록 뒤 이만큼 더 등록이 없으면 보냅니다.</span></td></tr>"
         "</table>"
         "<div class='row' style='margin-top:10px'><button>저장</button> "
         "<button class='sec' formaction='/admin/notify/reset' "
@@ -295,7 +286,7 @@ def post_admin_notify_toggle(self, me, path):
     _저장(설)
     audit.record(me.아이디, "설정", "알림메일", 항목="새 지원자 알림 메일",
                  이전값="꺼짐" if 설["켜짐"] else "켜짐", 새값="켜짐" if 설["켜짐"] else "꺼짐")
-    return _뒤로(self, msg="알림 메일을 " + ("켰습니다. 평일 오전 9시에 보냅니다." if 설["켜짐"] else "껐습니다."))
+    return _뒤로(self, msg="알림 메일을 " + (f"켰습니다. 새 지원자가 등록되면 {대기분(설)}분 뒤에 보냅니다." if 설["켜짐"] else "껐습니다."))
     return _없는주소(self)
 
 
@@ -310,14 +301,21 @@ def post_admin_notify_save(self, me, path):
     if 주소 and not 주소.startswith(("http://", "https://")):
         return _뒤로(self, err="시스템 주소는 http:// 또는 https:// 로 시작해야 합니다.")
     전 = dict(설)
-    for k in ("받는사람", "제목", "본문", "휴일"):
+    try:
+        분 = int((data.get("대기분") or [str(기본대기분)])[0].strip())
+        if not 1 <= 분 <= 1440:
+            raise ValueError
+    except ValueError:
+        return _뒤로(self, err="기다릴 시간은 1~1440 분 사이 숫자로 적어 주세요.")
+    for k in ("받는사람", "제목", "본문"):
         설[k] = (data.get(k) or [""])[0].strip()
+    설["대기분"] = 분
     설["시스템주소"] = 주소
     _저장(설)
-    for k in ("받는사람", "시스템주소", "제목", "본문", "휴일"):
+    for k in ("받는사람", "시스템주소", "제목", "본문", "대기분"):
         if (전.get(k) or "") != (설.get(k) or ""):
             audit.record(me.아이디, "설정", "알림메일", 항목=f"알림 메일 {k}",
-                         이전값=(전.get(k) or "")[:300], 새값=(설.get(k) or "")[:300])
+                         이전값=str(전.get(k) or "")[:300], 새값=str(설.get(k) or "")[:300])
     return _뒤로(self, msg="저장했습니다.")
     return _없는주소(self)
 
