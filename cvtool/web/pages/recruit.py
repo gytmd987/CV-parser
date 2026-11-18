@@ -34,7 +34,7 @@ def _recruit_rows(me: User, sort: str = ""):
     부서명 = {d["id"]: d["이름"] for d in auth.departments()}
     과제명 = {p["id"]: p["이름"] for p in auth.projects()}
 
-    # **채용을 시작한 사람만** 채용 현황에 올라온다. 인재 Pool 에 등록만 된
+    # **채용을 시작한 사람만** 채용 현황에 올라온다. 전체 명단에 등록만 된
     # 사람까지 여기 있으면, 지금 뽑고 있는 사람이 몇 명인지 알 수가 없다.
     시작한사람 = recruit.started()
     records = [r for r in store.list_all() if r.지원자_ID in 시작한사람]
@@ -92,7 +92,7 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
       - **저장 버튼은 맨 위 하나뿐이다.** 여러 사람 상태를 바꾸고 한 번에 저장한다.
       - **지원자 정보 열은 여기서 못 고친다.** 채용 상태를 보는 화면이라
         지원자 정보까지 고칠 수 있으면 실수로 덮어쓰기 쉽다.
-        고칠 일이 있으면 인재 Pool 이나 상세 화면에서 한다.
+        고칠 일이 있으면 전체 명단이나 상세 화면에서 한다.
     """
     records, 진행맵, 값 = _recruit_rows(me, sort)
     수식들 = store.field_formulas()
@@ -215,11 +215,11 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
             elif col in STAGES:
                 cells.append(f"<td><span class='stv' data-v='{v}'>{v or '-'}</span></td>")
             elif col == "한글_이름":
-                # 이름을 누르면 상세 — '상세' 열을 따로 두지 않는다 (인재 Pool 과 같다).
+                # 이름을 누르면 상세 — '상세' 열을 따로 두지 않는다 (전체 명단과 같다).
                 cells.append(f"<td class='{열폭(col)} pname2'><a href='/candidate?id="
                              f"{urllib.parse.quote(cid)}'>{v or '(이름 없음)'}</a></td>")
             else:
-                # 지원자 정보 열은 보기만 한다 (고치려면 인재 Pool/상세에서)
+                # 지원자 정보 열은 보기만 한다 (고치려면 전체 명단/상세에서)
                 cells.append(f"<td class='{열폭(col)}' title='{v}'>{v}</td>")
         체크 = (f"<td><input type='checkbox' form='mailform' name='ids'"
               f" value='{html.escape(cid)}'></td>" if 메일가능 else "")
@@ -245,9 +245,9 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
     if not (수정가능 or 담당자):
         안내 += " 보기 전용입니다."
     else:
-        안내 += (" 지원자 정보 열은 여기서 고칠 수 없습니다 (인재 Pool 에서 고치세요)."
+        안내 += (" 지원자 정보 열은 여기서 고칠 수 없습니다 (전체 명단에서 고치세요)."
               " <b>채용_비고</b>는 이번 채용에 대한 메모입니다 — 그 사람 자체에 대한"
-              " 메모는 인재 Pool·상세의 <b>비고</b>에 적으세요.")
+              " 메모는 전체 명단·상세의 <b>비고</b>에 적으세요.")
     열이름칸 = "".join(
         f"<input type='hidden' form='recruitform' name='사용자열_{n}'"
         f" value='{html.escape(c)}'>" for c, n in 열번호.items()
@@ -286,7 +286,7 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
     )
     빈화면 = (
         "<p class='muted'>여기에는 <b>채용을 시작한 사람만</b> 나옵니다. "
-        + ("<a href='/'>인재 Pool</a> 에서 `채용 시작` 을 누르세요.</p>"
+        + ("<a href='/'>전체 명단</a> 에서 `채용 시작` 을 누르세요.</p>"
            if can(me, "지원자_목록") else "채용담당자가 시작하면 보입니다.</p>")
     )
     표 = (
@@ -297,7 +297,7 @@ def _recruit_page(me: User, sort: str = "", error: str = "", msg: str = "") -> b
     )
     # 표가 비어 있을 때는 빈 화면 안내가 같은 말을 하므로 두 번 쓰지 않는다.
     출처 = (
-        " <a href='/'>인재 Pool</a> 에서 <b>채용 시작</b>을 누른 사람만 여기 올라옵니다."
+        " <a href='/'>전체 명단</a> 에서 <b>채용 시작</b>을 누른 사람만 여기 올라옵니다."
         if rows and can(me, "지원자_목록") else ""
     )
     # 단계 요약 — 단계마다 몇 명이 어느 상태인지. 누르면 그 사람만 보인다.

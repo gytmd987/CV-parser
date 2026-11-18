@@ -686,10 +686,10 @@ def test_field_worker_sees_only_the_recruit_tab(현업):
 
 
 def test_home_is_not_a_duplicate_of_the_applicant_tab(web):
-    """제목과 '인재 Pool' 탭이 같은 곳으로 가서 헷갈렸다. 제목은 이름일 뿐이다."""
+    """제목과 '전체 명단' 탭이 같은 곳으로 가서 헷갈렸다. 제목은 이름일 뿐이다."""
     머리 = web.get("/").split("<main>", 1)[0]
     assert "<span class='brand'>지원자 관리</span>" in 머리
-    assert 머리.count("<a href='/'") == 1        # '인재 Pool' 탭 하나뿐
+    assert 머리.count("<a href='/'") == 1        # '전체 명단' 탭 하나뿐
 
 
 def test_the_current_tab_is_marked(web):
@@ -699,7 +699,7 @@ def test_the_current_tab_is_marked(web):
         return [조각.split(">", 1)[1].split("<", 1)[0].strip()
                 for 조각 in 머리.split("<a ")[1:]
                 if 조각.startswith("href=") and 표시 in 조각.split(">", 1)[0]]
-    for 경로, 라벨, 항목 in (("/", "인재 Pool", None), ("/recruit", "채용 현황", None),
+    for 경로, 라벨, 항목 in (("/", "전체 명단", None), ("/recruit", "채용 현황", None),
                           ("/fields", "설정", "표 항목"), ("/history", "설정", "변경 이력")):
         머리 = web.get(경로).split("<main>", 1)[0]
         assert 켜진(머리, "class=on") == [라벨], 경로
@@ -708,9 +708,9 @@ def test_the_current_tab_is_marked(web):
 
 
 def test_a_detail_screen_keeps_its_tab_lit(web, cid):
-    """지원자 상세는 탭이 아니지만 인재 Pool 에서 들어간 화면이다."""
+    """지원자 상세는 탭이 아니지만 전체 명단에서 들어간 화면이다."""
     머리 = web.get("/candidate?id=" + urllib.parse.quote(cid)).split("<main>", 1)[0]
-    assert "<a href='/' class=on>인재 Pool</a>" in 머리
+    assert "<a href='/' class=on>전체 명단</a>" in 머리
 
 
 def test_field_worker_lands_on_recruit(현업):
@@ -840,7 +840,7 @@ def test_custom_field_scope_is_recorded(web):
     assert f["구분"] == "채용 현황"
     구분맵 = {c: g for g, c, _ in web.module.열목록()}
     assert 구분맵["면접관 메모"] == "채용 현황"
-    # 인재 Pool 표에는 **보기 전용**으로 나온다 (고치는 자리는 채용 현황)
+    # 전체 명단 표에는 **보기 전용**으로 나온다 (고치는 자리는 채용 현황)
     assert "면접관 메모" in web.module.표열()
 
 
@@ -881,9 +881,9 @@ def test_mail_placeholder_notes_explain_the_derived_ones(web):
     assert "한글_이름, 비어 있으면 영문_이름" in page
 
 
-# --- 인재 Pool → 채용 현황 ------------------------------------------------------
+# --- 전체 명단 → 채용 현황 ------------------------------------------------------
 def test_pool_candidate_is_not_in_the_recruit_table(web, cid):
-    """등록만 된 사람은 인재 Pool 에만 있다. 채용 현황은 뽑고 있는 사람만."""
+    """등록만 된 사람은 전체 명단에만 있다. 채용 현황은 뽑고 있는 사람만."""
     assert cid in web.get("/")
     assert cid not in web.get("/recruit")
 
@@ -969,11 +969,11 @@ def test_existing_progress_counts_as_started_after_upgrade(tmp_path):
     시작한사람 = r.started()
     assert "CV-OLD1" in 시작한사람          # 과제 배정이 있었다
     assert "CV-OLD3" in 시작한사람          # 단계 상태가 있었다
-    assert "CV-OLD2" not in 시작한사람      # 아무것도 없던 줄은 인재 Pool 로
+    assert "CV-OLD2" not in 시작한사람      # 아무것도 없던 줄은 전체 명단으로
     r.close()
 
 
-# --- 인재 Pool: 필터·열·메일 -----------------------------------------------------
+# --- 전체 명단: 필터·열·메일 -----------------------------------------------------
 def test_select_all_only_takes_visible_rows(web, cid):
     """표 위 찾기 칸으로 걸러 놓고 전체선택을 누르면 **보이는 줄만** 골라야 한다.
 
@@ -1447,7 +1447,7 @@ def test_the_pool_table_has_no_name_guess_column(web, cid):
 
 
 def test_detail_page_can_send_mail(web, cid):
-    """예전에는 여기서 이력만 볼 수 있어 인재 Pool 로 돌아가야 했다."""
+    """예전에는 여기서 이력만 볼 수 있어 전체 명단으로 돌아가야 했다."""
     rec = web.module.store.get(cid)
     rec.이메일 = "a@b.com"
     web.module.store.save(rec)

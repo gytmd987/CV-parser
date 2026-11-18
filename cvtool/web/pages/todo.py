@@ -109,7 +109,7 @@ def _todo_page(me: User, 머문날: int) -> bytes:
         "자동으로 읽다가 확신하지 못한 곳이 남은 사람입니다. 열어서 원본과 비교해 "
         "<b>확인함</b> 을 누르면 여기서 빠집니다.",
         f"<table><tr><th>이름</th><th>확인할 것</th></tr>{검토줄}</table>",
-        "<p><a class='btn sec' href='/?review=1'>인재 Pool 에서 검토 필요만 보기</a></p>"
+        "<p><a class='btn sec' href='/?review=1'>전체 명단에서 검토 필요만 보기</a></p>"
         if len(자료["검토"]) > 50 else "", "review")
 
     메일수 = sum(len(남은) for _t, 남은 in 자료["메일"])

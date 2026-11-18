@@ -55,7 +55,7 @@ def test_확인하면_검토에서_빠진다(판):
 
 def test_탭_맨_앞에_있다(판):
     머리 = 판.get("/").split("<header>")[1].split("</header>")[0]
-    assert 머리.index("/todo") < 머리.index("인재 Pool")
+    assert 머리.index("/todo") < 머리.index("전체 명단")
 
 
 # --- 과제로 사람 찾기 --------------------------------------------------------------

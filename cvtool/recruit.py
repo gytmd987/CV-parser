@@ -32,7 +32,7 @@ STATUSES = ("", "진행중", "합격", "불합격", "보류")
 FIXED_STATUSES = ("", "합격", "불합격")
 
 #: 채용 현황 표에만 있는 열 (지원자 DB 열과 합쳐서 보여준다)
-#: 채용을 시작한 사람인가. 인재 Pool 표 맨 앞에 뱃지로 나오던 것인데, 열로
+#: 채용을 시작한 사람인가. 전체 명단 표 맨 앞에 뱃지로 나오던 것인데, 열로
 #: 두지 않으면 **표 항목 탭에서 이름을 바꾸거나 숨길 수가 없다** (화면에는
 #: 보이는데 관리 목록에는 없는 열이 된다).
 STARTED_COLUMN = "채용"
@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS recruit (
     비고         TEXT DEFAULT '',   -- 밖에서는 '채용_비고'. 지원자 쪽 '비고' 와 다르다
     갱신일시      TEXT DEFAULT '',
     갱신자        TEXT DEFAULT '',
-    채용시작일시   TEXT DEFAULT ''   -- 비면 인재 Pool 에만 있는 사람
+    채용시작일시   TEXT DEFAULT ''   -- 비면 전체 명단에만 있는 사람
 );
 CREATE TABLE IF NOT EXISTS stages (
     지원자_ID    TEXT NOT NULL,
@@ -84,7 +84,7 @@ class Progress:
 
     @property
     def 시작함(self) -> bool:
-        """채용 절차를 시작한 사람인가. 아니면 인재 Pool 에만 있다."""
+        """채용 절차를 시작한 사람인가. 아니면 전체 명단에만 있다."""
         return bool(self.채용시작일시)
 
     @property
@@ -156,7 +156,7 @@ class RecruitStore:
     def _migrate(self) -> None:
         """예전 DB 에 없던 열을 붙인다.
 
-        채용시작일시가 없던 시절에는 인재 Pool 에 있는 사람이 모두 채용 현황에
+        채용시작일시가 없던 시절에는 전체 명단에 있는 사람이 모두 채용 현황에
         나왔다. 그때 이미 손댄 사람(부서·과제 배정, 채용 비고, 단계 상태)은 채용을
         시작한 것으로 봐야 화면에서 갑자기 사라지지 않는다.
         """
@@ -249,7 +249,7 @@ class RecruitStore:
     def start(self, 지원자_ID: str, 사용자: str) -> bool:
         """채용 절차를 시작한다. 이미 시작했으면 False.
 
-        인재 Pool 에 등록만 된 사람과 실제로 뽑고 있는 사람을 나눈다.
+        전체 명단에 등록만 된 사람과 실제로 뽑고 있는 사람을 나눈다.
         채용 현황 표에는 **시작한 사람만** 올라온다.
         """
         if self.get(지원자_ID).시작함:

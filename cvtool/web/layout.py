@@ -94,7 +94,7 @@ header a[href='/logout']{font-weight:500}
 a{color:var(--accent);text-decoration:none}
 a:hover{text-decoration:underline}
 .card h2 a{color:inherit}
-main{padding:22px 20px 40px;max-width:var(--mainw,1600px);margin:0 auto}
+main{padding:22px 24px 40px;max-width:var(--mainw,none);margin:0 auto}
 .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);
  padding:18px 20px;margin-bottom:16px;box-shadow:var(--sh)}
 h2{margin:0 0 12px;font-size:16px;font-weight:700;letter-spacing:-.015em}
@@ -471,7 +471,7 @@ textarea.cellbox{width:100%;min-width:240px;resize:vertical;font:inherit}
  background:#fff;max-height:420px;overflow:auto;font:12pt/1.7 "맑은 고딕",sans-serif}
 .mailbody img{max-width:100%}
 pre.rubric{background:var(--bg);border:1px solid var(--line);border-radius:var(--r-s);padding:10px 12px;font-size:12px;white-space:pre-wrap;margin:8px 0 0;color:var(--muted)}
-/* --- 인재 Pool ------------------------------------------------------------ */
+/* --- 전체 명단 ------------------------------------------------------------ */
 .searchbar{margin-bottom:12px}
 .findbar{margin-top:10px}
 td.wrap{white-space:normal;min-width:220px;max-width:420px}
@@ -656,7 +656,7 @@ details.bedit[open]>summary.bsum{border-bottom:1px solid var(--line2);margin-bot
 
 #: (라벨, 주소, 이 탭에 속하는 경로들, 하위 목록, 볼 수 있나)
 #: 소속 경로를 적어 두는 이유: 지원자 상세(/candidate)는 탭이 아니지만
-#: 인재 Pool 에서 들어간 화면이라 그 탭에 불이 켜져 있어야 한다.
+#: 전체 명단에서 들어간 화면이라 그 탭에 불이 켜져 있어야 한다.
 #:
 #: 하위 목록은 **탭에 마우스를 올리면 펴지는 것**이다. 갈 곳이 둘인데 눌러
 #: 들어가서 다시 고르게 하면 걸음이 하나 더 든다 (부서·과제가 그랬다).
@@ -672,7 +672,7 @@ def _탭들(me: User | None, badge: str,
     후보 = [
         # 들어와서 제일 먼저 볼 것 — 여러 화면에 흩어진 «처리할 것» 모음.
         ("오늘 할 일", "/todo", ("/todo",), (), can(me, "지원자_등록")),
-        ("인재 Pool", "/", ("/", "/candidate", "/attachment", "/export.xlsx", "/find"),
+        ("전체 명단", "/", ("/", "/candidate", "/attachment", "/export.xlsx", "/find"),
          (), can(me, "지원자_목록")),
         ("채용 현황", "/recruit", ("/recruit",), (),
          can(me, "채용현황_수정") or can(me, "지원자_조회")),
@@ -707,7 +707,7 @@ def _설정들(me: User | None, badge: str) -> list[tuple[str, str, tuple[str, .
 def _지금탭(경로: str, 소속: tuple[str, ...]) -> bool:
     """이 경로가 그 탭에 속하나.
 
-    '/' 는 정확히 같을 때만이다. 안 그러면 모든 화면이 인재 Pool 이 된다.
+    '/' 는 정확히 같을 때만이다. 안 그러면 모든 화면이 전체 명단이 된다.
     """
     for base in 소속:
         if base == "/":
@@ -820,7 +820,7 @@ def _status_table() -> str:
     """업로드 처리 현황.
 
     검토 필요로 끝난 줄에서는 **바로 그 지원자 상세로 갈 수 있어야 한다.**
-    예전에는 여기서 '검토 필요' 라고만 알려주고, 사람은 인재 Pool 로 가서
+    예전에는 여기서 '검토 필요' 라고만 알려주고, 사람은 전체 명단으로 가서
     이름을 찾아 들어가야 했다.
     """
     with _status_lock:

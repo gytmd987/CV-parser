@@ -34,7 +34,7 @@ from ..router import 라우트
 # 새 질의 계층을 만들면 화면 숫자와 대시보드 숫자가 어긋난다.
 # ---------------------------------------------------------------------------
 def 대시보드_행() -> F.Rows:
-    """지원자(인재 Pool 전체) / 채용(채용 시작한 사람) 두 묶음."""
+    """지원자(전체 명단) / 채용(채용 시작한 사람) 두 묶음."""
     진행맵 = recruit.all()
     부서명 = {d["id"]: d["이름"] for d in auth.departments()}
     과제명 = {p["id"]: p["이름"] for p in auth.projects()}
@@ -1043,7 +1043,7 @@ def _이름칸(글: str) -> str | None:
     """칸 글이 **사람 이름**(또는 `가, 나` 처럼 이름 나열)이면 링크를 건 HTML, 아니면 None.
 
     보기 화면에서만 건다 (편집 화면의 미리보기에서는 누르면 편집을 떠난다).
-    같은 이름이 여럿이면 그 이름으로 인재 Pool 을 찾아 준다 — 아무나 고르면 틀린
+    같은 이름이 여럿이면 그 이름으로 전체 명단을 찾아 준다 — 아무나 고르면 틀린
     사람에게 간다.
     """
     문맥 = _드릴문맥.get()
@@ -1056,7 +1056,7 @@ def _이름칸(글: str) -> str | None:
         ids = 맵[n]
         주소 = (_사람주소(ids[0]) if len(ids) == 1
               else "/?q=" + urllib.parse.quote(n))
-        뜻 = "상세 보기" if len(ids) == 1 else f"같은 이름 {len(ids)}명 — 인재 Pool 에서 찾기"
+        뜻 = "상세 보기" if len(ids) == 1 else f"같은 이름 {len(ids)}명 — 전체 명단에서 찾기"
         return f"<a class='person' href='{주소}' title='{뜻}'>{html.escape(n)}</a>"
 
     if t in 맵:
@@ -1153,7 +1153,7 @@ def _dash_view_page(did: int, me: User, 거르개: dict | None = None) -> bytes:
           "이 주소를 즐겨찾기해 두면 같은 조건으로 다시 열려요.'>i</span>"
         "</form>"
     )
-    기준 = (f"인재 Pool {len(rows.지원자)}명 · 채용 중 {len(rows.채용)}명 기준"
+    기준 = (f"전체 명단 {len(rows.지원자)}명 · 채용 중 {len(rows.채용)}명 기준"
           + (f" <b>(거름: {html.escape(', '.join(f'{k}={v}' for k, v in 거르개.items()))})</b>"
              if 거르개 else ""))
     return _page(

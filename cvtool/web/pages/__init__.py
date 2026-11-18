@@ -6,7 +6,7 @@
 받은 Handler 다 (`self._send` · `self._redirect` · `self._json` …).
 
     login.py       로그인 · 로그아웃
-    candidates.py  인재 Pool · 지원자 추가 · 지원자 상세 · 표에서 바로 고치기
+    candidates.py  전체 명단 · 지원자 추가 · 지원자 상세 · 표에서 바로 고치기
     recruit.py     채용 현황
     mail.py        메일
     dashboard.py   대시보드 (블록 · 수식 · 시트)

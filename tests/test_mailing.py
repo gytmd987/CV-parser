@@ -593,7 +593,7 @@ def test_body_image_needs_an_image_extension(ms):
 
 # --- 발송 이력 열 -------------------------------------------------------------
 def test_sent_summary_lists_what_went_out(ms, 템플릿):
-    """인재 Pool 표에서 누구에게 뭘 보냈는지 바로 보여야 한다."""
+    """전체 명단 표에서 누구에게 뭘 보냈는지 바로 보여야 한다."""
     ms.record("CV-1", 템플릿, "a@b.c", "제목", "본문", "성공", 보낸이="admin")
     요약 = ms.sent_summary()
     assert "서류합격" in 요약["CV-1"]

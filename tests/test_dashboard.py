@@ -44,7 +44,7 @@ def test_count_and_conditions(rows):
 
 
 def test_target_picks_the_right_group(rows):
-    """지원자는 인재 Pool 전체, 채용은 채용 시작한 사람."""
+    """지원자는 전체 명단, 채용은 채용 시작한 사람."""
     assert F.run("=COUNT(지원자)", rows)[0] == "3"
     assert F.run("=COUNT(채용)", rows)[0] == "2"
 

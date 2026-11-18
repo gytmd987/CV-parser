@@ -1,4 +1,4 @@
-"""인재 Pool(지원자 목록) · 지원자 추가(업로드) · 지원자 상세 · 표에서 바로 고치기.
+"""전체 명단(지원자 목록) · 지원자 추가(업로드) · 지원자 상세 · 표에서 바로 고치기.
 """
 
 from __future__ import annotations
@@ -220,7 +220,7 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
                onclick="return window.confirm('선택한 지원자를 삭제합니다. 되돌릴 수 없습니다.')"
                >선택 삭제</button></span>
           </div>
-          <div class='scroll'><table data-name='인재 Pool'
+          <div class='scroll'><table data-name='전체 명단'
                 data-export='/export.xlsx{조건쿼리}'>
             <tr><th class='ck'><input type='checkbox' onclick="selectVisible(this)"
                 title='보이는 줄만 선택합니다'>
@@ -250,9 +250,9 @@ def _dashboard(me: User, q: str = "", review_only: bool = False, 년도: str = "
 
     알림 = _알림(msg=msg)
     return _page(
-        "인재 Pool",
+        "전체 명단",
         f"""{알림}{''.join(warns)}{처리중알림}
-        <h1 class='pt'>인재 Pool <span class='sub'>{len(records)}명{f' / 전체 {전체}명' if len(records) != 전체 else ''} · 채용 중 {len(채용중)}명</span>{안내}</h1>
+        <h1 class='pt'>전체 명단 <span class='sub'>{len(records)}명{f' / 전체 {전체}명' if len(records) != 전체 else ''} · 채용 중 {len(채용중)}명</span>{안내}</h1>
         <div class='card'>
           <form method='get' action='/' class='bar searchbar'>
             <input type='search' name='q' value='{html.escape(q)}' placeholder='이름 · 소속 · 학교 · 파일명으로 찾기' style='width:300px'>
@@ -368,7 +368,7 @@ def _엑셀결과카드(만든것: list[str], 빠진것: list[str], 모르는것
         본.append("<p class='muted'>모르는 열은 그냥 넘겼습니다: "
                 + html.escape(", ".join(모르는것[:10])) + "</p>")
     본.append("<p><a class='btn sec' href='/upload'>지원자 추가로</a> "
-            "<a class='btn sec' href='/'>인재 Pool 로</a></p></div>")
+            "<a class='btn sec' href='/'>전체 명단으로</a></p></div>")
     return "".join(본)
 
 
@@ -412,7 +412,7 @@ def _upload_page(me: User, error: str = "", msg: str = "") -> bytes:
             <span class='muted'>여러 개를 한 번에 고를 수 있습니다 ({가능}).</span>
           </form>
           <p class='muted'>분석은 뒤에서 돌아갑니다. 끝나면 아래 현황에 뜨고
-          <a href='/'>인재 Pool</a>에 줄이 생깁니다.</p>
+          <a href='/'>전체 명단</a>에 줄이 생깁니다.</p>
         </div>
         <div class='card'><h2>CV 없이 지원자 추가</h2>
           <form method='post' action='/candidate/new'>
@@ -523,13 +523,13 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
         값 = str(row.get(c, "") or "")
         보기 = html.escape(값) or "<span class='muted'>-</span>"
         if c == "검토_사유" and 검토항목:
-            # 확인한 항목은 여기서 빠진다. 원문은 위 검토 카드에 회색으로 남아
+            # 확인한 항목은 여기서 빠진다. 원문은 아래 검토 카드에 회색으로 남아
             # 있으니 무엇을 봤는지 되짚을 수 있고, 이 줄은 **남은 것만** 말한다.
             보일글 = review.display(rec.검토_사유, 끝낸검토)
-            보기 = ("<a href='#검토'>위 검토 카드에서 항목별로 봅니다 →</a>"
+            보기 = ("<a href='#검토'>아래 검토 카드에서 항목별로 봅니다 →</a>"
                   f"<br><span class='muted'>{html.escape(보일글)}</span>")
         줄표시 = " class='needs'" if c in 검토열 else ""
-        # 검토_사유는 위 검토 카드가 관리한다. 여기서 글을 고치면 '확인함'
+        # 검토_사유는 아래 검토 카드가 관리한다. 여기서 글을 고치면 '확인함'
         # 표시와 짝이 안 맞는다.
         if (not 수정가능 or c in READONLY_FIELDS or c == "검토_사유"
                 or c.startswith("1저자_해외논문_") or is_tier_venue(c)):
@@ -1042,7 +1042,7 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
         for m in 메일기록
     )
     # 이 한 사람에게 바로 보내기. 예전에는 여기서 **이력만** 볼 수 있어서,
-    # 상세를 보다가 메일을 보내려면 인재 Pool 로 돌아가 그 사람을 다시 찾아
+    # 상세를 보다가 메일을 보내려면 전체 명단으로 돌아가 그 사람을 다시 찾아
     # 체크해야 했다. 보내기 화면은 여러 명을 받게 돼 있으니 한 명만 실어 보낸다.
     보내기단추 = ""
     if can(me, "메일_발송"):
@@ -1197,10 +1197,11 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
           {"<p class='muted' style='margin:10px 0 0'>수정 권한이 없어 읽기 전용입니다.</p>" if not 수정가능 else ""}
         </div>"""
     # --- 섹션 바로가기 — 화면이 길어서 원하는 곳으로 바로 간다 -----------------------
+    # 기본 정보 · 연구 실적 · 과제 매칭을 맨 위에 — 사람을 볼 때 먼저 보는 것. 나머지는 아래로.
     바로가기 = [(이름, 열쇠) for 이름, 열쇠, 있음 in (
-        ("검토", "검토", bool(검토카드)), ("기본 정보", "추출결과", True),
-        ("추가 항목", "추가항목", bool(사용자카드)), ("연구 실적", "실적", bool(실적카드)),
-        ("과제 매칭", "매칭", bool(매칭카드)), ("첨부", "첨부", True),
+        ("기본 정보", "추출결과", True), ("연구 실적", "실적", bool(실적카드)),
+        ("과제 매칭", "매칭", bool(매칭카드)), ("검토", "검토", bool(검토카드)),
+        ("추가 항목", "추가항목", bool(사용자카드)), ("첨부", "첨부", True),
         ("메일", "메일", bool(메일카드)), ("관리 정보", "관리", bool(관리카드)),
         ("변경 이력", "이력", bool(이력카드))) if 있음]
     바로가기줄 = ("<nav class='secnav'>" + "".join(
@@ -1212,15 +1213,15 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
         f"""{알림}{오류}
         {머리카드}
         {바로가기줄}
-        {검토카드}
         <div class='card{" ro" if 수정가능 else ""}' id='추출결과'>
           <h2 class='hrow'>기본 정보 {편집단추}
             <span class='ro-note muted'>빈 항목은 <b>편집</b> 을 누르면 보여요</span></h2>
           {저장바}
           <table class='kv'>{''.join(항목행)}</table></div>
-        {사용자카드}
         {실적카드}
         {매칭카드}
+        {검토카드}
+        {사용자카드}
         {첨부카드}
         {메일카드}
         {관리카드}
@@ -1910,7 +1911,7 @@ def post_candidates_delete(self, me, path):
 @라우트("POST", '/candidates/start', 권한='채용현황_수정', 거부말='채용 시작은 채용담당자 이상만 할 수 있습니다.')
 @라우트("POST", '/candidates/stop', 권한='채용현황_수정', 거부말='채용 시작은 채용담당자 이상만 할 수 있습니다.')
 def post_candidates_start(self, me, path):
-    # 인재 Pool 에 있는 사람을 채용 현황으로 올리고 내린다.
+    # 전체 명단에 있는 사람을 채용 현황으로 올리고 내린다.
     # 줄마다 있는 단추는 id 하나, 묶음 단추는 ids 여럿을 보낸다.
     data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
     ids = (data.get("ids") or []) + [

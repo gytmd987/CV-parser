@@ -70,7 +70,7 @@ function cellRaw(td){
   } else if(td.classList.contains('multi') && td.title){
     v = td.title;                        /* 대시보드가 <br> 로 그린 여러 줄 */
   } else if(td.dataset && td.dataset.raw){
-    v = td.dataset.raw;                  /* 인재 Pool 편집 칸의 저장된 값 */
+    v = td.dataset.raw;                  /* 전체 명단 편집 칸의 저장된 값 */
   } else {
     v = td.textContent || '';
   }
@@ -149,7 +149,7 @@ function selectVisible(head){
   selbarUpdate(head);
 }
 
-/* 인재 Pool — 사람을 체크했을 때만 «메일 · 채용 시작 · 삭제» 막대가 나온다 */
+/* 전체 명단 — 사람을 체크했을 때만 «메일 · 채용 시작 · 삭제» 막대가 나온다 */
 function selbarUpdate(el){
   var 폼 = el && el.closest ? el.closest('form.selform') : null;
   if(!폼) return;

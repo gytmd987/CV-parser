@@ -593,7 +593,7 @@ def _mail_compose_page(ids: list[str], tid: int, me: User, 뒤로: str = "/",
 
     예전에는 `메일` 탭에서 템플릿을 열면 **지원자 전원**이 나왔다. 서류 합격
     안내를 보내려는데 누가 서류 합격인지 그 화면에서는 알 수가 없었다.
-    이제 반대다 — 인재 Pool·채용 현황에서 **거른 뒤 고른 사람**을 데리고 온다.
+    이제 반대다 — 전체 명단·채용 현황에서 **거른 뒤 고른 사람**을 데리고 온다.
 
     그리고 예전에는 "몇 명에게 나갑니다 → 인원수를 쳐 넣으세요" 한 번으로 끝나서
     **한 통 한 통 무엇이 나가는지 보고 고칠 수가 없었다.** 이제 줄마다 작성창을
@@ -968,7 +968,7 @@ def _mail_test_page(tid: int, me: User, error: str = "", msg: str = "",
 
     예전에는 여기서 지원자 전원을 늘어놓고 골라 보냈다. 서류 합격 안내를
     보내려는데 이 화면에서는 누가 서류 합격인지 알 수가 없었다. 실제 발송은
-    **인재 Pool·채용 현황**에서 거른 뒤 고른 사람에게 하도록 옮겼다.
+    **전체 명단·채용 현황**에서 거른 뒤 고른 사람에게 하도록 옮겼다.
     """
     tpl = mailing.template(tid)
     if tpl is None:
@@ -1038,7 +1038,7 @@ def _mail_test_page(tid: int, me: User, error: str = "", msg: str = "",
         + ("<p class='flag'>값이 빈 자리표시자: "
            + html.escape(", ".join(빈칸)) + "</p>" if 빈칸 else "")
         + "<div class='warn'><b>여기서는 실제 지원자에게 못 보냅니다.</b> "
-        "보낼 사람은 <a href='/'>인재 Pool</a> 이나 "
+        "보낼 사람은 <a href='/'>전체 명단</a> 이나 "
         "<a href='/recruit'>채용 현황</a> 에서 고릅니다 — 거기서는 "
         "<b>누가 서류 합격인지 보면서</b> 고를 수 있습니다. "
         "표에서 체크한 뒤 <b>선택한 사람에게 메일</b> 을 누르세요.</div>"
@@ -1208,7 +1208,7 @@ def get_mail_draft(self, me, path):
 
 @라우트("GET", '/mail/test', 권한='메일_템플릿')
 def get_mail_test(self, me, path):
-    # 메일 탭에서는 **시험 발송까지만** 한다. 실제 발송은 인재 Pool·
+    # 메일 탭에서는 **시험 발송까지만** 한다. 실제 발송은 전체 명단·
     # 채용 현황에서 대상을 고른 뒤에 한다.
     params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
     try:
@@ -1506,7 +1506,7 @@ def post_mail_attachment_delete(self, me, path):
 
 @라우트("POST", '/mail/compose', 권한='메일_발송', 거부말='메일 발송 권한이 없습니다.')
 def post_mail_compose(self, me, path):
-    # 인재 Pool·채용 현황에서 고른 사람을 데리고 오는 입구.
+    # 전체 명단·채용 현황에서 고른 사람을 데리고 오는 입구.
     data = urllib.parse.parse_qs(
         self._read_body().decode("utf-8", "replace"), keep_blank_values=True
     )
