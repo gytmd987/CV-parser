@@ -146,6 +146,10 @@ def is_tier_venue(col: str) -> bool:
             and not col.startswith(TIER_COLUMN_PREFIX))
 
 
+#: 대표 논문 제출처 열 — 최우수 · 우수 열과 같은 모양으로, 사람이 고른 대표 논문만
+REP_VENUE_COLUMN = "1저자_대표_제출처"
+
+
 def columns(registry=None) -> list[str]:
     """표에 나갈 열 목록.
 
@@ -161,6 +165,7 @@ def columns(registry=None) -> list[str]:
         if col == "1저자_해외논문_제출처":
             out.extend(f"{TIER_COLUMN_PREFIX}{t}" for t in tiers)
             out.extend(tier_venue_column(t) for t in tiers)
+            out.append(REP_VENUE_COLUMN)
     return out
 
 
@@ -393,6 +398,9 @@ class Paper(BaseModel):
     #: 아직 안 실린 논문(under review)은 실적으로 세지 않는다. 같은 까닭으로
     #: 기본이 «게재» 다 — 옛 레코드가 갑자기 심사중이 되면 개수가 무너진다.
     게재상태: str = "게재"
+    #: 사람이 상세 화면에서 고른 «대표 논문». 최우수 · 우수가 아닌 1저자 논문 중에서만 —
+    #: 표의 `1저자_대표_제출처` 열에 들어간다. LLM 은 채우지 않는다.
+    대표: bool = False
 
     @property
     def 주저자(self) -> bool:
@@ -401,6 +409,23 @@ class Paper(BaseModel):
     @property
     def 실렸나(self) -> bool:
         return self.게재상태 != "심사중"
+
+
+def _제출처_한마디(v: dict, registry) -> tuple[str, str]:
+    """(연도, «CVPR ('24) 1저자» · «Nano Energy ('23, IF 17.9) 1저자»)."""
+    연도 = str(v.get("연도") or "").strip()
+    안 = f"'{연도[-2:]}" if len(연도) >= 2 else ""
+    if v.get("유형") == "저널" and registry is not None:
+        found = registry.lookup("저널", v.get("원문") or v["표시명"])
+        IF = (found.IF or "").strip() if found else ""
+        if IF:
+            안 = f"{안}, IF {IF}" if 안 else f"IF {IF}"
+    return 연도, (f"{v['표시명']} ({안}) 1저자" if 안 else f"{v['표시명']} 1저자")
+
+
+def _최근부터(것들: list[tuple[str, str]]) -> str:
+    """가장 최근부터. 연도가 없는 것은 맨 뒤로."""
+    return ", ".join(글 for _연도, 글 in sorted(것들, key=lambda x: x[0] or "", reverse=True))
 
 
 class Patent(BaseModel):
@@ -553,7 +578,7 @@ class CVRecord(BaseModel):
             out.append(
                 {"제목": p.제목, "표시명": 표시명, "연도": p.연도, "등급": 등급,
                  "국내해외": 국내해외, "유형": 종류, "주저자": p.주저자,
-                 "게재상태": p.게재상태,
+                 "게재상태": p.게재상태, "대표": p.대표,
                  # 사전을 다시 찾을 때 쓴다 (표시명이 아니라 CV 에 적힌 그대로여야
                  # 사전이 찾는다)
                  "원문": p.제출처}
@@ -676,21 +701,16 @@ class CVRecord(BaseModel):
             등급 = v.get("등급") or ""
             if not 등급 or not v["주저자"]:
                 continue
-            연도 = str(v.get("연도") or "").strip()
-            안 = f"'{연도[-2:]}" if len(연도) >= 2 else ""
-            if v.get("유형") == "저널":
-                found = registry.lookup("저널", v.get("원문") or v["표시명"])
-                IF = (found.IF or "").strip() if found else ""
-                if IF:
-                    안 = f"{안}, IF {IF}" if 안 else f"IF {IF}"
-            묶음 = f"{v['표시명']} ({안}) 1저자" if 안 else f"{v['표시명']} 1저자"
-            모음.setdefault(등급, []).append((연도, 묶음))
-        # 가장 최근부터. 연도가 없는 것은 맨 뒤로 (0 으로 보면 그렇게 된다).
-        return {
-            등급: ", ".join(글 for _연도, 글 in
-                          sorted(것들, key=lambda x: x[0] or "", reverse=True))
-            for 등급, 것들 in 모음.items()
-        }
+            모음.setdefault(등급, []).append(_제출처_한마디(v, registry))
+        return {등급: _최근부터(것들) for 등급, 것들 in 모음.items()}
+
+    def 대표_제출처(self, registry=None) -> str:
+        """사람이 고른 대표 논문 — 등급 열과 같은 모양. 최우수 · 우수(그쪽 열에 나온다) ·
+        공저자 · 심사중은 빠진다 (고른 뒤에 등급이 올라간 것도)."""
+        from .names import LIST_TIERS
+
+        return _최근부터([_제출처_한마디(v, registry) for v in self.실적논문(registry)
+                      if v.get("대표") and v["주저자"] and (v.get("등급") or "") not in LIST_TIERS])
 
     def 등급별_해외논문_수(self, registry=None) -> dict[str, int]:
         counts: dict[str, int] = {}
@@ -773,6 +793,7 @@ class CVRecord(BaseModel):
             for tier in registry.column_tiers():
                 data[f"{TIER_COLUMN_PREFIX}{tier}"] = counts.get(tier, 0) or ""
                 data[tier_venue_column(tier)] = 제출처.get(tier, "")
+            data[REP_VENUE_COLUMN] = self.대표_제출처(registry)
 
         cols = columns(registry)
         return {col: str(data.get(col, "") or "") for col in cols}

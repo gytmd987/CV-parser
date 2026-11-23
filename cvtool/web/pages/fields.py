@@ -10,7 +10,7 @@ import urllib.parse
 from ...auth import User
 from ...edit import CHOICE_FIELDS, field_spec, REGISTRY_FIELDS
 from ...recruit import FIXED_STATUSES, STAGES
-from ...schemas import is_tier_venue, NAME_COLUMNS, TIER_COLUMN_PREFIX
+from ...schemas import is_tier_venue, NAME_COLUMNS, REP_VENUE_COLUMN, TIER_COLUMN_PREFIX
 from ... import colformula
 from ...store import CUSTOM_SCOPES, CUSTOM_TYPES, DEFAULT_LONG_COLUMNS as store_DEFAULT_LONG, 수식정리
 
@@ -141,6 +141,9 @@ def _fields_page(me: User, error: str = "", msg: str = "") -> bytes:
                     "(상세에서 «사전 따라가기» 로 되돌립니다)</span>")
         if col.startswith(TIER_COLUMN_PREFIX):
             return "<span class='muted'>계산 결과 (논문 목록에서 셈)</span>"
+        if col == REP_VENUE_COLUMN:
+            return ("<span class='muted'>계산 결과 (지원자 상세에서 고른 대표 논문 — 최우수 · 우수가 "
+                    "아닌 1저자 논문 — 을 최근 것부터)</span>")
         if is_tier_venue(col):
             return ("<span class='muted'>계산 결과 (그 등급의 1저자 논문을"
                     " 최근 것부터. 이름·등급·IF 는 명칭 관리에서 정한 값)</span>")

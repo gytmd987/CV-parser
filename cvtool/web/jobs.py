@@ -260,6 +260,10 @@ def 검토표시(cid: str, 사유: str, 끝냄: bool, 누가: str) -> bool:
     return True
 
 
+def _논문열쇠(p) -> tuple[str, str, str]:
+    return ((p.제출처 or "").strip().lower(), (p.연도 or "").strip(), (p.제목 or "").strip().lower())
+
+
 def 등록마무리(rec, text: str, filename: str, 지원자_ID: str, 저장_파일명: str,
             메모: str = "") -> str:
     """분석 결과(LLM 이든 에이전트든)를 등록한다. 상태 이름을 돌려준다.
@@ -269,6 +273,13 @@ def 등록마무리(rec, text: str, filename: str, 지원자_ID: str, 저장_파
     if 메모 == 채우기메모:
         _빈칸채우기(지원자_ID, rec, text, filename)
         return "완료"
+    # 재분석이면 사람이 골라 둔 대표 논문을 이어받는다 (같은 제출처 · 연도 · 제목)
+    옛 = store.get(지원자_ID)
+    if 옛 is not None:
+        고른것 = {_논문열쇠(p) for p in 옛.논문 if p.대표}
+        for p in rec.논문:
+            if _논문열쇠(p) in 고른것:
+                p.대표 = True
     # 이름들을 사전에 등록하고 검토 사유를 받는다. 레코드 값은 건드리지 않는다.
     사전사유 = observe_record(rec, registry)
     if 사전사유:

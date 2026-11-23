@@ -20,7 +20,7 @@ from ...export import records_to_xlsx
 from ...fsutil import safe_filename
 from ...mailing import DEFAULT_RECIPIENT
 from ...matching import GRADE_RUBRIC
-from ...names import observe_record
+from ...names import LIST_TIERS, observe_record
 from ...normalize import MULTI_SEP
 from ...recruit import RECRUIT_COLUMNS, STARTED_COLUMN
 from ...schemas import (
@@ -696,98 +696,42 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
                 f" value='{html.escape(값)}' style='width:{폭}'"
                 f" oninput='markDirty(this)'{도움}>")
 
-    def _논문줄(n: int, p_: Paper | None, v: dict | None) -> str:
-        """한 줄. `p_` 가 None 이면 맨 아래 **추가용 빈 줄**이다."""
-        제목 = p_.제목 if p_ else ""
-        제출처 = p_.제출처 if p_ else ""       # 원표기다 — 사전이 이걸로 찾는다
-        연도 = p_.연도 if p_ else ""
-        유형 = p_.유형 if p_ else ""
-        국내해외 = p_.국내해외 if p_ else "불명"
-        저자 = p_.저자구분 if p_ else "주저자"
-        상태 = p_.게재상태 if p_ else "게재"
-        등급 = (v or {}).get("등급") or "-"
-        보이는이름 = (v or {}).get("표시명") or ""
-        딴이름 = (f"<br><span class='muted'>표에는 {html.escape(보이는이름)}</span>"
-                if 보이는이름 and 보이는이름 != 제출처 else "")
-        지우기 = ("" if p_ is None else
-                f"<label><input type='checkbox' form='paperform'"
-                f" name='del_{n}' value='1' onchange='markDirty(this)'> 삭제</label>")
-        return (
-            f"<tr><td>{_고르기(f'저자구분_{n}', 저자, list(저자구분_ENUM))}</td>"
-            f"<td>{_고르기(f'유형_{n}', 유형, ['', '학회', '저널', '기타'], '(빈칸)')}</td>"
-            # 제목과 제출처를 **위아래로** 쌓는다. 그냥 나란히 두면 앞의 칸이
-            # 자리를 다 먹고 제출처가 실오라기만큼 남는다 — 사전이 찾는 값이라
-            # 가장 잘 보여야 하는 칸인데 안 보였다.
-            f"<td><div style='display:flex;flex-direction:column;gap:4px'>"
-            f"{_논문칸(f'제목_{n}', 제목, '100%', '논문 제목')}"
-            f"{_논문칸(f'제출처_{n}', 제출처, '100%', '제출처 (학회·저널 이름)')}"
-            f"</div>{딴이름}</td>"
-            f"<td>{_논문칸(f'연도_{n}', 연도, '70px', 'YYYY')}</td>"
-            f"<td>{_고르기(f'국내해외_{n}', 국내해외, ['불명', '국내', '해외'])}</td>"
-            f"<td>{_고르기(f'게재상태_{n}', 상태, list(게재상태_ENUM))}</td>"
-            f"<td class='muted'>{html.escape(등급)}</td>"
-            f"<td>{지우기}</td></tr>"
-        )
+    # 논문 · 특허는 **보기만** 한다 (CV 에서 읽은 그대로). 고칠 수 있는 것은 «대표 논문» 고르기뿐 —
+    # 최우수 · 우수가 아닌 1저자 논문 중에서 고르면 «1저자 대표 제출처» 열에 들어간다.
+    def _대표칸(i: int, v: dict) -> str:
+        막힘 = ("최우수 · 우수 논문은 등급 열에 따로 나옵니다" if v["등급"] in LIST_TIERS else
+               "공저자 논문은 1저자 대표 제출처에 안 들어갑니다" if not v["주저자"] else
+               "심사중 논문은 세지 않습니다" if v["게재상태"] == "심사중" else "")
+        if 막힘:
+            return (f"<td class='muted' title='{html.escape(막힘)}'>"
+                    + ("대표 <span class='muted'>(열에서 빠짐)</span>" if v["대표"] else "-") + "</td>")
+        if not 수정가능:
+            return "<td>" + ("<span class='pill p-완료'>대표</span>" if v["대표"] else "") + "</td>"
+        return (f"<td><label><input type='checkbox' form='repform' name='대표' value='{i}'"
+                f"{' checked' if v['대표'] else ''} onchange='markDirty(this)'> 대표</label></td>")
 
-    if 수정가능:
-        줄들 = [_논문줄(i, p_, v)
-              for i, (p_, v) in enumerate(zip(rec.논문, 논문보기), start=1)]
-        줄들.append(_논문줄(len(rec.논문) + 1, None, None))   # 추가용 빈 줄
-        논문행 = "".join(줄들)
-    else:
-        논문행 = "".join(
-            f"<tr><td>{주저자배지 if v['주저자'] else 공저자배지}</td>"
-            f"<td>{html.escape(v['유형'])}</td>"
-            f"<td title='{html.escape(v.get('제목') or v['표시명'])}'>"
-            f"{html.escape(v.get('제목') or '')}"
-            + (f"<br><span class='muted'>{html.escape(v['표시명'])}</span>"
-               if v.get('제목') else html.escape(v['표시명']))
-            + f"</td><td>{html.escape(v['연도'])}</td>"
-            f"<td>{html.escape(v['국내해외'])}</td>"
-            + (f"<td>{심사중배지}</td>" if v['게재상태'] == "심사중"
-               else "<td class='muted'>게재</td>")
-            + f"<td>{html.escape(v['등급'])}</td></tr>"
-            for v in 논문보기
-        )
-    def _특허줄(n: int, pt: Patent | None) -> str:
-        """특허 한 줄. `pt` 가 None 이면 맨 아래 **추가용 빈 줄**이다."""
-        상태 = pt.상태 if pt else "등록"
-        국가 = pt.국가 if pt else ""
-        지역 = pt.국내해외 if pt else "불명"
-        지우기 = ("" if pt is None else
-                f"<label><input type='checkbox' form='patentform'"
-                f" name='특허del_{n}' value='1' onchange='markDirty(this)'>"
-                " 삭제</label>")
-        # 칸 이름에 «특허» 를 붙인다. 논문 표에도 `제목_1`·`국내해외_1` 이 있어서
-        # 안 붙이면 한 화면에 같은 이름이 두 벌 생긴다. 폼이 달라 서버는
-        # 헷갈리지 않지만, 화면을 짚어 보는 사람과 브라우저 시험이 헷갈린다.
-        ㄱ = lambda 이름, 값, 고를것: _고르기(f"특허{이름}_{n}", 값, 고를것,
-                                      폼="patentform")
-        ㅊ = lambda 이름, 값, 폭, 안내: _논문칸(f"특허{이름}_{n}", 값, 폭, 안내,
-                                        폼="patentform")
-        return (
-            f"<tr><td>{ㄱ('상태', 상태, list(특허상태_ENUM))}</td>"
-            f"<td>{ㅊ('국가', 국가, '90px', '한국·미국…')}</td>"
-            f"<td>{ㄱ('국내해외', 지역, list(특허지역_ENUM))}</td>"
-            f"<td>{ㅊ('제목', pt.제목 if pt else '', '100%', '특허 제목')}</td>"
-            f"<td>{ㅊ('연도', pt.연도 if pt else '', '70px', 'YYYY')}</td>"
-            f"<td>{ㅊ('번호', pt.번호 if pt else '', '140px', '등록·출원 번호')}</td>"
-            f"<td>{지우기}</td></tr>"
-        )
-
-    if 수정가능:
-        특허줄들 = [_특허줄(i, pt) for i, pt in enumerate(rec.특허, start=1)]
-        특허줄들.append(_특허줄(len(rec.특허) + 1, None))     # 추가용 빈 줄
-        특허행 = "".join(특허줄들)
-    else:
-        특허행 = "".join(
-            f"<tr><td>{html.escape(pt.상태)}</td>"
-            f"<td>{html.escape(pt.국가) or '-'}</td>"
-            f"<td>{html.escape(pt.국내해외)}</td>"
-            f"<td title='{html.escape(pt.제목)}'>{html.escape(pt.제목) or '-'}</td>"
-            f"<td>{html.escape(pt.연도)}</td><td>{html.escape(pt.번호)}</td></tr>"
-            for pt in rec.특허
-        )
+    논문행 = "".join(
+        f"<tr><td>{주저자배지 if v['주저자'] else 공저자배지}</td>"
+        f"<td>{html.escape(v['유형'])}</td>"
+        f"<td title='{html.escape(v.get('제목') or v['표시명'])}'>"
+        f"{html.escape(v.get('제목') or '')}"
+        + (f"<br><span class='muted'>{html.escape(v['표시명'])}</span>"
+           if v.get('제목') else html.escape(v['표시명']))
+        + f"</td><td>{html.escape(v['연도'])}</td>"
+        f"<td>{html.escape(v['국내해외'])}</td>"
+        + (f"<td>{심사중배지}</td>" if v['게재상태'] == "심사중"
+           else "<td class='muted'>게재</td>")
+        + f"<td>{html.escape(v['등급'])}</td>" + _대표칸(i, v) + "</tr>"
+        for i, v in enumerate(논문보기, start=1)
+    )
+    특허행 = "".join(
+        f"<tr><td>{html.escape(pt.상태)}</td>"
+        f"<td>{html.escape(pt.국가) or '-'}</td>"
+        f"<td>{html.escape(pt.국내해외)}</td>"
+        f"<td title='{html.escape(pt.제목)}'>{html.escape(pt.제목) or '-'}</td>"
+        f"<td>{html.escape(pt.연도)}</td><td>{html.escape(pt.번호)}</td></tr>"
+        for pt in rec.특허
+    )
     # 수상 — 논문·특허와 같은 모양의 목록. 명칭 관리는 안 한다 (적힌 그대로).
     def _수상줄(n: int, a) -> str:
         지우기 = ("" if a is None else
@@ -841,37 +785,21 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
                  "<th>제목 / 제출처</th><th style='width:80px'>연도</th>"
                  "<th style='width:80px'>국내해외</th>"
                  "<th style='width:90px'>게재상태</th><th style='width:70px'>등급</th>"
-                 + ("<th style='width:60px'></th>" if 수정가능 else "") + "</tr>")
+                 "<th style='width:110px'>대표 논문</th></tr>")
         논문표 = ("<div class='scroll'><table data-name='논문'>"
                + 논문머리 + 논문행 + "</table></div>")
         특허머리 = ("<tr><th style='width:80px'>상태</th>"
                  "<th style='width:100px'>국가</th>"
                  "<th style='width:90px'>국내/해외</th><th>제목</th>"
-                 "<th style='width:80px'>연도</th><th style='width:150px'>번호</th>"
-                 + ("<th style='width:60px'></th>" if 수정가능 else "") + "</tr>")
-        논문폼 = 특허폼 = ""
-        if 수정가능:
-            # 논문은 **줄이 여럿인 목록**이라 지원자 정보 폼(saveform)과 따로
-            # 받는다. 한 폼에 담으면 줄 번호와 항목 번호가 섞인다.
-            논문폼 = (
-                "<form method='post' action='/candidate/papers' id='paperform'"
-                " class='mergebar'>"
-                f"<input type='hidden' name='id' value='{html.escape(지원자_ID)}'>"
-                f"<input type='hidden' name='끝' value='{len(rec.논문) + 1}'>"
-                "<button type='submit'>논문 목록 저장</button>"
-                "<span class='muted'>맨 아랫줄에 적으면 <b>새 논문</b>이 됩니다. "
-                "제출처를 비우면 그 줄은 저장되지 않습니다.</span></form>"
-            )
-            특허폼 = (
-                "<form method='post' action='/candidate/patents' id='patentform'"
-                " class='mergebar'>"
-                f"<input type='hidden' name='id' value='{html.escape(지원자_ID)}'>"
-                f"<input type='hidden' name='끝' value='{len(rec.특허) + 1}'>"
-                "<button type='submit'>특허 목록 저장</button>"
-                "<span class='muted'>맨 아랫줄에 적으면 <b>새 특허</b>가 됩니다. "
-                "제목과 번호를 둘 다 비우면 그 줄은 저장되지 않습니다. "
-                "<b>국내/해외를 «불명» 으로 두면 개수에서 빠집니다.</b></span></form>"
-            )
+                 "<th style='width:80px'>연도</th><th style='width:150px'>번호</th></tr>")
+        대표폼 = (
+            "<form method='post' action='/candidate/rep-papers' id='repform' class='mergebar'>"
+            f"<input type='hidden' name='id' value='{html.escape(지원자_ID)}'>"
+            "<button type='submit'>대표 논문 저장</button>"
+            "<span class='muted'>논문 · 특허는 CV 에서 읽은 그대로 보여 주며 여기서 고치지 않습니다. "
+            "<b>최우수 · 우수가 아닌 1저자 논문</b> 중 대표 논문을 고르면 표의 "
+            "<b>1저자_대표_제출처</b> 열에 들어갑니다.</span></form>"
+            if 수정가능 and 논문보기 else "")
         실적카드 = (
             "<div class='card' id='실적'><h2>연구 실적 <span class='muted'>"
             f"저널 {센것['저널_수']}편(주저자 {센것['저널_주저자_수']}) · "
@@ -882,11 +810,11 @@ def _candidate_page(지원자_ID: str, me: User, error: str = "",
                if 출원수 else "")
             + (f" · <b>심사중 {심사중수}편은 빼고 셈</b>" if 심사중수 else "")
             + "</span></h2>"
-            + 논문폼
-            + (논문표 if (논문보기 or 수정가능) else "")
-            + (("<h2 style='margin-top:14px'>특허</h2>" + 특허폼
+            + 대표폼
+            + (논문표 if 논문보기 else "")
+            + (("<h2 style='margin-top:14px'>특허</h2>"
                 + "<div class='scroll'><table data-name='특허'>" + 특허머리
-                + 특허행 + "</table></div>") if (rec.특허 or 수정가능) else "")
+                + 특허행 + "</table></div>") if rec.특허 else "")
             + 수상표
             + "<p class='muted'>표의 <b>저널_수 · 학회_수 · "
               "특허_등록_국내_수 · 특허_등록_해외_수</b> 열은 "
@@ -1658,124 +1586,34 @@ def post_candidate_edit(self, me, path):
     return _없는주소(self)
 
 
-@라우트("POST", '/candidate/papers', 권한='지원자_수정')
-def post_candidate_papers(self, me, path):
-    # 논문 목록 통째로 받기. LLM 이 틀린 것을 고치는 유일한 길이라
-    # 재분석 없이 여기서 끝나야 한다.
-    data = urllib.parse.parse_qs(
-        self._read_body().decode("utf-8", "replace"), keep_blank_values=True
-    )
+@라우트("POST", '/candidate/rep-papers', 권한='지원자_수정')
+def post_candidate_rep_papers(self, me, path):
+    # 논문 · 특허는 상세에서 고치지 않는다. 고를 수 있는 것은 대표 논문뿐 —
+    # 최우수 · 우수가 아닌 1저자(게재) 논문만. 나머지는 와도 무시한다.
+    data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
     cid = (data.get("id") or [""])[0]
     뒤로 = f"/candidate?id={urllib.parse.quote(cid)}"
     rec = store.get(cid)
     if rec is None:
         return self._redirect("/")
-    try:
-        끝 = int((data.get("끝") or ["0"])[0])
-    except ValueError:
-        끝 = 0
-
-    옛것 = list(rec.논문)
-    새목록: list[Paper] = []
-    고침 = 지움 = 더함 = 0
-    for i in range(1, 끝 + 1):
-        if (data.get(f"del_{i}") or [""])[0]:
-            지움 += 1
-            continue
-        한줄 = {칸: (data.get(f"{칸}_{i}") or [""])[0]
-              for 칸 in ("제목", "제출처", "연도", "유형",
-                        "국내해외", "저자구분", "게재상태")}
+    고른 = set()
+    for x in data.get("대표") or []:
         try:
-            논문 = edit.validate_paper(한줄)
-        except ValidationError as exc:
-            return self._redirect(
-                f"{뒤로}&err={urllib.parse.quote(f'{i}번째 줄 — {exc}')}#실적")
-        if 논문 is None:          # 제출처가 빈 줄 (추가용 빈 줄 포함)
+            고른.add(int(x))
+        except ValueError:
             continue
-        옛줄 = 옛것[i - 1] if i <= len(옛것) else None
-        if 옛줄 is None:
-            더함 += 1
-        elif 논문.model_dump() != 옛줄.model_dump():
-            고침 += 1
-        새목록.append(논문)
-
-    if 고침 or 지움 or 더함:
-        rec.논문 = 새목록
-        # 새로 적어 넣은 제출처를 사전에 등록한다. 안 부르면 방금 넣은
-        # 학회가 미분류로도 안 잡혀 등급을 매길 수가 없다.
-        observe_record(rec, registry)
-        store.save(rec)
-        요약 = " · ".join(
-            x for x in (f"{고침}줄 고침" if 고침 else "",
-                        f"{더함}줄 추가" if 더함 else "",
-                        f"{지움}줄 삭제" if 지움 else "") if x)
-        # 한 번 저장에 한 줄만 남긴다. 줄마다 남기면 변경 이력이
-        # 논문 목록으로 뒤덮인다.
-        audit.record(me.아이디, "지원자", cid, 항목="논문",
-                     이전값=f"{len(옛것)}편", 새값=f"{len(새목록)}편",
-                     비고=요약)
-        return self._redirect(
-            f"{뒤로}&msg={urllib.parse.quote('논문 목록: ' + 요약)}#실적")
-    return self._redirect(
-        f"{뒤로}&msg={urllib.parse.quote('바뀐 내용이 없습니다.')}#실적")
-    return _없는주소(self)
-
-
-@라우트("POST", '/candidate/patents', 권한='지원자_수정')
-def post_candidate_patents(self, me, path):
-    # 특허 목록 통째로 받기. LLM 이 국내/해외를 «불명» 으로 두면 등록
-    # 개수에서 빠지는데, 재분석 말고 그것을 고칠 길이 여기뿐이다.
-    data = urllib.parse.parse_qs(
-        self._read_body().decode("utf-8", "replace"), keep_blank_values=True
-    )
-    cid = (data.get("id") or [""])[0]
-    뒤로 = f"/candidate?id={urllib.parse.quote(cid)}"
-    rec = store.get(cid)
-    if rec is None:
-        return self._redirect("/")
-    try:
-        끝 = int((data.get("끝") or ["0"])[0])
-    except ValueError:
-        끝 = 0
-
-    옛것 = list(rec.특허)
-    새목록: list[Patent] = []
-    고침 = 지움 = 더함 = 0
-    for i in range(1, 끝 + 1):
-        if (data.get(f"특허del_{i}") or [""])[0]:
-            지움 += 1
-            continue
-        한줄 = {칸: (data.get(f"특허{칸}_{i}") or [""])[0]
-              for 칸 in ("제목", "상태", "연도", "번호", "국가", "국내해외")}
-        try:
-            특허 = edit.validate_patent(한줄)
-        except ValidationError as exc:
-            return self._redirect(
-                f"{뒤로}&err={urllib.parse.quote(f'{i}번째 줄 — {exc}')}#실적")
-        if 특허 is None:          # 제목·번호가 다 빈 줄 (추가용 빈 줄)
-            continue
-        옛줄 = 옛것[i - 1] if i <= len(옛것) else None
-        if 옛줄 is None:
-            더함 += 1
-        elif 특허.model_dump() != 옛줄.model_dump():
-            고침 += 1
-        새목록.append(특허)
-
-    if 고침 or 지움 or 더함:
-        rec.특허 = 새목록
-        store.save(rec)
-        요약 = " · ".join(
-            x for x in (f"{고침}줄 고침" if 고침 else "",
-                        f"{더함}줄 추가" if 더함 else "",
-                        f"{지움}줄 삭제" if 지움 else "") if x)
-        # 논문과 같은 이유로 한 번 저장에 한 줄만 남긴다.
-        audit.record(me.아이디, "지원자", cid, 항목="특허",
-                     이전값=f"{len(옛것)}건", 새값=f"{len(새목록)}건",
-                     비고=요약)
-        return self._redirect(
-            f"{뒤로}&msg={urllib.parse.quote('특허 목록: ' + 요약)}#실적")
-    return self._redirect(
-        f"{뒤로}&msg={urllib.parse.quote('바뀐 내용이 없습니다.')}#실적")
+    전 = [i for i, p_ in enumerate(rec.논문, start=1) if p_.대표]
+    for i, (p_, v) in enumerate(zip(rec.논문, rec.papers_view(registry)), start=1):
+        고를수있음 = v["등급"] not in LIST_TIERS and v["주저자"] and v["게재상태"] != "심사중"
+        if 고를수있음:
+            p_.대표 = i in 고른
+    후 = [i for i, p_ in enumerate(rec.논문, start=1) if p_.대표]
+    if 전 == 후:
+        return self._redirect(f"{뒤로}&msg={urllib.parse.quote('바뀐 내용이 없습니다.')}#실적")
+    store.save(rec)
+    이름들 = lambda 번호들: ", ".join(rec.논문[i - 1].제출처 for i in 번호들) or "(없음)"
+    audit.record(me.아이디, "지원자", cid, 항목="대표 논문", 이전값=이름들(전), 새값=이름들(후))
+    return self._redirect(f"{뒤로}&msg={urllib.parse.quote(f'대표 논문 {len(후)}편으로 저장했습니다.')}#실적")
     return _없는주소(self)
 
 
