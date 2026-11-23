@@ -25,8 +25,9 @@ from ..fsutil import safe_filename
 from ..ingestion.parsers import extract_text
 from ..matching import candidate_profile, 점수등급
 from ..store import SUPPORTED_SUFFIXES
+from .. import review as reviewmod
 from .jobs import (
-    _embed_client, _enqueue, _set_status, 과제목록, 등록마무리, 에이전트모드, 채우기메모,
+    _embed_client, _enqueue, _set_status, 검토표시, 과제목록, 등록마무리, 에이전트모드, 채우기메모,
 )
 from .state import audit, registry, store
 
@@ -95,6 +96,13 @@ def _기록(me: User, cid: str, 비고: str, 항목: str = "", 새값: str = "")
 - `venue_list_save` 로 넣거나 고친다 (이름이 같으면 고침). 약어 · 풀네임이 다르면 별칭에 같이 적는다.
   사람이 정해 준 등급만 넣는다 — 스스로 판단해 최우수 · 우수를 매기지 않는다 (제안은 사람에게 먼저 보여 준다).
 - `venue_list_remove` 로 뺀다. 빼면 그 학회·저널은 미분류가 된다.
+
+## 검토 필요 (사람이 «검토 필요 정리해줘 / ○○ 확인함으로 해줘» 라고 하면)
+- `review_list` 로 검토가 남은 지원자를, `review_list(지원자_ID)` 로 그 사람의 검토 항목을 본다.
+- `review_mark(지원자_ID, 번호들)` 로 항목을 «확인함» 으로 한다 (되돌리려면 확인=false).
+  남은 항목이 없으면 그 사람의 «검토 필요» 가 저절로 내려간다.
+- **사람이 확인하라고 한 것만, 또는 CV 원문 · 사전과 대조해 실제로 맞는지 본 것만** 확인함으로 한다.
+  값이 틀렸으면 확인함으로 넘기지 말고 `candidate_update` 로 고치거나 사람에게 알린다.
 
 ## 그 밖에
 - `candidates_search` · `candidate_get` · `projects_list` 로 저장된 정보를 본다.
@@ -308,6 +316,47 @@ def _projects_list(me: User, args: dict) -> dict:
                     "담당": p.담당, "설명": p.설명} for p in _과제들()]}
 
 
+# --- 검토 필요 ------------------------------------------------------------------------
+def _review_list(me: User, args: dict) -> dict:
+    cid = str(args.get("지원자_ID") or "").strip()
+    if cid:
+        rec = _지원자(cid)
+        끝낸 = store.review_done(cid)
+        return {"지원자_ID": cid, "이름": rec.한글_이름 or rec.영문_이름, "검토_필요": rec.검토_필요 == "Y",
+                "항목": [{"번호": i, "사유": x["글"], "확인함": x["완료"], "관련열": x["열"]}
+                       for i, x in enumerate(reviewmod.items(rec.검토_사유, 끝낸), 1)]}
+    끝낸맵 = store.review_done_map()
+    나온것 = []
+    for r in store.list_all():
+        남은 = reviewmod.remaining(r.검토_사유, 끝낸맵.get(r.지원자_ID, set()))
+        if 남은:
+            나온것.append({"지원자_ID": r.지원자_ID, "이름": r.한글_이름 or r.영문_이름,
+                        "남은_항목": len(남은), "항목": [reviewmod.short(x, 80) for x in 남은[:5]]})
+    return {"개수": len(나온것), "지원자": 나온것,
+            "알림": "자세한 항목 · 번호는 review_list(지원자_ID) 로 봅니다."}
+
+
+def _review_mark(me: User, args: dict) -> dict:
+    rec = _지원자(_cid(args))
+    항목들 = reviewmod.split(rec.검토_사유)
+    번호들 = args.get("번호들")
+    if args.get("전부"):
+        고른 = list(항목들)
+    else:
+        if not isinstance(번호들, list) or not 번호들:
+            raise 도구오류("번호들(review_list 의 번호) 을 주거나 전부=true 로 부르세요.")
+        try:
+            고른 = [항목들[int(n) - 1] for n in 번호들]
+        except (ValueError, TypeError, IndexError) as exc:
+            raise 도구오류(f"없는 번호가 있습니다 (1~{len(항목들)}): {번호들}") from exc
+    확인 = args.get("확인", True) is not False
+    for 사유 in 고른:
+        검토표시(rec.지원자_ID, 사유, 확인, me.아이디)
+    남은 = reviewmod.remaining(rec.검토_사유, store.review_done(rec.지원자_ID))
+    return {"지원자_ID": rec.지원자_ID, "처리": len(고른), "확인함" if 확인 else "되돌림": True,
+            "남은_항목": len(남은), "검토_필요": bool(남은)}
+
+
 # --- 우수 학회·저널 리스트 -------------------------------------------------------------
 def _venue_list(me: User, args: dict) -> dict:
     return {"리스트": [{k: x[k] for k in ("이름", "등급", "학회저널", "비고", "고친때", "고친이")}
@@ -406,6 +455,15 @@ def _venue_list_remove(me: User, args: dict) -> dict:
            이전값=_글("지금 값 (candidate_get 에서 읽은 그대로, 비어 있으면 빈 문자열)")),
        "지원자_수정", _candidate_update),
     도구("projects_list", "회사 연구 과제 목록 (매칭에 쓰는 것).", _입력(), "과제매칭_조회", _projects_list),
+    도구("review_list", "검토가 남은 지원자 목록. 지원자_ID 를 주면 그 사람의 검토 항목(번호 · 사유 · 확인함 여부).",
+       _입력(지원자_ID=_글("지원자_ID (비우면 검토가 남은 사람 전체)")), "지원자_목록", _review_list),
+    도구("review_mark", "검토 항목을 «확인함» 으로 (확인=false 면 되돌림). 남은 게 없으면 «검토 필요» 가 내려간다. "
+       "사람이 시킨 것 · CV 원문과 대조해 본 것만.",
+       _입력(("지원자_ID",), 지원자_ID=_글("지원자_ID"),
+           번호들={"type": "array", "items": {"type": "integer"}, "description": "review_list 의 번호들"},
+           전부={"type": "boolean", "description": "true 면 그 사람의 모든 항목"},
+           확인={"type": "boolean", "description": "기본 true. false 면 확인함을 되돌린다"}),
+       "지원자_수정", _review_mark),
     도구("venue_list", "우수 학회·저널 리스트 (최우수 · 우수는 여기 있는 것만).", _입력(), "명칭_관리", _venue_list),
     도구("venue_names", "지원자 CV 에 나온 학회·저널 이름 · 지금 등급 · 리스트 여부 (많이 나온 순).",
        _입력(검색어=_글("찾을 글자 (비우면 전체)")), "명칭_관리", _venue_names),

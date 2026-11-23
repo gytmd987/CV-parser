@@ -238,6 +238,28 @@ def _worker() -> None:
             _jobs.task_done()
 
 
+def 검토표시(cid: str, 사유: str, 끝냄: bool, 누가: str) -> bool:
+    """검토 항목 하나를 «확인함» 으로 (끝냄=False 면 되돌림). 남은 게 없으면 검토_필요를 내린다.
+
+    화면(검토 카드)과 사내 코워크가 같이 쓴다. 지원자가 없거나 그런 사유가 없으면 False.
+    """
+    rec = store.get(cid)
+    if rec is None or 사유 not in review.split(rec.검토_사유):
+        return False
+    if 끝냄:
+        store.mark_reviewed(cid, 사유, 본사람=누가)
+    else:
+        store.unmark_reviewed(cid, 사유)
+    남은 = review.flagged(rec.검토_사유, store.review_done(cid))
+    if rec.검토_필요 != 남은:
+        rec.검토_필요 = 남은
+        store.save(rec)
+    audit.record(누가, "지원자", cid, 항목="검토",
+                 이전값="" if 끝냄 else "확인함", 새값="확인함" if 끝냄 else "",
+                 비고=review.short(사유, 80))
+    return True
+
+
 def 등록마무리(rec, text: str, filename: str, 지원자_ID: str, 저장_파일명: str,
             메모: str = "") -> str:
     """분석 결과(LLM 이든 에이전트든)를 등록한다. 상태 이름을 돌려준다.

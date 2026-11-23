@@ -34,7 +34,7 @@ from .dashboard import _프로필값
 from .match import _등급칸
 
 from ..state import audit, auth, CONTENT_TYPES, mailing, recruit, registry, store
-from ..jobs import _enqueue, _set_status, _status, _status_lock, 원본과제경로
+from ..jobs import _enqueue, _set_status, _status, _status_lock, 검토표시, 원본과제경로
 from ..columns import (
     열이름도움,
     _cell, _editable, _tsv_to_xlsx, _볼수있나, _표값맵, MAIL_COLUMN, MANAGE_COLUMNS, 라벨, 머리글, 열폭,
@@ -1627,24 +1627,10 @@ def post_candidate_review_done(self, me, path):
     data = urllib.parse.parse_qs(self._read_body().decode("utf-8", "replace"))
     cid = (data.get("id") or [""])[0]
     사유 = (data.get("사유") or [""])[0]
-    rec = store.get(cid)
     뒤로 = f"/candidate?id={urllib.parse.quote(cid)}#검토"
-    if rec is None or not 사유:
-        return self._redirect(뒤로)
-    끝냄 = path.endswith("/done")
-    if 끝냄:
-        store.mark_reviewed(cid, 사유, 본사람=me.아이디)
-    else:
-        store.unmark_reviewed(cid, 사유)
-    # 남은 게 없으면 검토_필요를 내린다. 화면·표·엑셀이 같이 따라온다.
-    남은 = review.flagged(rec.검토_사유, store.review_done(cid))
-    if rec.검토_필요 != 남은:
-        rec.검토_필요 = 남은
-        store.save(rec)
-    audit.record(me.아이디, "지원자", cid, 항목="검토",
-                 이전값="" if 끝냄 else "확인함",
-                 새값="확인함" if 끝냄 else "",
-                 비고=review.short(사유, 80))
+    if 사유:
+        # 남은 게 없으면 검토_필요를 내린다. 화면·표·엑셀이 같이 따라온다.
+        검토표시(cid, 사유, path.endswith("/done"), me.아이디)
     return self._redirect(뒤로)
     return _없는주소(self)
 

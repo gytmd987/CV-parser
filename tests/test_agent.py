@@ -197,3 +197,28 @@ def test_JSON_API_로도_같은_도구(web_client):
     assert 코드 == 200 and 답["ok"] and "지원자 수" in 답["result"]
     코드, 답 = _mcp(c, 토큰, {"tool": "없는것"}, 경로="/api/agent/call")
     assert 코드 == 400 and "없는 도구" in 답["error"]
+
+
+def test_코워크가_검토_항목을_확인함으로(web_client):
+    c = web_client
+    m = c.module
+    settings.바꾸기({"agent_api": True})
+    토큰 = m.auth.create_token("검토시험")
+    from cvtool.schemas import CVRecord
+    rec = CVRecord(지원자_ID="CV-RV00001", 한글_이름="검토대상", 검토_필요="Y",
+                   검토_사유="미분류 학회/저널: XYZ / 박사_학교 표기 확인 필요")
+    m.store.save(rec)
+    목록 = _도구(c, 토큰, "review_list")
+    assert any(x["지원자_ID"] == "CV-RV00001" and x["남은_항목"] == 2 for x in 목록["지원자"])
+    항목 = _도구(c, 토큰, "review_list", 지원자_ID="CV-RV00001")["항목"]
+    assert [x["번호"] for x in 항목] == [1, 2] and not 항목[0]["확인함"]
+    답 = _도구(c, 토큰, "review_mark", 지원자_ID="CV-RV00001", 번호들=[1])
+    assert 답["남은_항목"] == 1 and 답["검토_필요"]
+    with pytest.raises(AssertionError, match="없는 번호"):
+        _도구(c, 토큰, "review_mark", 지원자_ID="CV-RV00001", 번호들=[9])
+    답 = _도구(c, 토큰, "review_mark", 지원자_ID="CV-RV00001", 전부=True)
+    assert 답["남은_항목"] == 0 and not 답["검토_필요"]
+    assert m.store.get("CV-RV00001").검토_필요 == ""
+    assert any(r.사용자 == "agent:검토시험" and r.항목 == "검토" for r in m.audit.recent(20))
+    _도구(c, 토큰, "review_mark", 지원자_ID="CV-RV00001", 번호들=[2], 확인=False)
+    assert m.store.get("CV-RV00001").검토_필요 == "Y"
