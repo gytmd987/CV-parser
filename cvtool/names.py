@@ -97,6 +97,28 @@ _VENUE_NOISE_RE = re.compile(
 )
 _NONWORD_RE = re.compile(r"[^0-9a-z가-힣]+")
 
+#: 학회·저널의 **성격을 바꾸는 말.** 괄호 안이든 밖이든, 앞이든 뒤든 묶기 키에 남긴다.
+#: 예전에는 괄호를 통째로 지워 `EMNLP (Findings)` 가 `EMNLP` 로 묶여 본 학회의 이름 · 등급을
+#: 그대로 물려받았다. 이제는 `EMNLP (Findings)` · `Findings of EMNLP 2023` · `EMNLP Findings`
+#: 가 모두 `emnlp` + `findings` 하나로 묶이고, 본 학회 `EMNLP` 와는 갈린다.
+VENUE_QUALIFIERS = {
+    "findings": "findings",
+    "workshop": "workshop", "workshops": "workshop",
+    "short": "short",
+    "demo": "demo", "demos": "demo", "demonstration": "demo", "demonstrations": "demo",
+    "student": "student", "students": "student",
+    "companion": "companion",
+    "poster": "poster", "posters": "poster",
+    "tutorial": "tutorial", "tutorials": "tutorial",
+}
+_QUALIFIER_RE = re.compile(r"\b(" + "|".join(sorted(VENUE_QUALIFIERS, key=len, reverse=True)) + r")\b",
+                           re.IGNORECASE)
+
+
+def venue_qualifiers(raw: str) -> tuple[str, ...]:
+    """표기에 든 성격 말 (정렬 · 중복 없이). `EMNLP (Findings)` → ('findings',)."""
+    return tuple(sorted({VENUE_QUALIFIERS[m.lower()] for m in _QUALIFIER_RE.findall(raw or "")}))
+
 
 def normalize(raw: str, 종류: str = "학회") -> str:
     """표기를 묶기용 키로 바꾼다.
@@ -109,10 +131,15 @@ def normalize(raw: str, 종류: str = "학회") -> str:
     괄호 안 내용은 어느 종류든 떼어낸다. 학회·저널은 연도와 흔한 군더더기까지
     떼어낸다. 옛 종류 이름('학회'/'저널')으로 불러도 같은 키가 나와야 한다.
     """
-    s = _PAREN_RE.sub(" ", raw.strip().lower())
     if canonical_kind(종류) in GRADED_KINDS:
+        # 성격 말(Findings · Workshop …)은 어디 있든 빼서 **키 끝에** 붙인다 — 순서가 달라도 같은 키
+        성격 = venue_qualifiers(raw)
+        s = _QUALIFIER_RE.sub(" ", raw.strip().lower())
+        s = _PAREN_RE.sub(" ", s)
         s = _YEAR_RE.sub(" ", s)
         s = _VENUE_NOISE_RE.sub(" ", s)
+        return _NONWORD_RE.sub("", s) + "".join(성격)
+    s = _PAREN_RE.sub(" ", raw.strip().lower())
     return _NONWORD_RE.sub("", s)
 
 
@@ -250,6 +277,7 @@ class NameRegistry:
         self._우수표_캐시: dict | None = None
         self._우수_이름캐시: dict[str, str] = {}
         self._seed_excellent()
+        self._rekey_venues()
         self._conn.commit()
         for suffix in ("", "-wal", "-shm"):
             secure_file(Path(str(self.path) + suffix))
@@ -817,6 +845,27 @@ class NameRegistry:
                  "기존 등급에서 옮김", "(자동)", now_kst().strftime("%Y-%m-%d %H:%M")))
         self._conn.execute("INSERT INTO registry_meta (키, 값) VALUES ('우수리스트_시작', ?)",
                            (now_kst().strftime("%Y-%m-%d %H:%M"),))
+
+    def _rekey_venues(self) -> None:
+        """한 번만: 학회·저널 묶기 키를 새 규칙(성격 말을 남김)으로 다시 계산한다.
+
+        이름은 옮기지 않는다. 다만 성격 말이 **그 이름과 다른** 표기(예: EMNLP 그룹 안의
+        `EMNLP (Findings)`)는 확인 표시를 풀어 명칭 관리 «아직 안 본 것» 에 다시 올린다 —
+        어디로 옮길지는 사람이 정한다.
+        """
+        if self._conn.execute("SELECT 1 FROM registry_meta WHERE 키='학회키_성격말'").fetchone():
+            return
+        풀린것 = 0
+        for r in list(self._conn.execute(
+                "SELECT id, 원표기, 표시명, 정규화키 FROM names WHERE 종류='학회·저널'")):
+            새키 = normalize(r["원표기"], "학회·저널") or r["정규화키"]
+            if 새키 != r["정규화키"]:
+                self._conn.execute("UPDATE names SET 정규화키=? WHERE id=?", (새키, r["id"]))
+            if venue_qualifiers(r["원표기"]) != venue_qualifiers(r["표시명"]):
+                self._conn.execute("UPDATE names SET 확인자='', 확인일시='' WHERE id=?", (r["id"],))
+                풀린것 += 1
+        self._conn.execute("INSERT INTO registry_meta (키, 값) VALUES ('학회키_성격말', ?)",
+                           (f"{now_kst().strftime('%Y-%m-%d %H:%M')} 다시 볼 표기 {풀린것}개",))
 
     def _forget_excellent(self) -> None:
         self._우수표_캐시 = None

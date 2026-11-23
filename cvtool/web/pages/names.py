@@ -655,6 +655,8 @@ def _excellent_page(me: User, msg: str = "", err: str = "") -> bytes:
         "<a href='/names?kind=" + urllib.parse.quote("학회·저널") + "'>명칭 관리</a>에서 일반 · 제외로만 정합니다.</p>"
         "<p class='muted'>CV 의 표기와는 <b>묶기 키</b>로 맞춥니다 — 대소문자 · 괄호 · 연도 · "
         "Proc./Conference/Journal 같은 말을 빼고 견줍니다 (<code>Proc. of ICML 2023</code> → ICML). "
+        "<b>Findings · Workshop · Short · Demo · Student · Companion · Poster · Tutorial</b> 은 남겨서 본 학회와 "
+        "따로 봅니다 — <code>EMNLP (Findings)</code> 는 EMNLP 가 아니라 «EMNLP Findings» 로 따로 올려야 등급이 붙습니다. "
         "약어와 풀네임이 다르면 별칭에 적어 두세요. 사내 코워크도 같은 리스트를 고칠 수 있습니다.</p>"
         "<form method='post' action='/names/excellent/save' class='mergebar'>"
         "<input name='이름' placeholder='학회·저널 이름 (예: CVPR)' required style='min-width:220px'>"

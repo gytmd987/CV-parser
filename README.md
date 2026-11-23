@@ -1212,7 +1212,9 @@ CVTOOL_PROJECTS_JSON=/home/사용자/과제정보/과제.json
 - **최우수 · 우수는 이 리스트에 있는 학회·저널만** 됩니다. 리스트에 없는 학회·저널은 명칭 관리 표에서
   일반 · 제외(· 미분류)로만 고를 수 있고, 리스트에서 온 등급은 표에서 잠겨 보입니다.
 - CV 표기와는 묶기 키로 맞춥니다 (대소문자 · 괄호 · 연도 · Proc./Conference/Journal 같은 말을 빼고 견줌 —
-  `Proc. of ICML 2023` → ICML). 약어와 풀네임이 다르면 별칭에 적습니다. 표에 보일 이름을 바꿔도 그 이름에
+  `Proc. of ICML 2023` → ICML). **Findings · Workshop · Short · Demo · Student · Companion · Poster · Tutorial** 은 괄호 안이든
+  밖이든 키에 남겨 본 학회와 따로 봅니다 (`EMNLP (Findings)` · `Findings of EMNLP 2023` · `EMNLP Findings` 는 한 이름,
+  `EMNLP` 와는 다른 이름). 예전 규칙으로 본 학회에 묶여 있던 그런 표기는 처음 켤 때 «아직 안 본 것» 으로 다시 올라옵니다. 약어와 풀네임이 다르면 별칭에 적습니다. 표에 보일 이름을 바꿔도 그 이름에
   묶인 원래 표기가 리스트에 맞으면 걸립니다.
 - 리스트에서 빼면 그 학회·저널은 미분류가 됩니다. 넣고 빼고 고친 것은 변경 이력에 남습니다.
 - 사내 코워크도 `venue_list` · `venue_names` · `venue_list_save` · `venue_list_remove` 로 같은 리스트를 고칩니다.
