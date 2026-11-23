@@ -97,6 +97,16 @@ def _기록(me: User, cid: str, 비고: str, 항목: str = "", 새값: str = "")
   사람이 정해 준 등급만 넣는다 — 스스로 판단해 최우수 · 우수를 매기지 않는다 (제안은 사람에게 먼저 보여 준다).
 - `venue_list_remove` 로 뺀다. 빼면 그 학회·저널은 미분류가 된다.
 
+## 명칭 관리 (사람이 «명칭 정리해줘 / ○○ 를 △△ 로 묶어줘» 라고 하면)
+- 소속 · 학회·저널 · 전공 이름이 CV 마다 다르게 적힌다(포항공대 / POSTECH). 표기마다 «표에 보일 이름» 을 정한다.
+- `names_list(종류)` 로 이름별 표기 · 분류 · 확인 여부를 본다 (안본것만=true 면 아직 사람이 안 본 것만).
+- `names_rename(종류, 이름, 새이름)` — 그 이름을 쓰는 표기 전부의 이름을 바꾼다 (이미 있는 이름이면 합쳐진다).
+- `names_move(종류, 표기_id들, 새이름)` — 고른 표기만 다른 이름으로 옮긴다 (잘못 묶인 것 떼기 · 몇 개 합치기).
+- `names_classify(종류="학회·저널", 이름, 등급/국내해외/유형/IF)` — 등급은 일반 · 제외 · 미분류만.
+  최우수 · 우수는 우수 학회·저널 리스트(`venue_list_save`)에서만 정한다.
+- `names_confirm(종류, 이름 또는 표기_id들)` — 사람이 봤다는 표시.
+- 같은 곳인지 확실하지 않으면 묶지 말고 사람에게 먼저 묻는다. 바꾼 것은 변경 이력에 남는다.
+
 ## 검토 필요 (사람이 «검토 필요 정리해줘 / ○○ 확인함으로 해줘» 라고 하면)
 - `review_list` 로 검토가 남은 지원자를, `review_list(지원자_ID)` 로 그 사람의 검토 항목을 본다.
 - `review_mark(지원자_ID, 번호들)` 로 항목을 «확인함» 으로 한다 (되돌리려면 확인=false).
@@ -316,6 +326,146 @@ def _projects_list(me: User, args: dict) -> dict:
                     "담당": p.담당, "설명": p.설명} for p in _과제들()]}
 
 
+# --- 명칭 관리 ------------------------------------------------------------------------
+def _종류(args: dict) -> str:
+    from ..names import canonical_kind, KINDS
+
+    종류 = canonical_kind(str(args.get("종류") or "").strip())
+    if 종류 not in KINDS:
+        raise 도구오류(f"종류는 {' · '.join(KINDS)} 중 하나입니다.")
+    return 종류
+
+
+def _표기들(종류: str, 이름: str) -> list:
+    return [n for n in registry.list_all(종류) if n.표시명 == 이름]
+
+
+def _names_list(me: User, args: dict) -> dict:
+    from ..names import GRADED_KINDS
+
+    종류 = _종류(args)
+    말 = str(args.get("검색어") or "").strip().lower()
+    안본것만 = bool(args.get("안본것만"))
+    묶음: dict[str, list] = {}
+    for n in registry.list_all(종류):
+        묶음.setdefault(n.표시명, []).append(n)
+    나온것 = []
+    for 이름, 표기들 in 묶음.items():
+        if 안본것만 and all(x.확인 for x in 표기들):
+            continue
+        if 말 and 말 not in (이름 + " " + " ".join(x.원표기 for x in 표기들)).lower():
+            continue
+        d = {"이름": 이름, "표기": [{"id": x.id, "원표기": x.원표기, "발견횟수": x.발견횟수,
+                                  "확인": x.확인} for x in 표기들]}
+        if 종류 in GRADED_KINDS:
+            대 = 표기들[0]
+            d.update(등급=대.등급, 국내해외=대.국내해외, 유형=대.유형, IF=대.IF,
+                     우수리스트=bool(registry.우수등급(이름)))
+        나온것.append(d)
+    try:
+        개수 = max(1, min(1000, int(args.get("개수") or 300)))
+    except (TypeError, ValueError):
+        개수 = 300
+    return {"종류": 종류, "이름_수": len(나온것), "이름": 나온것[:개수]}
+
+
+def _names_rename(me: User, args: dict) -> dict:
+    종류 = _종류(args)
+    옛 = str(args.get("이름") or "").strip()
+    새 = str(args.get("새이름") or "").strip()
+    표기들 = _표기들(종류, 옛)
+    if not 표기들:
+        raise 도구오류(f"그 이름을 쓰는 표기가 없습니다: {옛} (names_list 의 이름 그대로)")
+    if not 새:
+        raise 도구오류("새이름을 주세요.")
+    합침 = bool(_표기들(종류, 새)) and 새 != 옛
+    for n in 표기들:
+        audit.record(me.아이디, "명칭", f"{종류}:{n.원표기}", 항목="표에 보일 이름", 이전값=옛, 새값=새)
+    바뀐수 = registry.rename_group(종류, 옛, 새)
+    for n in _표기들(종류, 새):
+        if not n.확인:
+            registry.confirm(n.id, 사람=me.아이디)
+    return {"종류": 종류, "이름": 새, "바뀐_표기": 바뀐수, "합쳐짐": 합침}
+
+
+def _names_move(me: User, args: dict) -> dict:
+    종류 = _종류(args)
+    새 = str(args.get("새이름") or "").strip()
+    try:
+        ids = [int(x) for x in (args.get("표기_id들") or [])]
+    except (TypeError, ValueError) as exc:
+        raise 도구오류("표기_id들은 names_list 의 id 숫자들입니다.") from exc
+    if not ids or not 새:
+        raise 도구오류("표기_id들과 새이름을 주세요.")
+    이전 = {}
+    for i in ids:
+        n = registry.get(i)
+        if n is None or n.종류 != 종류:
+            raise 도구오류(f"{종류} 에 없는 표기 id 입니다: {i}")
+        이전[i] = n
+    바뀐 = registry.merge(ids, 새)
+    for i in 바뀐:
+        audit.record(me.아이디, "명칭", f"{종류}:{이전[i].원표기}", 항목="표에 보일 이름",
+                     이전값=이전[i].표시명, 새값=새)
+    for i in ids:
+        registry.confirm(i, 사람=me.아이디)
+    return {"종류": 종류, "이름": 새, "옮긴_표기": [이전[i].원표기 for i in 바뀐]}
+
+
+def _names_classify(me: User, args: dict) -> dict:
+    from ..names import GRADED_KINDS, 리스트등급오류
+
+    종류 = _종류(args)
+    if 종류 not in GRADED_KINDS:
+        raise 도구오류("분류(등급 · 국내해외 · 유형 · IF)는 학회·저널만 있습니다.")
+    이름 = str(args.get("이름") or "").strip()
+    if not _표기들(종류, 이름):
+        raise 도구오류(f"그 이름을 쓰는 표기가 없습니다: {이름}")
+    값 = {k: args[k] for k in ("등급", "국내해외", "유형", "IF") if k in args and args[k] is not None}
+    고를것 = {"국내해외": ("불명", "국내", "해외"), "유형": ("학회", "저널", "불명")}
+    for k, 허용 in 고를것.items():
+        if k in 값 and str(값[k]) not in 허용:
+            raise 도구오류(f"{k} 는 {' · '.join(허용)} 중 하나입니다.")
+    if "등급" in 값 and str(값["등급"]) not in registry.tier_names():
+        raise 도구오류(f"등급은 {' · '.join(registry.tier_names())} 중 하나입니다.")
+    전 = registry.class_of(종류, 이름)
+    try:
+        registry.set_class(종류, 이름, **{k: str(v) for k, v in 값.items()})
+    except 리스트등급오류 as exc:
+        raise 도구오류(str(exc) + " (venue_list_save 를 쓰세요)") from exc
+    후 = registry.class_of(종류, 이름)
+    바뀐 = {k: [전[k], 후[k]] for k in ("등급", "국내해외", "유형", "IF") if 전[k] != 후[k]}
+    for k, (a, b) in 바뀐.items():
+        audit.record(me.아이디, "명칭", f"{종류}:{이름}", 항목={"유형": "학회/저널"}.get(k, k), 이전값=a, 새값=b)
+    if 바뀐:
+        for n in _표기들(종류, 이름):
+            if not n.확인:
+                registry.confirm(n.id, 사람=me.아이디)
+    return {"이름": 이름, "분류": {k: 후[k] for k in ("등급", "국내해외", "유형", "IF")}, "바뀜": 바뀐}
+
+
+def _names_confirm(me: User, args: dict) -> dict:
+    종류 = _종류(args)
+    이름 = str(args.get("이름") or "").strip()
+    if 이름:
+        대상 = _표기들(종류, 이름)
+    else:
+        try:
+            대상 = [registry.get(int(x)) for x in (args.get("표기_id들") or [])]
+        except (TypeError, ValueError) as exc:
+            raise 도구오류("표기_id들은 숫자입니다.") from exc
+        대상 = [n for n in 대상 if n is not None and n.종류 == 종류]
+    if not 대상:
+        raise 도구오류("확인할 표기가 없습니다 (이름 또는 표기_id들).")
+    한것 = 0
+    for n in 대상:
+        if not n.확인:
+            registry.confirm(n.id, 사람=me.아이디)
+            audit.record(me.아이디, "명칭", f"{종류}:{n.원표기}", 항목="확인", 이전값="", 새값="확인함")
+            한것 += 1
+    return {"확인": 한것, "남은_안본것": registry.unconfirmed_count(종류)}
+
+
 # --- 검토 필요 ------------------------------------------------------------------------
 def _review_list(me: User, args: dict) -> dict:
     cid = str(args.get("지원자_ID") or "").strip()
@@ -455,6 +605,28 @@ def _venue_list_remove(me: User, args: dict) -> dict:
            이전값=_글("지금 값 (candidate_get 에서 읽은 그대로, 비어 있으면 빈 문자열)")),
        "지원자_수정", _candidate_update),
     도구("projects_list", "회사 연구 과제 목록 (매칭에 쓰는 것).", _입력(), "과제매칭_조회", _projects_list),
+    도구("names_list", "명칭 사전: 이름별 표기(id · 원표기 · 발견횟수 · 확인) · 학회·저널이면 등급 · 국내해외 · 유형 · IF.",
+       _입력(("종류",), 종류={"type": "string", "enum": ["소속", "학회·저널", "전공"]},
+           안본것만={"type": "boolean", "description": "true 면 아직 사람이 안 본 이름만"},
+           검색어=_글("찾을 글자"), 개수={"type": "integer", "description": "최대 이름 수 (기본 300)"}),
+       "명칭_관리", _names_list),
+    도구("names_rename", "이름을 바꾼다 — 그 이름을 쓰는 표기 전부. 새이름이 이미 있으면 합쳐진다.",
+       _입력(("종류", "이름", "새이름"), 종류={"type": "string", "enum": ["소속", "학회·저널", "전공"]},
+           이름=_글("names_list 의 이름 그대로"), 새이름=_글("표에 보일 새 이름")),
+       "명칭_관리", _names_rename),
+    도구("names_move", "고른 표기만 다른 이름으로 옮긴다 (잘못 묶인 것 떼기 · 몇 개 합치기).",
+       _입력(("종류", "표기_id들", "새이름"), 종류={"type": "string", "enum": ["소속", "학회·저널", "전공"]},
+           표기_id들={"type": "array", "items": {"type": "integer"}}, 새이름=_글("옮길 이름")),
+       "명칭_관리", _names_move),
+    도구("names_classify", "학회·저널 이름의 분류를 바꾼다. 등급은 일반 · 제외 · 미분류만 (최우수 · 우수는 venue_list_save).",
+       _입력(("종류", "이름"), 종류={"type": "string", "enum": ["학회·저널"]}, 이름=_글("names_list 의 이름"),
+           등급=_글("일반 · 제외 · 미분류"), 국내해외={"type": "string", "enum": ["불명", "국내", "해외"]},
+           유형={"type": "string", "enum": ["학회", "저널", "불명"]}, IF=_글("임팩트 팩터 (빈 문자열이면 지움)")),
+       "명칭_관리", _names_classify),
+    도구("names_confirm", "사람이 봤다는 표시 (이름의 표기 전부, 또는 표기_id들).",
+       _입력(("종류",), 종류={"type": "string", "enum": ["소속", "학회·저널", "전공"]},
+           이름=_글("이름 (그 이름의 표기 전부)"), 표기_id들={"type": "array", "items": {"type": "integer"}}),
+       "명칭_관리", _names_confirm),
     도구("review_list", "검토가 남은 지원자 목록. 지원자_ID 를 주면 그 사람의 검토 항목(번호 · 사유 · 확인함 여부).",
        _입력(지원자_ID=_글("지원자_ID (비우면 검토가 남은 사람 전체)")), "지원자_목록", _review_list),
     도구("review_mark", "검토 항목을 «확인함» 으로 (확인=false 면 되돌림). 남은 게 없으면 «검토 필요» 가 내려간다. "

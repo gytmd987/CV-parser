@@ -36,9 +36,9 @@ def _mcp(c, 토큰: str, 본문, 경로: str = "/mcp") -> tuple[int, dict | list
         return e.code, (json.loads(글) if 글 else None)
 
 
-def _도구(c, 토큰: str, 이름: str, **args) -> dict:
+def _도구(c, 토큰: str, _도구이름: str, **args) -> dict:
     코드, 답 = _mcp(c, 토큰, {"jsonrpc": "2.0", "id": 7, "method": "tools/call",
-                            "params": {"name": 이름, "arguments": args}})
+                            "params": {"name": _도구이름, "arguments": args}})
     assert 코드 == 200, 답
     결과 = 답["result"]
     if 결과["isError"]:
@@ -222,3 +222,28 @@ def test_코워크가_검토_항목을_확인함으로(web_client):
     assert any(r.사용자 == "agent:검토시험" and r.항목 == "검토" for r in m.audit.recent(20))
     _도구(c, 토큰, "review_mark", 지원자_ID="CV-RV00001", 번호들=[2], 확인=False)
     assert m.store.get("CV-RV00001").검토_필요 == "Y"
+
+
+def test_코워크가_명칭을_관리한다(web_client):
+    c = web_client
+    m = c.module
+    reg = m.registry
+    settings.바꾸기({"agent_api": True})
+    토큰 = m.auth.create_token("명칭시험")
+    a = reg.observe("소속", "포항공대")
+    b = reg.observe("소속", "POSTECH")
+    목록 = _도구(c, 토큰, "names_list", 종류="소속", 안본것만=True)
+    assert {x["이름"] for x in 목록["이름"]} >= {"포항공대", "POSTECH"}
+    _도구(c, 토큰, "names_rename", 종류="소속", 이름="포항공대", 새이름="POSTECH")
+    assert reg.get(a.id).표시명 == "POSTECH" and reg.get(a.id).확인
+    _도구(c, 토큰, "names_move", 종류="소속", 표기_id들=[b.id], 새이름="포스텍")
+    assert reg.get(b.id).표시명 == "포스텍" and reg.get(a.id).표시명 == "POSTECH"
+
+    v = reg.observe("학회", "Weird Conf")
+    with pytest.raises(AssertionError, match="리스트"):
+        _도구(c, 토큰, "names_classify", 종류="학회·저널", 이름="Weird Conf", 등급="최우수")
+    답 = _도구(c, 토큰, "names_classify", 종류="학회·저널", 이름="Weird Conf", 등급="제외", 국내해외="해외", IF="3.1")
+    assert 답["분류"]["등급"] == "제외" and reg.get(v.id).IF == "3.1" and reg.get(v.id).확인
+    w = reg.observe("학회", "Another Conf")
+    assert _도구(c, 토큰, "names_confirm", 종류="학회·저널", 표기_id들=[w.id])["확인"] == 1
+    assert any(r.사용자 == "agent:명칭시험" and r.대상종류 == "명칭" for r in m.audit.recent(30))
