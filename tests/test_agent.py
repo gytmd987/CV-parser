@@ -247,3 +247,32 @@ def test_코워크가_명칭을_관리한다(web_client):
     w = reg.observe("학회", "Another Conf")
     assert _도구(c, 토큰, "names_confirm", 종류="학회·저널", 표기_id들=[w.id])["확인"] == 1
     assert any(r.사용자 == "agent:명칭시험" and r.대상종류 == "명칭" for r in m.audit.recent(30))
+
+
+def test_코워크가_엑셀로_과제를_올린다(web_client):
+    import base64 as _b
+
+    from cvtool.export import build_xlsx
+
+    c = web_client
+    m = c.module
+    jobs = _jobs()
+    settings.바꾸기({"agent_api": True})
+    토큰 = m.auth.create_token("과제시험")
+    jobs.가져온과제파일().unlink(missing_ok=True)
+    엑셀 = build_xlsx([{"과제번호": "P-7", "과제 명": "원자층 식각", "키워드": "ALE"}], ["과제번호", "과제 명", "키워드"])
+    미리 = _도구(c, 토큰, "projects_import", 파일명="과제.xlsx", 내용_base64=_b.b64encode(엑셀).decode())
+    assert 미리["미리보기"] and 미리["추가"] == ["원자층 식각"]
+    assert {"열": "과제명", "쓰임": "과제명"} in 미리["열"]
+    assert not jobs.가져온과제파일().exists()                     # 미리보기는 저장 안 함
+    답 = _도구(c, 토큰, "projects_import", 파일명="과제.xlsx", 내용_base64=_b.b64encode(엑셀).decode(), 반영=True)
+    assert 답["추가"] == 1 and 답["전체"] >= 1
+    답 = _도구(c, 토큰, "projects_import", 항목=[{"과제번호": "P-7", "부서": "공정팀"},
+                                               {"과제번호": "P-8", "과제명": "패키징"}], 반영=True)
+    assert 답["고침"] == 1 and 답["추가"] == 1
+    목록 = {p["과제키"]: p for p in _도구(c, 토큰, "projects_list")["과제"]}
+    assert 목록["P-7"]["담당"] == "공정팀" and 목록["P-7"]["과제명"] == "원자층 식각"
+    with pytest.raises(AssertionError, match="과제명"):
+        _도구(c, 토큰, "projects_import", 항목=[{"엉뚱": "x"}])
+    assert any(r.사용자 == "agent:과제시험" and r.항목 == "엑셀로 과제 추가·갱신" for r in m.audit.recent(20))
+    jobs.가져온과제파일().unlink(missing_ok=True)

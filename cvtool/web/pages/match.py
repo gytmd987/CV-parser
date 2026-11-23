@@ -297,6 +297,27 @@ def _가져오기_합치기(새것: list[dict]):
     return 원본결과, 다듬결과, 다듬버림, 알림
 
 
+def 저장오류말(exc: OSError) -> str:
+    return (f"과제 파일을 저장하지 못했습니다 ({getattr(exc, 'filename', '') or 가져온과제파일()}): "
+            f"{exc.strerror or exc}. 이 프로그램을 띄운 계정이 그 폴더에 쓸 수 있는지 확인하세요.")
+
+
+def 과제_반영(새것: list[dict], 파일명: str, 누가: str):
+    """엑셀(또는 사내 코워크가 준 줄들)을 과제 원본 · 다듬은 파일에 추가 · 갱신하고 저장한다.
+    (합친 결과, 알림들). 저장하지 못하면 OSError."""
+    r, 다듬r, 다듬버림, 알림 = _가져오기_합치기(새것)
+    projectsmod.save_projects(가져온과제파일(), r.과제들, 출처=f"엑셀 {파일명}", 만든이=누가)
+    if 다듬버림:
+        다듬은파일().unlink(missing_ok=True)
+    if 다듬r is not None:
+        옛 = projectsmod.curated_meta(다듬은파일())
+        projectsmod.save_curated(다듬은파일(), 다듬r.과제들, 출처=옛.get("출처", ""), 만든이=누가)
+    과제목록(다시=True)
+    audit.record(누가, "과제", str(가져온과제파일()), 항목="엑셀로 과제 추가·갱신",
+                 새값=f"{파일명}: 추가 {len(r.추가)} · 고침 {len(r.갱신)} · 그대로 {len(r.같음)}")
+    return r, 알림
+
+
 def _미리보기(me: User, 새것: list[dict], 열들: list[str], 파일명: str) -> bytes:
     r, 다듬r, _버림, 알림 = _가져오기_합치기(새것)
     열표 = "".join(
@@ -352,21 +373,10 @@ def post_match_import_apply(self, me, path):
     except (ValueError, AssertionError):
         return self._redirect("/match?err=" + urllib.parse.quote("올린 내용을 읽지 못했습니다. 다시 올려 주세요."))
     파일명 = (data.get("name") or [""])[0]
-    r, 다듬r, 다듬버림, 알림 = _가져오기_합치기(새것)
     try:
-        projectsmod.save_projects(가져온과제파일(), r.과제들, 출처=f"엑셀 {파일명}", 만든이=me.아이디)
-        if 다듬버림:
-            다듬은파일().unlink(missing_ok=True)
-        if 다듬r is not None:
-            옛 = projectsmod.curated_meta(다듬은파일())
-            projectsmod.save_curated(다듬은파일(), 다듬r.과제들, 출처=옛.get("출처", ""), 만든이=me.아이디)
+        r, 알림 = 과제_반영(새것, 파일명, me.아이디)
     except OSError as exc:
-        return self._redirect("/match?err=" + urllib.parse.quote(
-            f"과제 파일을 저장하지 못했습니다 ({getattr(exc, 'filename', '') or 가져온과제파일()}): "
-            f"{exc.strerror or exc}. 이 프로그램을 띄운 계정이 그 폴더에 쓸 수 있는지 확인하세요."))
-    과제목록(다시=True)
-    audit.record(me.아이디, "과제", str(가져온과제파일()), 항목="엑셀로 과제 추가·갱신",
-                 새값=f"{파일명}: 추가 {len(r.추가)} · 고침 {len(r.갱신)} · 그대로 {len(r.같음)}")
+        return self._redirect("/match?err=" + urllib.parse.quote(저장오류말(exc)))
     return self._redirect("/match?msg=" + urllib.parse.quote(
         f"과제 {len(r.추가)}개를 추가하고 {len(r.갱신)}개를 고쳤습니다 (전체 {len(r.과제들)}개). "
         "이미 맞춰본 지원자에 반영하려면 아래 '이미 맞춰본 사람도 다시' 를 켜고 맞춰보기를 돌리세요."

@@ -97,6 +97,14 @@ def _기록(me: User, cid: str, 비고: str, 항목: str = "", 새값: str = "")
   사람이 정해 준 등급만 넣는다 — 스스로 판단해 최우수 · 우수를 매기지 않는다 (제안은 사람에게 먼저 보여 준다).
 - `venue_list_remove` 로 뺀다. 빼면 그 학회·저널은 미분류가 된다.
 
+## 과제 올리기 (사람이 «이 엑셀로 과제 추가 · 갱신해줘» 라고 하면)
+- 엑셀(.xlsx · .csv) 은 `내용_base64` 로, 이미 읽은 표는 `항목`(과제 하나 = 객체 하나) 으로 준다.
+  첫 줄 = 항목 이름(과제번호 · 과제명 · 부서 · 키워드 · 핵심기술 …), 한 줄 = 과제 하나.
+- 먼저 `projects_import(..., 반영=false)` 로 미리 보고(추가 · 고침 · 그대로 · 열을 무엇으로 읽었는지)
+  사람에게 보여 준 뒤, 괜찮다고 하면 같은 내용으로 `반영=true` 로 다시 부른다.
+- 과제번호가 같으면 값이 있는 칸만 고치고, 없는 번호는 추가한다. 지우지 않는다.
+  과제를 바꾼 뒤 이미 맞춰본 지원자도 다시 맞추려면 `match_task` · `match_submit` 을 다시 돈다.
+
 ## 명칭 관리 (사람이 «명칭 정리해줘 / ○○ 를 △△ 로 묶어줘» 라고 하면)
 - 소속 · 학회·저널 · 전공 이름이 CV 마다 다르게 적힌다(포항공대 / POSTECH). 표기마다 «표에 보일 이름» 을 정한다.
 - `names_list(종류)` 로 이름별 표기 · 분류 · 확인 여부를 본다 (안본것만=true 면 아직 사람이 안 본 것만).
@@ -324,6 +332,43 @@ def _candidate_update(me: User, args: dict) -> dict:
 def _projects_list(me: User, args: dict) -> dict:
     return {"과제": [{"과제키": p.키, "과제명": p.이름, "번호": p.번호, "키워드": p.키워드,
                     "담당": p.담당, "설명": p.설명} for p in _과제들()]}
+
+
+# --- 과제 올리기 ----------------------------------------------------------------------
+def _projects_import(me: User, args: dict) -> dict:
+    from .. import projects as projectsmod
+    from .pages.match import _가져오기_합치기, 과제_반영, 저장오류말
+
+    파일명 = str(args.get("파일명") or "코워크").strip() or "코워크"
+    try:
+        if args.get("내용_base64"):
+            try:
+                내용 = base64.b64decode(str(args["내용_base64"]), validate=True)
+            except ValueError as exc:
+                raise 도구오류("내용_base64 가 base64 가 아닙니다.") from exc
+            새것, 열들 = projectsmod.표를_과제로(projectsmod.표_읽기(파일명, 내용))
+        elif isinstance(args.get("항목"), list) and args["항목"]:
+            머리 = list(dict.fromkeys(str(k) for x in args["항목"] if isinstance(x, dict) for k in x))
+            표 = [머리] + [[str((x or {}).get(k, "") or "") for k in 머리] for x in args["항목"]]
+            새것, 열들 = projectsmod.표를_과제로(표)
+        else:
+            raise 도구오류("내용_base64(엑셀 · csv) 나 항목(과제 목록) 중 하나를 주세요.")
+    except projectsmod.ProjectsError as exc:
+        raise 도구오류(str(exc)) from exc
+    열 = [{"열": h, "쓰임": projectsmod.열역할(h)} for h in 열들]
+    if not args.get("반영"):
+        r, _다듬r, _버림, 알림 = _가져오기_합치기(새것)
+        return {"미리보기": True, "읽은_과제": len(새것), "열": 열,
+                "추가": r.추가, "고침": [{"과제": a, "바뀐_항목": b} for a, b in r.갱신],
+                "그대로": len(r.같음), "반영뒤_전체": len(r.과제들), "알림": 알림,
+                "다음": "사람에게 보여 주고 괜찮다면 같은 내용으로 반영=true 로 부르세요."}
+    try:
+        r, 알림 = 과제_반영(새것, 파일명, me.아이디)
+    except OSError as exc:
+        raise 도구오류(저장오류말(exc)) from exc
+    return {"반영": True, "추가": len(r.추가), "고침": len(r.갱신), "그대로": len(r.같음),
+            "전체": len(r.과제들), "알림": 알림,
+            "다음": "이미 맞춰본 지원자에 반영하려면 match_task · match_submit 을 다시 하세요."}
 
 
 # --- 명칭 관리 ------------------------------------------------------------------------
@@ -605,6 +650,14 @@ def _venue_list_remove(me: User, args: dict) -> dict:
            이전값=_글("지금 값 (candidate_get 에서 읽은 그대로, 비어 있으면 빈 문자열)")),
        "지원자_수정", _candidate_update),
     도구("projects_list", "회사 연구 과제 목록 (매칭에 쓰는 것).", _입력(), "과제매칭_조회", _projects_list),
+    도구("projects_import", "엑셀(.xlsx · .csv) 이나 과제 목록으로 과제를 추가 · 갱신 (과제번호 기준, 지우지 않음). "
+       "반영=false 로 먼저 미리 보고, 사람이 괜찮다고 하면 반영=true.",
+       _입력(파일명=_글("엑셀 파일 이름 (확장자 포함 — .xlsx · .csv)"),
+           내용_base64=_글("엑셀 · csv 파일 내용을 base64 로"),
+           항목={"type": "array", "items": {"type": "object"},
+                "description": "과제마다 {과제번호, 과제명, 부서, 키워드, 핵심기술, ...} — 엑셀 대신"},
+           반영={"type": "boolean", "description": "false(기본) 면 미리보기만, true 면 저장"}),
+       "지원자_등록", _projects_import),
     도구("names_list", "명칭 사전: 이름별 표기(id · 원표기 · 발견횟수 · 확인) · 학회·저널이면 등급 · 국내해외 · 유형 · IF.",
        _입력(("종류",), 종류={"type": "string", "enum": ["소속", "학회·저널", "전공"]},
            안본것만={"type": "boolean", "description": "true 면 아직 사람이 안 본 이름만"},
