@@ -61,6 +61,11 @@ class Settings:
     # 추론 모델은 temperature 0 에서 반복에 빠지기도 한다. 답변이 이상하면 조정.
     llm_temperature: float = float(_env("CVTOOL_LLM_TEMPERATURE", "0.0"))
 
+    # 추론 모델의 생각(thinking) 켜기. 끄면 요청마다
+    # chat_template_kwargs={"enable_thinking": false} 를 보낸다 (Qwen3 계열 · vLLM).
+    # 생각을 끄면 답이 훨씬 빨리 나온다. 서버가 이 필드를 거절하면 빼고 다시 부른다.
+    llm_thinking: bool = _env("CVTOOL_LLM_THINKING", "1").lower() not in ("0", "false", "no", "off", "")
+
     # --- TEI 임베딩 / 리랭커 (다음 슬라이스에서 사용) ---
     embed_url: str = _env("CVTOOL_EMBED_URL", "http://localhost:8081")
     embed_dim: int = int(_env("CVTOOL_EMBED_DIM", "1024"))  # KURE-v1
@@ -141,6 +146,8 @@ class Settings:
      "켜져 있으면 발송을 눌러도 기록만 남고 메일은 나가지 않습니다."),
     ("store_cv_text", "CV 원문 텍스트 보관", "bool",
      "켜면 재업로드 없이 재분석할 수 있지만 CV 전문이 DB 에 남습니다."),
+    ("llm_thinking", "서버 LLM: 생각(thinking) 켜기", "bool",
+     "끄면 모델이 생각 없이 바로 답해 훨씬 빠릅니다 (Qwen3 계열 · vLLM). 정확도는 직접 확인하세요."),
     ("two_stage", "서버 LLM: 2단계 추출 (먼저 읽고 정리)", "bool", "서버 LLM 일 때만 씁니다."),
     ("oneshot", "서버 LLM: 한 번에 추출", "bool", "서버 LLM 일 때만 씁니다. 빠르지만 정확도는 직접 확인하세요."),
     ("match_show", "지원자 상세에 보여 줄 상위 과제 수", "int", ""),

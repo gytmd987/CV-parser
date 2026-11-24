@@ -61,6 +61,8 @@ def _cmd_health(_args: argparse.Namespace) -> int:
                 print(f"\n  모델 {m.get('id')} 의 max_model_len = {limit:,} 토큰")
                 print(f"  현재 CVTOOL_MAX_INPUT_CHARS = {settings.max_input_chars:,} 자")
                 print("  (한글은 대략 1자≈1토큰. 출력 몫도 남겨야 하니 여유 있게 잡으세요)")
+    print(f"\n  생각(thinking): {'켜짐' if settings.llm_thinking else '꺼짐 (enable_thinking=false 로 부름)'}"
+          " (.env 의 CVTOOL_LLM_THINKING 기준. 웹 «운영 설정» 에서 바꾼 값이 있으면 그게 우선)")
     print(f"\n  2단계 추출: {'켜짐' if settings.two_stage else '꺼짐'}"
           f" (CVTOOL_TWO_STAGE)")
     return 0 if ok else 1

@@ -41,6 +41,19 @@ _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
 
+def 생각끄기(payload: dict) -> dict:
+    """설정에서 생각(thinking)을 껐으면 요청에 끄라는 표시를 붙인다 (Qwen3 계열 · vLLM)."""
+    if not settings.llm_thinking:
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
+    return payload
+
+
+def _생각필드_거절(resp: httpx.Response, payload: dict) -> bool:
+    """서버가 chat_template_kwargs 를 몰라서 400 을 냈나."""
+    return (resp.status_code == 400 and "chat_template_kwargs" in payload
+            and ("chat_template_kwargs" in resp.text or "enable_thinking" in resp.text))
+
+
 def build_json_payload(
     messages: list[dict],
     schema: dict,
@@ -70,7 +83,7 @@ def build_json_payload(
         }
     else:  # pragma: no cover - 방어적
         raise ValueError(f"unknown mode: {mode}")
-    return payload
+    return 생각끄기(payload)
 
 
 def _strip_reasoning(content: str) -> str:
@@ -205,6 +218,18 @@ class LLMClient:
         self._base = settings.llm_base_url.rstrip("/")
         self._headers = {"Authorization": f"Bearer {settings.llm_api_key}"}
         self._client = client or httpx.Client(timeout=settings.llm_timeout)
+        #: 서버가 생각 끄기 필드를 거절하면 이후로는 붙이지 않는다
+        self._생각필드_안됨 = False
+
+    def _보내기(self, url: str, payload: dict) -> httpx.Response:
+        if self._생각필드_안됨:
+            payload.pop("chat_template_kwargs", None)
+        resp = self._client.post(url, json=payload, headers=self._headers)
+        if _생각필드_거절(resp, payload):
+            self._생각필드_안됨 = True
+            payload.pop("chat_template_kwargs", None)
+            resp = self._client.post(url, json=payload, headers=self._headers)
+        return resp
 
     def chat_json(
         self,
@@ -232,7 +257,7 @@ class LLMClient:
                 schema_name=schema_name,
             )
             try:
-                resp = self._client.post(url, json=payload, headers=self._headers)
+                resp = self._보내기(url, payload)
             except httpx.HTTPError as exc:
                 raise LLMError(f"LLM 요청 실패: {exc}") from exc
 
@@ -280,9 +305,10 @@ class LLMClient:
             "messages": messages,
             "max_tokens": max_tokens or settings.llm_max_tokens,
         }
+        생각끄기(payload)
         url = f"{self._base}/chat/completions"
         try:
-            resp = self._client.post(url, json=payload, headers=self._headers)
+            resp = self._보내기(url, payload)
         except httpx.HTTPError as exc:
             raise LLMError(f"LLM 요청 실패: {exc}") from exc
         if resp.status_code >= 400:
